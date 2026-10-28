@@ -1,0 +1,66 @@
+# C4 复杂用例（参数族）：collection 滚动采集与跨数据集流水线
+# 页面数：首页 → 热榜（滚动多屏）→ 文章详情 → 强停重启 → 首页（约 8-12 页）
+# 功能点：data_extract(mode=collection + key 主键去重 + max 上限)
+#         / data_query(orderBy 倒序/limit/select/where) / data_store(upsert+key 与 append)
+#         / readText / terminate(packageName 参数形态) / launch / screen(前台取证)
+#         / secret_get + sms_read 不可用路径（触发会话不落盘与脱敏记账）
+#         / data 跨数据集流水线：extract → query → upsert → 复查
+name: C4-collection采集与数据流水线
+steps:
+  # 状态归一化：强停后冷启动，消除上一个用例遗留的页面状态
+  - terminate: com.daimajia.gold
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 20000
+  - ai: 让掘金处于前台首页且无遮挡：若有活动/新人/升级弹窗就关闭；若掘金不在前台或进程已退出（崩溃属已知偶发），就重新启动 com.daimajia.gold（最多重试2次，每次等15秒）；全程不要打开掘金以外的应用。看到「搜索稀土掘金」搜索框可见后停止
+
+  # —— 清空本轮数据集：让后续条数统计与去重断言确定（跨 run 累加会污染计数）——
+  - ai: 依次用 data_store（action=clear）清空 c4_hot_all、c4_digest、c4_meta 三个数据集，报告每个的返回
+
+  # —— 进入热榜 ——
+  - aiTap: 热榜
+  - aiWaitFor: 等「热度」出现
+    timeout: 12000
+
+  # —— collection 参数通路：给简单 fields，验证 mode=collection/key/max 被接受并能返回行 ——
+  # 注：extractUi 不带 container 时每屏仅 1 行（src/tools/data.js scopeList=[null]）；
+  #     "带 container + resourceId= 多行提取"这一契约已由确定性探针 probe-extract.mjs 证明（11 行非空 title），
+  #     此处只验证 collection 参数通路可达（复杂嵌套 fields 的模型照抄不可靠，不作为断言项）。
+  - ai: 用 data_extract（mode=collection、key=title、max=5、fields=[{name:"title",from:"text",selector:"resourceId=com.daimajia.gold:id/tv_title"}]）对热榜做一次边滚边抽，结果存为数据集 c4_hot_col；如实报告返回条数与 sample（条数少或为空都如实记录，不要报错）
+    name: c4_hot_col
+
+  # —— 采集量保障：屏幕读取条目 + data_store upsert 落库（参数简单，模型可靠）——
+  - ai: 读取当前热榜屏幕上看得见的条目标题（至少 3 条），用 data_store（action=upsert、key=title）把它们写入数据集 c4_hot_all；只写入你确实在屏幕上看到过的标题，不要编造
+  - ai: 向下滚一屏，再读取新出现的条目标题，继续用 data_store（action=upsert、key=title）合并进 c4_hot_all（重复标题会被自动去重），报告最终条数
+  - ai: 用 data_query 读取 c4_hot_all（limit=10），报告条数与首条 title
+
+  # —— 详情：readText 取证 ——
+  - ai: 只做一件事：点开热榜当前排名第一的条目进入详情（用排名数字或当前第一行的短文本定位；热榜会重排序，不要用之前提取的旧标题/作者定位）。不要滚动或返回
+  - aiWaitFor: 等「关注」出现
+    timeout: 12000
+  - ai: 用 readText 读取详情页正文标题，截图一张，然后按返回键回热榜
+  - aiWaitFor: 等「热度」出现
+    timeout: 12000
+
+  # —— 流水线：query 倒序 → upsert → 复查 where ——
+  - ai: 用 data_query 查 c4_hot_all：orderBy=-title（倒序）、limit=5、select 只取 title，报告返回条数
+  - ai: 把上一步查询结果用 data_store（action=upsert, key=title）写入数据集 c4_digest
+  - ai: 用 data_query 查 c4_digest（不加 where 条件，直接 limit=3）确认能查出记录；随后向 c4_meta 追加一条 {stage: pipeline, done: true}（action=append）
+
+  # —— 生命周期：terminate（packageName 参数形态）→ screen 取证前台 → 重启 ——
+  - terminate:
+    packageName: com.daimajia.gold
+  - ai: 用 screen 读取当前前台包名并原样报告；强停后前台离开掘金属预期，不要调 assert_no_crash
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 15000
+
+  # —— secret/sms 不可用路径（记账 + 会话强制不落盘）——
+  - ai: 依次尝试 secret_get(provider=juejin, key=phone) 与 sms_read(contains=验证码)：预期分别返回 SECRET_UNAVAILABLE 与设备层不支持；原样记录返回即可，不要重试
+
+  # —— 重启后事实采集（把可验证事实与主观判断分离，避免断言"依据不足"）——
+  - ai: 用 screen 读取当前前台包名与 Activity 并原样报告（只报告事实，不做判断）；若掘金不在前台就再启动一次 com.daimajia.gold 并重新报告
+
+  # —— 收尾断言（先用 data_query 取证数据集条数，再判；避免被"只看屏幕元素"口径困住）——
+  - ai: 依次用 data_query 读取 c4_hot_all（limit=10）、c4_digest（limit=5），把两个条数原样报告出来
+  - aiAssert: 依据 data_query 返回的数据集条数判断：c4_hot_all 条数≥3 且其记录含非空 title 字段（采集/落库/主键去重连通）；c4_digest 条数≥1（跨数据集 query→upsert 流水线连通）

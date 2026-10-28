@@ -1,0 +1,51 @@
+# M3 中等用例（参数族）：输入与动作工具的全参数形态
+# 页面数：首页 → 搜索页 → 建议 → 结果 → 详情 → 长按 → 结果 → 首页 → 搜索 → 结果（约 7-9 页）
+# 功能点：aiInput(value 引擎输入+回读) / aiKeyboardPress(keyName: enter)
+#         / aiLongPress(durationMs) / swipe(区域名 bottom→top + durationMs)
+#         / data_extract(mode=ui + container + fields) / data_query(select/limit)
+#         / 引擎步骤失败后的 agent 兜底自愈 / aiAssert
+name: M3-输入与动作参数巡礼
+steps:
+  # 状态归一化：强停后冷启动，消除上一个用例遗留的页面状态
+  - terminate: com.daimajia.gold
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 20000
+  - ai: 让掘金处于前台首页且无遮挡：若有活动/新人/升级弹窗就关闭；若掘金不在前台或进程已退出（崩溃属已知偶发），就重新启动 com.daimajia.gold（最多重试2次，每次等15秒）；全程不要打开掘金以外的应用。看到「搜索稀土掘金」搜索框可见后停止
+
+  # —— 第一次搜索：引擎输入英文（value 参数）+ 引擎回车（keyName 参数）——
+  - aiTap: 搜索稀土掘金
+  - aiWaitFor: 搜索页稳定
+  - aiInput: id=com.daimajia.gold:id/tv_search
+    value: Android
+  - aiKeyboardPress: 回车键
+    keyName: enter
+  - ai: 检查搜索是否成功执行：若输入框是空的，先用输入工具补输入 Android 再点「搜索」按钮（text=搜索）；若已在结果页就直接继续；等结果列表出现后停止，不要做其他操作
+
+  # —— 结果页：ui 模式提取（container + fields 参数）——
+  - aiWaitFor: 结果列表稳定
+  - aiQuery: 用 data_extract（mode=ui）提取当前屏搜索结果条目，尽量带 container 与 fields（标题 from=text、作者 from=text），若按卡片容器提取为空则退化为逐条文本提取
+    name: m3_results
+
+  # —— aiLongPress 的 durationMs 参数：长按含 Android 字样的第一条结果 ——
+  - aiLongPress: Android
+    durationMs: 800
+  - ai: 若长按弹出了菜单或弹层，按返回键关闭；若没有任何反应，直接说明无反应即可，不要做其他操作
+
+  # —— swipe 的区域名 + durationMs 参数 ——
+  - ai: 用 swipe（from=bottom, to=top, durationMs=500）在结果列表滑一次，报告 ok 与 latencyMs
+
+  # —— 返回首页，第二次搜索：value 含中文与空格 ——
+  - aiKeyboardPress: 返回键
+    keyName: back
+  - ai: 连续按返回回到掘金首页（最多 3 次），等首页信息流稳定后停止
+  - aiTap: 搜索稀土掘金
+  - aiWaitFor: 搜索页稳定
+  - aiInput: id=com.daimajia.gold:id/tv_search
+    value: 安卓开发
+  - aiKeyboardPress: 回车键
+    keyName: enter
+  - ai: 确认第二次搜索已执行：若输入框为空先补输入「安卓开发」再点「搜索」按钮；结果出现后用 data_query 读取 m3_results（select 取 title，limit 取 3）并报告条数
+
+  - ai: 用 data_query 读取数据集 m3_results（limit=5），把条数与首条 title 原样报告
+  - aiAssert: 依据 data_query 返回结果判断：数据集 m3_results 条数≥1 且其记录含非空 title 字段

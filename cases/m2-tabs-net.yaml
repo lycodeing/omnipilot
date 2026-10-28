@@ -1,0 +1,17 @@
+# M2 中等用例：多Tab巡检与网络档位探测
+# 页面数：首页 → 沸点 → 圈子 → 返回 → 课程 → 前端筛选 → 人工智能筛选
+#         → 发现 → 我 → 首页（约 6-10 页）
+# 功能点：launch / net_status / net_profile(容错探测) / data_store / tap / screen
+#         / wait_idle / assert_no_crash / 多Tab导航
+name: M2-多Tab巡检与网络档位探测
+steps:
+  - ai: 启动稀土掘金并等首页稳定，调用 net_status 记录当前网络档位
+  - ai: 调用 net_profile 尝试切到 4g 档：本模拟器可能不支持 net 命令，返回 ok=false 属预期，把返回的错误信息原样记录即可；随后再查一次 net_status
+  - ai: 用 data_store 往数据集 patrol_meta 写一条巡检元数据（字段 tab=feidian, status=start）
+  - ai: 点击底部Tab「沸点」，等圈子列表稳定
+  - ai: 点开第一个圈子进入，等加载后返回沸点列表
+  - ai: 点击底部Tab「课程」，等小册列表稳定，点分类「前端」筛选，等刷新后再点「人工智能」筛选
+  - ai: 点击底部Tab「发现」，截图一张
+  - ai: 点击底部Tab「我」，等待页面稳定，找到「每日签到」区域截图记录（只查看，不实际签到）
+  - aiAssert: net_status 至少被查询过两次且能给出档位或 unknown；数据集 patrol_meta 至少1条；前台包名保持 com.daimajia.gold
+  - ai: 执行一次崩溃检查（assert_no_crash），然后回到首页Tab等待稳定

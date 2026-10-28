@@ -1,0 +1,16 @@
+# S1 简单用例：热榜速览与数据提取
+# 页面数：首页 → 热榜 → 热榜滚动后 → 推荐（3-5 页）
+# 功能点：launch / screen(截图+前台) / assert_no_crash / tap / wait_idle / swipe / scroll
+#         / data_extract(ui) / data_query / screen_diff(树哈希对比) / ask 只读问答
+name: S1-热榜速览与数据提取
+steps:
+  - ai: 启动稀土掘金App（包名 com.daimajia.gold），等待首页加载稳定
+  - ai: 截图一张，核对当前前台包名为 com.daimajia.gold，并执行一次崩溃检查（assert_no_crash）
+  - ai: 点击首页顶部分类条中的「热榜」，等待列表加载稳定
+  - ai: 在热榜列表向上滑动一屏，观察更多排名条目
+  - ai: 长按（long_press）热榜列表中的第一条约1秒，观察是否弹出上下文菜单，若弹出则按返回键关闭
+  - ai: 用 data_extract（mode=ui）提取当前屏幕的热榜条目，字段取排名数字与标题文本，存为数据集 hotlist
+  - aiQuery: 当前热榜前3名的标题分别是什么？对应热度分别是多少？
+  - aiAssert: 数据集 hotlist 中至少有3条记录且每条标题文本非空
+  - ai: 点击「推荐」分类回到信息流，等首页信息流稳定，再用 screen_diff 对比热榜与信息流的UI树哈希不同
+  - ai: 用 data_query 读取 hotlist 的前5条并汇报实际条数

@@ -1,0 +1,12 @@
+# S2 简单用例：我的页面与阅读记录
+# 页面数：首页 → 我 → 阅读记录 → 我 → 首页（3-5 页）
+# 功能点：launch / key(back/home) / tap / uitree(clickable 过滤) / readText / screen / wait_idle / locate
+name: S2-我的页面与阅读记录
+steps:
+  - ai: 确认稀土掘金（com.daimajia.gold）在前台，不在则启动它，等待首页稳定
+  - ai: 点击底部Tab「我」，等页面稳定
+  - ai: 用 readText 读取当前登录用户名文本，并截图一张
+  - ai: 用 uitree（过滤 clickable=true）列出当前页面可点元素，确认「阅读记录」入口存在后点击进入
+  - ai: 在阅读记录页等待列表加载，截图一张
+  - ai: 按返回键回到「我」页，再点底部Tab「首页」，等首页稳定
+  - aiAssert: 当前屏幕能看到首页搜索框与信息流内容，前台包名仍为 com.daimajia.gold

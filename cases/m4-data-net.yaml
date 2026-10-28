@@ -1,0 +1,56 @@
+# M4 中等用例（参数族）：网络档位与数据流水线的全参数形态
+# 页面数：首页 → 热榜 → 滚动态 → 沸点 → 课程 → 筛选 → 我 → 首页（约 6-9 页）
+# 功能点：net 步骤命令(4g/off，本机 net 命令不存在 → ok=false 容错路径)
+#         / net_status / data_extract(mode=ui fields from=index + from=text；mode=ai 截图提取)
+#         / data_query(where/orderBy/select/limit 四参数) / data_store(append 与 upsert+key)
+#         / ${var} 运行期插值（已定义变量 → 标记被替换） / aiAssert / assert_no_crash
+name: M4-网络与数据参数巡礼
+steps:
+  # 状态归一化：强停后冷启动，消除上一个用例遗留的页面状态
+  - terminate: com.daimajia.gold
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 20000
+  - ai: 让掘金处于前台首页且无遮挡：若有活动/新人/升级弹窗就关闭；若掘金不在前台或进程已退出（崩溃属已知偶发），就重新启动 com.daimajia.gold（最多重试2次，每次等15秒）；全程不要打开掘金以外的应用。看到「搜索稀土掘金」搜索框可见后停止
+
+  # —— 网络参数：net 步骤命令 + net_status ——
+  - ai: 调用 net_status 记录当前网络档位（原样报告返回）
+  - net: 4g             # 本模拟器无 net 命令：ok=false 属预期，验证容错路径
+  - ai: 再查一次 net_status 并报告；若上一步 net 切档返回 ok=false，把错误信息原样记录，属预期
+  - net: off            # 显式恢复档位参数
+
+  # —— data_extract 双模式参数 ——
+  - aiTap: 热榜
+  - aiWaitFor: 等「热度」出现
+    timeout: 12000
+  - aiQuery: 用 data_extract（mode=ui）提取当前屏热榜条目，fields 里至少包含一个 from=index 的字段（如排名）和一个 from=text 的字段（如标题），尽量带 container；若 index 字段取值不合理，记录实际取值即可
+    name: m4_hot
+  - ai: 用 data_extract（mode=ai）从当前截图提取 {page_theme: string, visible_items: number}（query 参数写清楚），只返回结果不落数据集；若 ai 模式失败，记录错误后继续
+
+  # —— data_query 四参数 + data_store 双动作 ——
+  - ai: 用 data_query 查 m4_hot：orderBy=title、limit=3、select 只取 title，报告返回；再用 where 条件查询一次（如 rank>0 或 title 相关条件；若 where 因字段类型报错，记录错误并改用无 where 查询）
+  - ai: 用 data_store 向数据集 m4_meta 追加一条巡检元数据（action=append，rows=[{tab:hot, status:visited}]）
+  - ai: 用 data_store 把 m4_hot 查询出的前 3 条以 action=upsert、key=title 写入数据集 m4_digest
+
+  # —— ${var} 运行期插值（真实引用已定义变量 m4_hot）——
+  # m4_hot 由上面的 aiQuery(name: m4_hot) 定义；执行器在跑本步前对 text 逐步做 ${m4_hot} 插值。
+  # 插值生效 → 下面占位符被替换为 m4_hot 实际内容；未生效 → 原样残留「美元符+左花括号」。
+  - ai: 运行期插值自检：文本中的占位标记 ${m4_hot} 应在执行前被替换为数据集 m4_hot 的实际内容。请回答两件事：①你收到的文本里是否还残留「美元符号紧跟左花括号」形式的未替换标记；②把该位置替换后的内容前 80 个字符原样摘录出来
+    name: m4_interp_check
+
+  # —— 顺访两个页面补齐页面数 ——
+  - aiTap: 沸点
+  - aiWaitFor: 圈子列表稳定
+  - aiTap: 课程
+  - aiWaitFor: 小册列表稳定
+  - aiTap: 前端
+  - aiWaitFor: 筛选刷新
+  - aiTap: 我
+  - aiWaitFor: 个人页稳定
+  - aiTap: 首页
+  - aiWaitFor: 首页信息流稳定
+    timeout: 12000
+
+  - ai: 依次用 data_query 读取 m4_hot、m4_meta、m4_digest（各 limit=5），把三个条数原样报告
+  - aiAssert: 依据 data_query 返回结果判断：m4_hot 条数≥1、m4_meta 条数≥1、m4_digest 条数≥1；且当前屏幕能看到首页搜索框，前台包名为 com.daimajia.gold
+  - ai: 调用一次 assert_no_crash（expectedPackage=com.daimajia.gold），只输出检查结果

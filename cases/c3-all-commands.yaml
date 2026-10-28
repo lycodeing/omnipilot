@@ -1,0 +1,131 @@
+# C3 复杂用例（参数族）：全部 14 种步骤命令全参数大巡检
+# 页面数：首页 + 6 分类 Tab + 文章详情 + 发现 3 二级页 + 课程 2 筛选 + 沸点 + 圈子
+#         + 我 + 阅读记录 + 搜索页 + 搜索结果 + 强停重启后首页（约 16-18 页）
+# 功能点（每种步骤命令至少一次，关键参数双形态）：
+#   launch(文本+appId 参数双形态) / terminate(文本形态) / aiAct / ai / aiAssert / aiQuery+name
+#   aiWaitFor(timeout) / aiTap / aiInput(value) / aiLongPress(durationMs)
+#   aiKeyboardPress(back/enter/home) / aiScroll(distancePct) / uiDump(缺省路径)
+#   sleep / net 不适用本用例（避免与强停重启叠加）
+#   工具：screen(前台取证) / secret_get+sms_read 不可用路径 / read / assert_no_crash(expectedPackage)
+#   设计沿用 C1 教训：确定性导航走引擎、agent 步骤只做单件事、定位用短文本
+name: C3-全命令全参数巡检
+steps:
+  # 状态归一化：强停后冷启动，消除上一个用例遗留的页面状态
+  # （terminate/launch 双形态在用例后半段另有专项验证，此处为文本形态）
+  - terminate: com.daimajia.gold
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 20000
+  - ai: 让掘金处于前台首页且无遮挡：若有活动/新人/升级弹窗就关闭；若掘金不在前台或进程已退出（崩溃属已知偶发），就重新启动 com.daimajia.gold（最多重试2次，每次等15秒）；全程不要打开掘金以外的应用。看到「搜索稀土掘金」搜索框可见后停止
+
+  # —— 顶部 6 分类纯引擎切换 ——
+  - aiTap: 关注
+  - aiTap: 推荐
+  - aiTap: 热榜
+  - aiTap: 头条精选
+  - aiTap: 后端
+  - aiTap: 前端
+  - aiWaitFor: 等「热门文章榜」出现
+    timeout: 12000
+
+  # —— 热榜 → 详情：aiScroll distancePct + aiLongPress durationMs + uiDump ——
+  - aiTap: 热榜
+  - aiWaitFor: 等「热度」出现
+  - ai: 只做一件事：点开热榜第一篇文章进入详情。不要滚动、不要返回、不要做其他操作；用短文本定位，不要用完整长标题
+  - aiWaitFor: 等「关注」出现
+    timeout: 12000
+  - aiScroll: down
+    distancePct: 100
+  - aiLongPress: 关注
+    durationMs: 600       # 参数通路验证：时长透传 long_press 工具；是否弹菜单都记录
+  - ai: 若长按弹出任何菜单/弹层就按返回关闭，没有则直接继续，不要做其他事
+  - uiDump:
+  - aiKeyboardPress: 返回键
+    keyName: back
+  - aiWaitFor: 等「热榜」出现
+    timeout: 12000
+
+  # —— 发现 3 个二级页 ——
+  - aiTap: 发现
+  - aiWaitFor: 等「文章榜」出现
+  - aiTap: 文章榜
+  - aiWaitFor: 榜单稳定
+  - aiKeyboardPress: 返回键
+    keyName: back
+  - aiTap: 作者榜
+  - aiWaitFor: 榜单稳定
+  - aiKeyboardPress: 返回键
+    keyName: back
+  - aiTap: 专栏
+  - aiWaitFor: 专栏稳定
+  - aiKeyboardPress: 返回键
+    keyName: back
+
+  # —— 课程 2 个筛选 ——
+  - aiTap: 课程
+  - aiWaitFor: 课程列表稳定
+  - aiTap: 前端
+  - aiWaitFor: 筛选刷新
+  - aiTap: Android
+  - aiWaitFor: 筛选刷新
+
+  # —— 沸点 + 圈子 ——
+  - aiTap: 沸点
+  - aiWaitFor: 圈子列表稳定
+  - ai: 点开沸点列表的第一个圈子并等加载完成（只点击，不要返回）
+  - aiWaitFor: 圈子内容稳定
+  - aiKeyboardPress: 返回键
+    keyName: back
+
+  # —— 我 + 阅读记录：read 读取 ——
+  - aiTap: 我
+  - aiWaitFor: 个人页稳定
+  - aiTap: 阅读记录
+  - aiWaitFor: 阅读记录列表稳定
+  - ai: 用 read 以正则包含匹配（如 re:浏览|阅读|看过）读取阅读记录页第一条可见标题；匹配不到就把返回的 error 原样报告，不要重试超过 1 次
+  - aiKeyboardPress: 返回键
+    keyName: back
+  - aiTap: 首页
+  - aiWaitFor: 首页信息流稳定
+    timeout: 12000
+
+  # —— 搜索子流程：aiTap 的 resource-id 形态（与前面纯文本 aiTap 对照）+ aiInput value + enter ——
+  - aiTap: resourceId=com.daimajia.gold:id/ll_search
+  - aiWaitFor: 搜索页稳定
+  - aiInput: id=com.daimajia.gold:id/tv_search
+    value: rust
+  - aiKeyboardPress: 回车键
+    keyName: enter
+  - ai: 确认搜索已触发（未触发就点 text=搜索 按钮），等结果稳定后报告结果条数，然后连续按返回回到首页（最多 3 次）并等首页稳定
+
+  # —— sleep + aiAct 只读检查 ——
+  - sleep: 1
+  - aiAct: 只读检查：用 screen 读取当前前台包名与 Activity 并原样报告；不要点击任何界面元素
+
+  # —— secret/sms 不可用路径 ——
+  - ai: 依次尝试 secret_get(provider=juejin, key=phone) 与 sms_read：预期分别返回 SECRET_UNAVAILABLE 与设备层不支持；原样记录返回，不要重试，也不要因此判定失败
+
+  # —— terminate（文本形态）→ screen 取证前台 → launch（appId 参数形态）——
+  - terminate: com.daimajia.gold
+  - ai: 用 screen 读取当前前台包名并原样报告；强停后前台离开掘金、进程消失属预期，不要调用 assert_no_crash
+  - launch:
+    appId: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 15000
+
+  # —— home 键 + 再次冷启动（文本形态）——
+  - aiKeyboardPress: 主屏幕键
+    keyName: home
+  - sleep: 1
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 15000
+  - ai: 确认掘金已回到前台且能看到首页搜索框；若掘金不在前台或进程已退出（冷启动崩溃属已知偶发），重新启动 com.daimajia.gold（最多重试2次，每次等15秒），直到首页搜索框可见
+
+  # —— 收尾：提取（aiQuery 无 name 形态：只问答不落库） + 落库 + 断言 + 崩溃检查 ——
+  - aiQuery: 只读问答（不落库）：当前屏幕顶部的分类条里能看到哪几个分类名称？用一行列出
+  - aiQuery: 用 data_extract（mode=ui）提取当前屏幕的页面主题与可见条目数
+    name: c3_summary
+  - ai: 用 data_query 读取数据集 c3_summary（limit=5），把条数原样报告
+  - aiAssert: 依据 data_query 返回结果与当前屏幕判断：数据集 c3_summary 条数≥1，且当前屏幕能看到首页搜索框、前台包名为 com.daimajia.gold
+  - ai: 调用 assert_no_crash（expectedPackage=com.daimajia.gold）做收尾检查，只输出检查结果

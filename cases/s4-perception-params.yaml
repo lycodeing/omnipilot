@@ -1,0 +1,35 @@
+# S4 简单用例（参数族）：感知与读取工具的参数形态
+# 页面数：首页 → 热榜 → 首页（3-4 页）
+# 功能点：screen(截图+前台+分辨率) / uitree(clickable 过滤对照) / locate(策略与 bounds)
+#         / readText(selector=text= 与 selector=index= 两种形态) / screen_diff(树哈希)
+#         / wait_idle(timeoutMs) / ui_dump(落盘取证) / aiQuery+name(落库) / aiAssert
+name: S4-感知与读取参数巡礼
+steps:
+  # 状态归一化：强停后冷启动，消除上一个用例遗留的页面状态
+  - terminate: com.daimajia.gold
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 20000
+  - ai: 让掘金处于前台首页且无遮挡：若有活动/新人/升级弹窗就关闭；若掘金不在前台或进程已退出（崩溃属已知偶发），就重新启动 com.daimajia.gold（最多重试2次，每次等15秒）；全程不要打开掘金以外的应用。看到「搜索稀土掘金」搜索框可见后停止
+
+  # —— 感知参数：screen / uitree clickable 过滤 / locate ——
+  - ai: 用 screen 截图一张，报告前台包名、Activity 与屏幕分辨率（只要这三个事实）
+  - ai: 用 uitree（clickable=true 过滤）统计当前页可点元素个数；再用不过滤的 uitree 统计节点总数，两个数字都报告
+  - ai: 用 locate 定位「热榜」，报告它的 bounds 与命中策略 strategy
+
+  # —— 进入热榜后测读取参数 ——
+  - aiTap: 热榜
+  - aiWaitFor: 等「热度」出现
+    timeout: 12000
+  - ai: 用 read（readText）以 selector=text=热度 读一次文本；再以 selector=index=0 读当前树第 1 个节点的文本，两次读取结果都报告
+  - ai: 用 screen_diff 取当前 UI 树哈希，报告它与首页时不同（把当前哈希值记下来即可，不用截图）
+  - ai: 用 wait_idle（timeoutMs=8000）等一次画面稳定，报告 stable 结果
+  - ai: 用 ui_dump 把当前 UI 树落盘取证，报告落盘文件路径
+
+  # —— 数据提取落库 + 断言 ——
+  - aiQuery: 用 data_extract（mode=ui）提取当前屏幕热榜条目的排名与标题
+    name: s4_hot_top
+  - ai: 用 data_query 读取数据集 s4_hot_top（limit=5），把条数与首条 title 原样报告
+  - aiAssert: 依据 data_query 返回结果判断：数据集 s4_hot_top 条数≥1 且其记录含非空 title 字段
+  - aiKeyboardPress: 返回键
+    keyName: back

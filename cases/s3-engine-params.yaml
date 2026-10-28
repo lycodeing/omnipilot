@@ -1,0 +1,43 @@
+# S3 简单用例（参数族）：引擎直执行步骤的全参数形态
+# 页面数：首页 → 热榜 → 滚动中多态 → 回顶 → 首页（3-5 页）
+# 功能点（步骤命令参数全覆盖）：
+#   launch(文本形态) / aiWaitFor(timeout 参数 + 「」选择器解析) / aiTap
+#   aiScroll × 4 形态（direction+distancePct / until:edge / direction:up+until:top / max）
+#   sleep(seconds) / aiKeyboardPress(keyName: back) / aiAssert / ai→assert_no_crash(expectedPackage)
+name: S3-引擎直执行参数巡礼
+steps:
+  # 状态归一化：强停后冷启动，消除上一个用例遗留的页面状态（搜索页/详情页等）
+  - terminate: com.daimajia.gold
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现
+    timeout: 20000
+  - ai: 让掘金处于前台首页且无遮挡：若有活动/新人/升级弹窗就关闭；若掘金不在前台或进程已退出（崩溃属已知偶发），就重新启动 com.daimajia.gold（最多重试2次，每次等15秒）；全程不要打开掘金以外的应用。看到「搜索稀土掘金」搜索框可见后停止
+  - aiTap: 热榜
+  - aiWaitFor: 等「热度」出现
+    timeout: 12000
+
+  # —— aiScroll 四种参数形态 ——
+  - aiScroll: down
+    distancePct: 50
+  - aiScroll: down
+    distancePct: 100
+  - aiScroll: down
+    until: edge          # 滚到列表底部边界即停
+  - aiScroll:
+    direction: up
+    until: top           # 回到顶部
+    max: 8
+  - aiScroll: down
+    max: 1               # 只滚一屏（max 次数上限参数）
+
+  # —— sleep 步骤命令（seconds 参数）——
+  - sleep: 2
+
+  # —— aiKeyboardPress 的 keyName 参数 ——
+  - aiKeyboardPress: 返回键
+    keyName: back
+  - aiWaitFor: 首页信息流稳定
+    timeout: 12000
+
+  - aiAssert: 当前屏幕能看到首页搜索框与信息流内容，且前台包名为 com.daimajia.gold
+  - ai: 调用一次 assert_no_crash（expectedPackage=com.daimajia.gold），只输出检查结果，不要做其他操作

@@ -1,0 +1,101 @@
+# C1 复杂用例：全站大巡检（引擎直执行版）
+# 页面数：首页 + 6个分类Tab + 文章详情 + 发现3个二级页 + 课程2个筛选
+#         + 沸点 + 圈子 + 我 + 阅读记录（约 12-18 页）
+#
+# 设计说明（§14 性能优化）：本用例把"确定性导航"全部写成引擎直执行步骤
+# （aiTap / aiScroll / aiKeyboardPress / launch），**0 轮模型往返**；
+# 仅 aiAssert / aiQuery / ai: 需要模型判断的步骤才调 LLM。
+# 对比改造前（1 个 ai: 里塞 6 次点击 → 104 轮往返、50 分钟）：预计降到 3-5 分钟。
+name: C1-全站大巡检
+steps:
+  - launch: com.daimajia.gold
+  - aiWaitFor: 等「搜索稀土掘金」出现   # 首页的标志性元素
+    timeout: 12000
+
+  # —— 顶部 6 个分类依次切换（纯引擎；tab 栏始终可见，切换后无需等列表，
+  #     因为下一个 aiTap 点的仍是 tab 本身——省 6 次 aiWaitFor，每次约 5.8s）——
+  - aiTap: 关注
+  - aiTap: 推荐
+  - aiTap: 热榜
+  - aiTap: 头条精选
+  - aiTap: 后端
+  - aiTap: 前端
+  # 六个分类切完只等一次稳定
+  - aiWaitFor: 等「热门文章榜」出现    # 热榜分类的标志
+    timeout: 12000
+    timeout: 12000
+
+  # —— 热榜 → 文章详情 → 滚动两屏 → 取证 → 返回 ——
+  - aiTap: 热榜
+  - aiWaitFor: 等「热度」出现
+  # 交给 agent 做"点开第一条"（需要看画面判断），但约束动作范围，
+  # 否则它自带 scroll/back 会与后续显式步骤叠加，导致 tab 栏滚出视野、后续 aiTap 全部 LOCATE_MISS。
+  # 另：提醒用**短定位词**（完整长标题文本易定位失败，实测过）。
+  - ai: 只做一件事：点开热榜列表的第一篇文章进入详情页。不要滚动、不要按返回、不要做其他任何操作。点卡片时用短文本或 resourceId 定位，不要用完整长标题。
+  - aiWaitFor: 等「关注」出现      # 详情页头部按钮
+    timeout: 12000
+  - aiScroll: down
+    distancePct: 100
+  - aiScroll: down
+    distancePct: 100
+  # 取证用引擎直执行（原写成 ai: 让模型自己干，它额外按了 back，与下一步显式 back 叠加退出过头）
+  - uiDump:
+  - aiKeyboardPress: 返回
+    keyName: back
+  - aiWaitFor: 等「热榜」出现
+
+  # —— 发现：文章榜 / 作者榜 / 专栏 ——
+  - aiTap: 发现
+  - aiWaitFor: 等「文章榜」出现
+  - aiTap: 文章榜
+  - aiWaitFor: 等「文章」出现
+  - aiKeyboardPress: 返回
+    keyName: back
+  - aiTap: 作者榜
+  - aiWaitFor: 榜单稳定
+  - aiKeyboardPress: 返回
+    keyName: back
+  - aiTap: 专栏
+  - aiWaitFor: 专栏稳定
+  - aiKeyboardPress: 返回
+    keyName: back
+
+  # —— 课程：两个分类筛选 ——
+  - aiTap: 课程
+  - aiWaitFor: 课程列表稳定
+  - aiTap: 前端
+  - aiWaitFor: 筛选刷新
+  - aiTap: Android
+  - aiWaitFor: 筛选刷新
+
+  # —— 沸点：进第一个圈子（分开写，避免 agent 自行"返回"导致与下一步叠加）——
+  - aiTap: 沸点
+  - aiWaitFor: 圈子列表稳定
+  - ai: 点开沸点列表的第一个圈子并等加载完成（只点击，不要按返回）
+  - aiWaitFor: 圈子内容稳定
+  - aiKeyboardPress: 返回
+    keyName: back
+
+  # —— 我：阅读记录 ——
+  - aiTap: 我
+  - aiWaitFor: 个人页稳定
+  - aiTap: 阅读记录
+  - aiWaitFor: 阅读记录列表稳定
+
+  # —— 回首页 ——
+  - aiKeyboardPress: 返回
+    keyName: back
+  - aiTap: 首页
+  - aiWaitFor: 首页稳定
+    timeout: 12000
+
+  # —— 数据提取（需模型判断，保留 ai:）——
+  # —— 数据提取（用 ui 模式：确定性、零模型调用；AI 模式实测要 9.5s）——
+  - aiQuery: 用 data_extract（mode=ui）提取当前屏幕的页面主题与可见条目数
+    name: c1_screen_summary
+
+  # —— 断言 ——
+  - aiAssert: 当前屏幕能看到首页搜索框，且前台包名为 com.daimajia.gold
+
+  # 收尾：崩溃检查走引擎直执行（原来的 ai: 要求模型"列出页面清单"，实测常无输出导致误判）
+  - ai: 调用 assert_no_crash 做一次收尾检查即可，不要输出额外内容

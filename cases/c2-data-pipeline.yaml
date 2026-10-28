@@ -1,0 +1,20 @@
+# C2 复杂用例：搜索采集与数据流水线
+# 页面数：首页 → 搜索×2 → 结果×2 → 热榜 → collection 滚动多屏 → 文章详情
+#         → terminate/重启 → 首页（约 12-16 页）
+# 功能点：data_extract(ui×2 + collection 主键去重) / data_query(orderBy/limit)
+#         / data_store(upsert) / terminate / launch / processAlive / secret_get(不可用路径)
+#         / sms_read(不可用路径) / ${var} 插值 / input / tap / key
+name: C2-搜索采集与数据流水线
+steps:
+  - ai: 启动稀土掘金（com.daimajia.gold）并等首页稳定
+  - ai: 进搜索页输入「Android」点搜索，等结果稳定
+  - ai: 用 data_extract（mode=ui）提取结果标题与作者，存为数据集 search_android
+  - ai: 返回首页，再次进搜索页输入「前端挖掘机」点搜索，等结果稳定（若无结果，记录空态文案即可）
+  - ai: 用 data_extract（mode=ui）提取结果标题，存为数据集 search_fe
+  - ai: 返回首页进「热榜」，用 data_extract（mode=collection，主键用 title 字段，最多滚动5屏）边滚边抽热榜条目，存为数据集 hot_all（提示：若每屏只采到1条，说明容器粒度过大，可改为不传容器、每屏多次按条目文本逐条提取，或对当前屏连续采集后再滚动）
+  - ai: 点开热榜第一条文章详情，向下滚动一次，用 readText 读取正文标题，截图后返回
+  - ai: 用 data_query 查询 hot_all 按 title 排序取前5条，把查询结果用 data_store 以 upsert 方式写入数据集 juejin_digest（主键 title）
+  - ai: 强制停止稀土掘金（terminate），用 processAlive 确认进程已不在（注意：此期间不要调用 assert_no_crash——terminate 后前台离开App、进程消失属预期状态而非崩溃），再重新 launch 并等首页稳定
+  - ai: 尝试 secret_get（provider=juejin, key=phone）：未配置凭据时应返回 SECRET_UNAVAILABLE 而不是崩溃；再尝试一次 sms_read，设备层不支持也属预期，记录返回即可
+  - aiAssert: 数据集 search_android 至少3条；数据集 hot_all 至少3条；数据集 juejin_digest 能查询出数据；重启后前台为 com.daimajia.gold 且屏幕能看到首页内容
+  - ai: 变量插值机制演示：原样说出你在这条指令里看到的标记 ${hot_all} # ask-lint: allow undefined-var 变量由 data_extract 运行期写入，验证插值链路
