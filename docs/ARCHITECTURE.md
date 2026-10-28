@@ -134,7 +134,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-  subgraph KIT["android-scene-kit（本仓库）"]
+  subgraph KIT["OmniScene（本仓库，曾用名 android-scene-kit）"]
     A["session/model.js<br/>registerProvider(baseUrl, apiKey, models)"]
     B["session/create.js<br/>createAgentSession(customTools)"]
     C["tools/ai.js<br/>createChatClient（小模型，注入式）"]

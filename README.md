@@ -1,11 +1,13 @@
-# android-scene-kit
+# OmniScene
 
-安卓场景测试 agent：Pi coding-agent 循环 + 全自研 adb 设备层 + MCP 桥。
-用自然语言或 YAML 用例驱动 Android App，逐步落 run.json 报告（含截图、定位策略、断言、网络时间线）。
+跨端场景测试 agent：Pi coding-agent 循环 + 可插拔设备层 + MCP 桥。
+用自然语言或 YAML 用例驱动 App / 网页 / 桌面程序，逐步落 run.json 报告（含截图、定位策略、断言、网络时间线）。
 
+- 定位：**一套用例 DSL + agent 循环 + 报告流水线，跨 Android / iOS / Web / 桌面端**。平台差异只隔离在设备层适配器（契约 §1.1），当前已落地 Android（adb）适配器
 - 环境：Node 24（ESM）
 - 依赖：`@earendil-works/pi-coding-agent`、`@modelcontextprotocol/sdk`（其余为 Node 内置）
 - 文档：[docs/DESIGN.md](./docs/DESIGN.md) 设计稿 · [docs/CONTRACT-CORE.md](./docs/CONTRACT-CORE.md) 开发契约 · [docs/VERIFICATION-REPORT.md](./docs/VERIFICATION-REPORT.md) 真机验证报告
+- 曾用名：`android-scene-kit`（2026-10-28 起更名 OmniScene，历史验证报告保留旧名）
 
 ## 快速上手
 
@@ -28,6 +30,28 @@ node bin/ask.js ask "现在屏幕上是什么页面？"
 node bin/ask.js do "打开掘金看看热榜前3名，把标题存到数据集 hotlist"
 node bin/ask.js run cases/s1-hotlist.yaml --yes
 ```
+
+## 远程设备（adb over TCP）
+
+设备不必插在本机。adb 原生支持 TCP 连接，OmniScene 的 `--device <serial>` 直接吃 `host:port` 序列号：
+
+```bash
+# 1. 设备侧开启 TCP（一次性；5555 为常用端口）
+adb -s <usb序列号> tcpip 5555
+
+# 2. 控制机连接（可跨网段，需网络可达）
+adb connect 192.168.1.50:5555
+
+# 3. 用 TCP 序列号跑用例（锁、facts、报告均按该 serial 记账）
+node bin/ask.js run cases/s3-engine-params.yaml --yes --device 192.168.1.50:5555
+```
+
+要点：
+
+- **断连自愈**：设备层对 `device offline / connection reset` 等错误自动 `adb connect` 重连一次后重试（`src/device/adb.js` 的 `reconnect()` 对含 `:` 的序列号走 connect 分支）。
+- **多机并发**：`--parallel N --devices a:5555,b:5556` 把用例轮转分给多台远程设备；设备独占锁按 serial 全局互斥（`.ask/locks/`）。
+- **云真机/农场**：任何暴露 adb TCP 的设备池（云真机、CI 设备农场）都可作为 serial 源接入，用例与报告层零改动。
+- 延迟提示：TCP 通道比 USB 多一次网络往返，screencap/dump 的大载荷传输受带宽影响；弱网环境建议给 `--timeout` 留余量。
 
 ## 运行时产物与源码分离
 
@@ -106,3 +130,22 @@ npm run docs:check    # 校验 DESIGN.md 的 mermaid 图表可渲染
 
 系统提示词 L2 层的分辨率/型号/Android 版本/net 命令支持一律**运行期读取**（`src/cli/device-facts.js`），
 不写死具体设备；采集失败降级为查询提示。详见 [docs/VERIFICATION-REPORT.md](./docs/VERIFICATION-REPORT.md) §9.1。
+
+## 多平台支持（路线图）
+
+OmniScene 的平台无关资产是**用例 DSL + agent 循环 + 报告流水线**；平台差异全部隔离在设备层适配器
+（契约 §1.1 的 `createDevice` 门面：screencap / dumpTree / locate / tap / input / key / launch / …）。
+新增一个平台 = 实现一个适配器，用例与报告零改动。
+
+| 平台 | 适配器（规划） | 感知通道 | 操作通道 | 状态 |
+|---|---|---|---|---|
+| Android | adb（本机 USB / 远程 TCP） | `exec-out screencap` + `uiautomator dump` | `input tap/swipe/text`、`am`/`monkey` | ✅ 已落地（本仓库全部验证基于此） |
+| Web | CDP / Playwright | 页面截图 + DOM/a11y 树 | `Page.dispatchMouseEvent`、`Input.insertText` | 规划中 |
+| iOS | WebDriverAgent / Appium | XCUITest 截图 + 元素树 | W3C Actions | 规划中 |
+| 桌面（Win/macOS/Linux） | UIA / AXAPI / AT-SPI（经 MCP 或本地桥） | 屏幕截图 + 控件树 | 键鼠事件注入 | 规划中 |
+
+设计约束（保证可移植性）：
+
+- 用例步骤命令（`aiTap`/`aiScroll`/`aiInput`/…）与定位 selector 语法（`text=`/`id=`/`class=`/`re:`）不携带平台语义；
+- 坐标一律由设备层按当平台分辨率换算，用例不写像素（lint 规则 `pixel-coords` 强制）；
+- 报告 run.json 形状（§14.1）与数据集（§14.2）平台无关，跨端结果可直接对比。
