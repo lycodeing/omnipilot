@@ -37,12 +37,10 @@ export async function assertNoCrash(adb, expectedPackage, { timeoutMs } = {}) {
       .catch(() => '');
     // 输出为两段拼接：dumpsys 的匹配行（可能为空）+ pidof 的 pid 行（可能为空）
     const lines = String(out).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    // 与 parseResumedActivity 同款行筛选：优先冒号形态（mResumedActivity:），
-    // topResumedActivity= 是等号形态、parse 不认；旧实现传整段输出由 parse 内部跳行，
-    // 合并后必须显式选对行，否则前台解析为 null（曾致 assert_no_crash 误报"前台已离开"）
-    const resumedLine = lines.find((l) => /resumedactivity\s*:/i.test(l))
-      ?? lines.find((l) => /resumedactivity/i.test(l))
-      ?? '';
+    // 只选冒号形态（mResumedActivity:）——与 parseResumedActivity 的识别口径一致。
+    // 等号形态（topResumedActivity=）parse 不认；合并前旧实现传整段输出时 parse 同样
+    // 跳过等号行，故不做等号回落（回落只会给人"能解析等号形态"的错觉，行为无差异）。
+    const resumedLine = lines.find((l) => /resumedactivity\s*:/i.test(l)) ?? '';
     const pidLine = lines.find((l) => /^\d+(\s+\d+)*$/.test(l)) ?? '';
     fg = parseResumedActivity(resumedLine) ?? { package: null, activity: null, resumedActivity: null };
     alive = /\d+/.test(pidLine);

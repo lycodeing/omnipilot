@@ -56,6 +56,27 @@ function fail(msg, code = 2) {
   process.exit(code);
 }
 
+// --vlm-locate 的视觉定位函数工厂（runOne / cmdAsk 共用）。
+// 坐标约定用 model family 的 describeForPrompt 描述，返回交给 locate 的 toPixels 解析；
+// 截图先经 compressForContext 降采样（全尺寸 PNG base64 ~570KB/次太贵，终审 Minor #7）。
+async function buildVlmLocate(ctx, modelCfg) {
+  const { resolveStrategy } = await import('../src/device/coord/registry.js');
+  const { compressForContext } = await import('../src/image/png.js');
+  const cs = resolveStrategy(modelCfg.family);
+  return async ({ png, target, instruction }) => {
+    let img = { data: png.toString('base64'), mimeType: 'image/png' };
+    try {
+      const c = await compressForContext(png, { maxWidth: 720, quality: 70 });
+      img = { data: c.buffer.toString('base64'), mimeType: c.mimeType };
+    } catch { /* 压缩失败用原图 */ }
+    const fmt = cs?.describeForPrompt?.() || 'Return coordinates normalized to 0-1000.';
+    const raw = await ctx.chat(
+      `Locate the UI element described as: ${target}. ${instruction || ''} ${fmt} Reply with ONLY the numbers.`,
+      { images: [img] },
+    );
+    return { raw, family: modelCfg.family };
+  };
+}
 const usage = `ask — 安卓场景测试 agent
 
 用法: ask <command> [args] [flags]
@@ -328,20 +349,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       ctx.chat = createChatClient({ url: modelCfg.url, key: modelCfg.key, model: modelCfg.name });
       // --vlm-locate：把 chat 客户端包装成视觉定位函数注入 locate 策略链第 5 环（§5.1）。
       // 旧实现该 flag 只被读去做统计、vlm 从未接线（定位失败无视觉兜底）。
-      // 坐标约定用 model family 的 describeForPrompt 描述，返回交给 toPixels 解析。
-      if (opts.vlmLocate) {
-        const { resolveStrategy } = await import('../src/device/coord/registry.js');
-        const cs = resolveStrategy(modelCfg.family);
-        ctx.vlm = async ({ png, target, instruction }) => {
-          const b64 = png.toString('base64');
-          const fmt = cs?.describeForPrompt?.() || 'Return coordinates normalized to 0-1000.';
-          const raw = await ctx.chat(
-            `Locate the UI element described as: ${target}. ${instruction || ''} ${fmt} Reply with ONLY the numbers.`,
-            { images: [{ data: b64, mimeType: 'image/png' }] },
-          );
-          return { raw, family: modelCfg.family };
-        };
-      }
+      if (opts.vlmLocate) ctx.vlm = await buildVlmLocate(ctx, modelCfg);
     } else {
       console.warn('未配置 ASK_MODEL_*，将以无模型模式执行（仅日志回放/干跑）');
     }
@@ -570,7 +578,7 @@ async function cmdAsk({ positional, flags }) {
   try { device = await createDevice({ serial, probeFile: WORKSPACE.probeFile }); } catch (e) { fail(`设备连接失败（${serial}）：${e.message}`); }
   try {
     const store = openDataset({ dataDir: WORKSPACE.datasetDir });
-    ctx = createRunContext({ device, recorder: null, store, opts: { yes: true, timeoutMs: Number(flags.timeout || 60) * 1000 } }); ctx.stateDir = WORKSPACE.stateDir;
+    ctx = createRunContext({ device, recorder: null, store, opts: { yes: true, timeoutMs: Number(flags.timeout || 60) * 1000, vlmLocate: !!flags['vlm-locate'] } }); ctx.stateDir = WORKSPACE.stateDir;
     const modelCfg = resolveModelConfig(flags);
     let model = null;
     let modelRuntime = null;
@@ -578,6 +586,12 @@ async function cmdAsk({ positional, flags }) {
       const built = await createModel(modelCfg);
       model = built.model;
       modelRuntime = built.modelRuntime;
+      // ask 的只读白名单含 locate：--vlm-locate 时同样接视觉兜底（与 run 一致，终审 Minor #5）
+      if (ctx.opts.vlmLocate) {
+        const { createChatClient } = await import('../src/tools/ai.js');
+        ctx.chat = createChatClient({ url: modelCfg.url, key: modelCfg.key, model: modelCfg.name });
+        ctx.vlm = await buildVlmLocate(ctx, modelCfg);
+      }
     } else {
       fail('ask 命令需要模型（ASK_MODEL_*），用于回答问题');
     }

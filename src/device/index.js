@@ -104,7 +104,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       const hit = cache.peek();
       if (hit) {
         cache.recordHit();
-        return { nodes: hit.nodes, hash: hit.hash, dumpMs: 0, fromCache: true };
+        // cachedAt：缓存条目生成时刻，供调用方做新鲜度判定（popup 前台派生用）
+        return { nodes: hit.nodes, hash: hit.hash, dumpMs: 0, fromCache: true, cachedAt: hit.ts };
       }
     }
     cache.recordMiss();
@@ -344,13 +345,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       // 首轮吃缓存（性能）：若调用前 4s 内刚 dump 过且无动作置脏，目标可能已在树上，
       // 白付一次 2.2s fresh dump 不值得；未命中再进入 fresh 轮询循环（语义不变）。
       let dumps = 0;
+      const t0 = Date.now(); // 计时覆盖全程（含首轮 cacheable dump），守住 timeoutMs 契约
       try {
         const cachedTree = await dumpTree(); // cacheable
         dumps++;
         const m = matchSelector(flattenNodes(cachedTree.nodes), sel);
         if (m?.node) return { appeared: true, dumps, matched: m.value || sel };
       } catch { /* 缓存不可用 → 进入 fresh 循环 */ }
-      const t0 = Date.now();
       let failStreak = 0;
       while (Date.now() - t0 < timeoutMs) {
         let flat = [];
@@ -375,6 +376,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       if (!sels.length) return { appeared: false, dumps: 0, matched: null, error: 'selectors 为空' };
       // 首轮吃缓存（同 waitForElement）
       let dumps = 0;
+      const t0 = Date.now(); // 计时覆盖全程（含首轮 cacheable dump）
       try {
         const cachedTree = await dumpTree();
         dumps++;
@@ -384,7 +386,6 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           if (m?.node) return { appeared: true, dumps, matched: `${sel} → ${m.value || ''}` };
         }
       } catch { /* 缓存不可用 → fresh 循环 */ }
-      const t0 = Date.now();
       let failStreak = 0;
       while (Date.now() - t0 < timeoutMs) {
         let flat = [];

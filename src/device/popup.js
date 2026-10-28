@@ -43,6 +43,9 @@ function hasAllowText(nodes, texts) {
 // 按 device 分键（WeakMap）：--parallel 多设备并发时互不串用。
 const negCacheByDevice = new WeakMap();
 const NEG_TTL_MS = 1000;
+// 树派生前台的新鲜度上限（终审 Important #1）：缓存树超过此龄不用来判前台，
+// 回落 dumpsys，避免 4s 树 TTL 窗口内新弹系统弹窗被漏检一次。
+const MAX_TREE_STALE_MS = 1000;
 
 export async function detectDialog(device) {
   const now = Date.now();
@@ -54,15 +57,19 @@ export async function detectDialog(device) {
   // 优先从 UI 树派生前台包（根节点 package= 即前台应用，uitree 已保留 pkg 字段）：
   // 写动作路径上 detectDialog 之后 locate 必然要 dump 同一棵树（缓存命中），
   // 故先 dump 不浪费；省掉旧实现每次写动作前的一次 dumpsys 往返（~0.3-0.5s）。
+  // 新鲜度上限（终审 Important #1）：缓存树超过 MAX_TREE_STALE_MS 时不用它派生前台
+  // （否则 4s TTL 窗口内新弹的系统弹窗会被漏检一次）——回落实时 foreground()。
   let fg = null;
   let tree = null;
   try {
     tree = await device.dumpTree();
     const rootPkg = tree?.nodes?.[0]?.pkg || null;
-    if (rootPkg) fg = { package: rootPkg, activity: null, resumedActivity: null };
+    const freshEnough = !tree?.fromCache || (Date.now() - (tree.cachedAt ?? 0)) <= MAX_TREE_STALE_MS;
+    if (rootPkg && freshEnough) fg = { package: rootPkg, activity: null, resumedActivity: null };
   } catch { /* 树不可用 → 回落 dumpsys */ }
   if (!fg) {
     fg = await device.foreground().catch(() => null);
+    tree = null; // 前台来自 dumpsys：树与前台不同源，treeScan 需重新取树
   }
   if (isSystemDialogForeground(fg)) {
     return { detected: true, reason: 'foreground-is-system-dialog', pkg: fg.package };
