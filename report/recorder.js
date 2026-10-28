@@ -1,5 +1,6 @@
 // 报告生成端（CONTRACT §5.1）：run.json → dump（§19.5 映射）→ 标签注入壳 → 单文件/assets 双产物。
-// 增量 append 期间直接写文件（任务跑一半可打开看）；finalize 按组去重保最新后 tmp+rename 原子发布（§19.8.6.5）。
+// 增量 append 期间直接追加写文件（任务跑一半可打开看，<script> 在 </body> 之后浏览器仍归入 body）；
+// finalize 一次性把全部标签规范化到 </body> 前，按组去重保最新后 tmp+rename 原子发布（§19.8.6.5）。
 
 import fsSync from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -40,7 +41,7 @@ function attrEscape(v) {
   return String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-// 所有标签统一插在 </body> 前；无 </body> 的壳则追加在末尾
+// 所有标签统一插在 </body> 前（finalize 一次性规范化）；无 </body> 的壳则追加在末尾
 function insertBeforeBody(html, tag) {
   const idx = html.lastIndexOf('</body>');
   if (idx === -1) return `${html}\n${tag}`;
@@ -185,31 +186,48 @@ export class ReportWriter {
     this.mode = mode === 'directory' ? 'directory' : 'single-html';
     this.baseDir = path.resolve(baseDir ?? path.dirname(this.outPath));
     this._shell = typeof shell === 'string' ? shell : loadShell(null);
+    // 批量路径（writeReport）置为数组：标签只攒内存、finalize 一次写盘；增量路径保持 null
+    this._batch = null;
+    // 增量路径首写标记：undefined=未定，true=壳已落/文件已存在，直接尾追加
+    this._tailStarted = undefined;
     fsSync.mkdirSync(this.baseDir, { recursive: true });
     if (this.mode === 'directory') {
       fsSync.mkdirSync(path.join(this.baseDir, 'screenshots'), { recursive: true });
     }
   }
 
-  // screenshots 值按模式规范化：directory → 相对路径；single-html → 空串占位
+  // screenshots 值按模式规范化：directory → 相对路径；single-html → 空串占位。
+  // 浅拷 + 只重建 screenshots 一个 map，其余字段共享引用（序列化即刻发生，无污染风险）
   _prepareDump(dump) {
-    const d = JSON.parse(JSON.stringify(dump ?? {}));
-    if (d.screenshots && typeof d.screenshots === 'object' && !Array.isArray(d.screenshots)) {
-      for (const id of Object.keys(d.screenshots)) {
-        d.screenshots[id] = this.mode === 'directory' ? `./screenshots/${id}.png` : '';
+    const d = { ...(dump ?? {}) };
+    const shots = d.screenshots;
+    if (shots && typeof shots === 'object' && !Array.isArray(shots)) {
+      const normalized = {};
+      for (const id of Object.keys(shots)) {
+        normalized[id] = this.mode === 'directory' ? `./screenshots/${id}.png` : '';
       }
+      d.screenshots = normalized;
     }
     return d;
   }
 
+  // 批量路径攒内存；增量路径 O(1) 尾追加：首次落壳（或沿用已存在文件），之后纯 appendFile。
+  // 标签暂落 </body> 之后（浏览器仍归入 body，querySelectorAll 不受影响），
+  // "插在 </body> 前"的规范化由 finalize 一次性完成——避免每标签全量读改写（O(N²) IO）。
   async _appendTag(tag) {
-    let content;
-    try {
-      content = await fsp.readFile(this.outPath, 'utf8');
-    } catch {
-      content = this._shell;
+    if (this._batch) {
+      this._batch.push(tag);
+      return;
     }
-    await fsp.writeFile(this.outPath, insertBeforeBody(content, tag));
+    if (this._tailStarted === undefined) {
+      this._tailStarted = true;
+      try {
+        await fsp.access(this.outPath);
+      } catch {
+        await fsp.writeFile(this.outPath, `${this._shell}\n`);
+      }
+    }
+    await fsp.appendFile(this.outPath, `${tag}\n`);
   }
 
   // 同 group 重复 append 允许，读侧/finalize 去重保最新
@@ -230,13 +248,19 @@ export class ReportWriter {
     await this._appendTag(makeImageTag(id, toDataURL(data)));
   }
 
-  // 原子发布：读现文件 → 按 group/data-id 去重保最新合并 → 全量写 <outPath>.tmp → rename
+  // 原子发布：读现文件一次 → 按 group/data-id 去重保最新合并 → 规范化插回 </body> 前 → 全量写 <outPath>.tmp → rename。
+  // dump 是刚 parse 出的私有对象：原地改 screenshots 后直接 stringify，免深拷贝；
+  // 图片只存 [start,end) 偏移、拼 doc 时 slice，避免整段 base64 在 Map 里二次驻留。
   async finalize() {
     let content = '';
-    try {
-      content = await fsp.readFile(this.outPath, 'utf8');
-    } catch {
-      // 首次 finalize 且无增量写入：仅发布壳
+    if (this._batch != null) {
+      content = this._batch.length ? this._batch.join('\n') : '';
+    } else {
+      try {
+        content = await fsp.readFile(this.outPath, 'utf8');
+      } catch {
+        // 首次 finalize 且无增量写入：仅发布壳
+      }
     }
     const dumps = new Map();
     for (const m of content.matchAll(DUMP_TAG_RE)) {
@@ -250,21 +274,35 @@ export class ReportWriter {
     const images = new Map();
     for (const m of content.matchAll(IMAGE_TAG_RE)) {
       const iid = attrVal(m[1], 'data-id');
-      if (iid != null) images.set(iid, m[2]);
+      // 只记偏移：payload 即 m[2]，在全文中的区间 = [matchEnd - payload - 闭合长度, matchEnd - 闭合长度)
+      if (iid != null) {
+        const end = m.index + m[0].length - '</script>'.length;
+        images.set(iid, [end - m[2].length, end]);
+      }
     }
     const tags = [];
     for (const [gid, dump] of dumps) {
-      const d = this._prepareDump(dump);
+      // 原地规范化 screenshots（浅拷重建这一个 map），不动其余字段、不深拷贝
+      const shots = dump.screenshots;
+      if (shots && typeof shots === 'object' && !Array.isArray(shots)) {
+        const normalized = {};
+        for (const id of Object.keys(shots)) {
+          normalized[id] = this.mode === 'directory' ? `./screenshots/${id}.png` : '';
+        }
+        dump.screenshots = normalized;
+      }
       const extra = this.mode === 'directory' ? ' data-screenshot-mode="directory"' : '';
-      const json = JSON.stringify(d).replace(/<\//g, '<\\/');
+      const json = JSON.stringify(dump).replace(/<\//g, '<\\/');
       tags.push(`<script type="${DUMP_TAG_TYPE}" data-group-id="${attrEscape(gid)}"${extra}>${json}</script>`);
     }
-    for (const [iid, src] of images) tags.push(makeImageTag(iid, src));
+    for (const [iid, [start, end]] of images) tags.push(makeImageTag(iid, content.slice(start, end)));
     let doc = insertBeforeBody(this._shell, tags.map((t) => `${t}\n`).join(''));
     if (this.mode === 'directory') doc = ensureBaseTag(doc);
     const tmp = `${this.outPath}.tmp`;
     await fsp.writeFile(tmp, doc);
     await fsp.rename(tmp, this.outPath);
+    this._batch = null;
+    this._tailStarted = undefined;
   }
 }
 
@@ -329,6 +367,7 @@ function resolveScreenshotFile(rel, outPath, { runDir } = {}) {
 export async function writeReport(runJson, { outPath, mode = 'single-html', shell, groupName, runDir } = {}) {
   if (!outPath) throw new Error('writeReport 需要 outPath');
   const writer = new ReportWriter({ outPath, shell, mode });
+  writer._batch = []; // 一次性批量路径：标签攒内存，finalize 只写一次文件
   const run = runJson ?? {};
   const screenshotIds = {};
   for (const step of run.steps ?? []) {
@@ -337,9 +376,11 @@ export async function writeReport(runJson, { outPath, mode = 'single-html', shel
   const dump = redactDump(buildDump(run, { groupName, screenshotIds }));
   await writer.appendExecution(dump);
   const steps = run.steps ?? [];
+  // taskId → step 索引表：免掉逐任务 steps.find 的 O(T²) 线性回查
+  const stepByTaskId = new Map(steps.map((s) => [String(s?.index), s]));
   for (const task of dump.executions[0]?.tasks ?? []) {
     const sid = task.screenshotId ?? task.locate?.screenshotId;
-    const step = steps.find((s) => String(s?.index) === task.taskId);
+    const step = stepByTaskId.get(task.taskId);
     if (!sid || !step?.screenshot) continue;
     const file = resolveScreenshotFile(step.screenshot, writer.outPath, { runDir });
     if (!file) {
