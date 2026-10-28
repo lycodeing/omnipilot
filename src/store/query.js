@@ -74,16 +74,46 @@ function compareValues(a, b) {
   return sa < sb ? -1 : sa > sb ? 1 : 0;
 }
 
+// where 编译缓存：同一 where 字符串只解析一次（旧实现导出的 matchesWhere 每行重解析）。
+// 上限防泄漏；键为 where 原文。
+const WHERE_CACHE = new Map();
+const WHERE_CACHE_MAX = 100;
+export function compileWhere(where) {
+  if (where == null || where === '') return [];
+  const hit = WHERE_CACHE.get(where);
+  if (hit) return hit;
+  const clauses = parseWhere(where);
+  if (WHERE_CACHE.size >= WHERE_CACHE_MAX) WHERE_CACHE.clear();
+  WHERE_CACHE.set(where, clauses);
+  return clauses;
+}
+
 export function matchesWhere(row, where) {
-  return parseWhere(where).every((clause) => matchClause(row, clause));
+  return compileWhere(where).every((clause) => matchClause(row, clause));
 }
 
 export function applyQuery(rows, { where, select, limit, orderBy } = {}) {
   if (!Array.isArray(rows)) throw new Error('applyQuery: rows 必须是数组');
   let out = rows.slice(); // 不改入参
 
-  const clauses = parseWhere(where);
-  if (clauses.length) out = out.filter((row) => clauses.every((c) => matchClause(row, c)));
+  const clauses = compileWhere(where);
+  const hasLimit = limit != null && Number.isFinite(Number(limit));
+  const n = hasLimit ? Math.max(0, Math.floor(Number(limit))) : Infinity;
+  if (clauses.length) {
+    if (orderBy == null || orderBy === '') {
+      // 无排序时命中 limit 条即可提前停（旧实现全量 filter）
+      const picked = [];
+      for (const row of out) {
+        if (clauses.every((c) => matchClause(row, c))) {
+          picked.push(row);
+          if (picked.length >= n) break;
+        }
+      }
+      out = picked;
+    } else {
+      out = out.filter((row) => clauses.every((c) => matchClause(row, c)));
+    }
+  }
 
   if (orderBy != null && orderBy !== '') {
     const text = String(orderBy);
@@ -96,10 +126,7 @@ export function applyQuery(rows, { where, select, limit, orderBy } = {}) {
     });
   }
 
-  if (limit != null) {
-    const n = Number(limit);
-    if (Number.isFinite(n)) out = out.slice(0, Math.max(0, Math.floor(n)));
-  }
+  if (hasLimit) out = out.slice(0, n);
 
   if (select != null) {
     if (!Array.isArray(select) || select.some((f) => typeof f !== 'string')) {

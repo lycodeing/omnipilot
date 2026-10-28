@@ -4,13 +4,19 @@
 // 可选 datasets/<name>.schema.json：{ field: 'string'|'number'|'boolean'|'string?'... }，不符即抛错。
 // locate_cache.jsonl 也是普通数据集，行形状见 §14.2.1。
 
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { applyQuery } from './query.js';
 
 const META_KEYS = ['_id', '_ts', '_run', '_step'];
 const TYPES = new Set(['string', 'number', 'boolean']);
+
+// 进程级行缓存（性能）：locate 是全系统最高频调用，旧实现每次 read/upsert 都全量
+// 读文件+逐行 JSON.parse，upsert 再全量重写，成本随缓存跨 run 累积线性恶化。
+// key = jsonl 绝对路径；以 mtimeMs+size 失效（外部进程写盘也能感知）。
+// entry = { mtimeMs, size, rows, indexById, ids }；rows 为权威数组，写路径原地维护。
+const ROW_CACHE = new Map();
 
 function assertName(name) {
   if (typeof name !== 'string' || !name || name === '.' || name === '..' ||
@@ -84,6 +90,17 @@ async function loadSchema(dataDir, name) {
   }
 }
 
+// schema 进程级缓存：schema 文件几乎不变，避免每次 append/upsert 付 ENOENT/readFile。
+// 键含 dataDir：同名数据集在不同目录（测试/多工作区）的 schema 互不串用。
+const SCHEMA_CACHE = new Map();
+async function loadSchemaCached(dataDir, name) {
+  const k = `${dataDir}\u0000${name}`;
+  if (SCHEMA_CACHE.has(k)) return SCHEMA_CACHE.get(k);
+  const schema = await loadSchema(dataDir, name);
+  SCHEMA_CACHE.set(k, schema);
+  return schema;
+}
+
 function validateSchema(schema, row, label) {
   if (!schema) return;
   for (const [field, typeDecl] of Object.entries(schema)) {
@@ -102,15 +119,7 @@ function validateSchema(schema, row, label) {
   }
 }
 
-async function readRows(dataDir, name) {
-  const file = path.join(dataDir, `${name}.jsonl`);
-  let text;
-  try {
-    text = await readFile(file, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
-  }
+function parseLines(text, name) {
   const rows = [];
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -125,33 +134,103 @@ async function readRows(dataDir, name) {
   return rows;
 }
 
+// 带缓存的行读取：mtimeMs+size 未变则直接返回缓存数组（调用方不得 mutate，
+// 需要副本时自行 slice/copy）。外部写盘（其它进程/手工编辑）会因 mtime/size 变化失效。
+async function readRowsCached(dataDir, name) {
+  const file = path.join(dataDir, `${name}.jsonl`);
+  const cached = ROW_CACHE.get(file);
+  let st = null;
+  try {
+    st = await stat(file);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  if (!st) {
+    ROW_CACHE.delete(file);
+    return [];
+  }
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.rows;
+  const text = await readFile(file, 'utf8');
+  const rows = parseLines(text, name);
+  const indexById = new Map();
+  const ids = new Set();
+  for (let i = 0; i < rows.length; i++) {
+    const id = rows[i]?._id;
+    if (id === undefined) continue;
+    ids.add(id);
+    if (!indexById.has(id)) indexById.set(id, i);
+  }
+  const entry = { mtimeMs: st.mtimeMs, size: st.size, rows, indexById, ids };
+  ROW_CACHE.set(file, entry);
+  return rows;
+}
+
+// 写后登记缓存：避免下一次读再付 stat+readFile
+function commitCache(dataDir, name, entry) {
+  const file = path.join(dataDir, `${name}.jsonl`);
+  ROW_CACHE.set(file, entry);
+}
+
+function invalidateCache(dataDir, name) {
+  ROW_CACHE.delete(path.join(dataDir, `${name}.jsonl`));
+}
+
+async function readRows(dataDir, name) {
+  return readRowsCached(dataDir, name);
+}
+
 async function writeRowsAtomic(file, rows) {
   const tmp = `${file}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
   const text = rows.length ? rows.map((r) => JSON.stringify(r)).join('\n') + '\n' : '';
   await writeFile(tmp, text, 'utf8');
   await rename(tmp, file);
+  ROW_CACHE.delete(file);
 }
 
 export function openDataset({ dataDir = 'datasets' } = {}) {
   if (!dataDir || typeof dataDir !== 'string') throw new Error('openDataset 需要 dataDir 目录');
+  let dirReady = false;
+  async function ensureDir() {
+    if (dirReady) return;
+    await mkdir(dataDir, { recursive: true });
+    dirReady = true;
+  }
 
   async function append(name, rows, meta = {}) {
     assertName(name);
     assertRows(rows);
-    const schema = await loadSchema(dataDir, name);
+    const schema = await loadSchemaCached(dataDir, name);
     for (const row of rows) validateSchema(schema, row, `${name}.jsonl append`);
     if (!rows.length) return { written: 0 };
-    await mkdir(dataDir, { recursive: true });
-    const seen = new Set((await readRows(dataDir, name)).map((r) => r?._id).filter(Boolean));
+    await ensureDir();
+    const file = path.join(dataDir, `${name}.jsonl`);
+    const existing = await readRowsCached(dataDir, name);
+    const seen = ROW_CACHE.get(file)?.ids ?? new Set(existing.map((r) => r?._id).filter(Boolean));
     const lines = [];
+    const added = [];
     for (const row of rows) {
       const id = contentId(row);
       if (seen.has(id)) continue; // 内容去重（§14.2 滚动采集）
       seen.add(id);
-      lines.push(JSON.stringify(finalizeRow(row, id, meta)));
+      const final = finalizeRow(row, id, meta);
+      added.push(final);
+      lines.push(JSON.stringify(final));
     }
     if (lines.length) {
-      await appendFile(path.join(dataDir, `${name}.jsonl`), lines.join('\n') + '\n', 'utf8');
+      await appendFile(file, lines.join('\n') + '\n', 'utf8');
+      // 缓存原地维护：rows 追加、indexById/ids 更新；mtime/size 同步到刚写完的状态
+      const st = await stat(file).catch(() => null);
+      const entry = ROW_CACHE.get(file) ?? { rows: [...existing], indexById: new Map(), ids: new Set() };
+      for (const row of added) {
+        if (row._id !== undefined) {
+          entry.ids.add(row._id); // 去重集合必须同步，否则同内容 append 会重复写入
+          if (!entry.indexById.has(row._id)) entry.indexById.set(row._id, entry.rows.length);
+        }
+        entry.rows.push(row);
+      }
+      entry.mtimeMs = st?.mtimeMs ?? Date.now();
+      entry.size = st?.size ?? 0;
+      commitCache(dataDir, name, entry);
     }
     return { written: lines.length };
   }
@@ -159,18 +238,22 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
   async function upsert(name, key, rows, meta = {}) {
     assertName(name);
     assertRows(rows);
-    const schema = await loadSchema(dataDir, name);
+    const schema = await loadSchemaCached(dataDir, name);
     for (const row of rows) validateSchema(schema, row, `${name}.jsonl upsert`);
     if (!rows.length) return { written: 0, merged: 0 };
-    await mkdir(dataDir, { recursive: true });
+    await ensureDir();
     const file = path.join(dataDir, `${name}.jsonl`);
-    const existing = await readRows(dataDir, name);
-    const indexById = new Map();
-    existing.forEach((r, i) => {
-      if (r && r._id !== undefined && !indexById.has(r._id)) indexById.set(r._id, i);
-    });
+    const existing = await readRowsCached(dataDir, name);
+    const entry = ROW_CACHE.get(file);
+    const indexById = entry?.indexById ?? new Map();
+    if (!entry) {
+      existing.forEach((r, i) => {
+        if (r && r._id !== undefined && !indexById.has(r._id)) indexById.set(r._id, i);
+      });
+    }
     let written = 0;
     let merged = 0;
+    const appendedLines = [];
     for (const row of rows) {
       const id = keyIdentity(key, row);
       const final = finalizeRow(row, id, meta);
@@ -179,11 +262,27 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
         merged++;
       } else {
         indexById.set(id, existing.length);
+        if (entry) entry.ids.add(id);
         existing.push(final);
+        appendedLines.push(JSON.stringify(final));
         written++;
       }
     }
-    await writeRowsAtomic(file, existing);
+    if (merged > 0) {
+      // 有原位替换：必须全量重写保持行序（语义不变）
+      await writeRowsAtomic(file, existing);
+      const st = await stat(file).catch(() => null);
+      const e = { mtimeMs: st?.mtimeMs ?? Date.now(), size: st?.size ?? 0, rows: existing, indexById, ids: new Set(indexById.keys()) };
+      commitCache(dataDir, name, e);
+    } else if (appendedLines.length) {
+      // 纯新增：append-only，避免全量重写
+      await appendFile(file, appendedLines.join('\n') + '\n', 'utf8');
+      const st = await stat(file).catch(() => null);
+      const e = entry ?? { rows: existing, indexById, ids: new Set(indexById.keys()) };
+      e.mtimeMs = st?.mtimeMs ?? Date.now();
+      e.size = st?.size ?? 0;
+      commitCache(dataDir, name, e);
+    }
     return { written, merged };
   }
 
@@ -192,15 +291,16 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
     upsert,
     read: (name) => {
       assertName(name);
-      return readRows(dataDir, name);
+      return readRowsCached(dataDir, name);
     },
     clear: async (name) => {
       assertName(name);
       await rm(path.join(dataDir, `${name}.jsonl`), { force: true });
+      invalidateCache(dataDir, name);
     },
     query: async (name, opts = {}) => {
       assertName(name);
-      return applyQuery(await readRows(dataDir, name), opts);
+      return applyQuery(await readRowsCached(dataDir, name), opts);
     },
   };
 }

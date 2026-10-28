@@ -24,8 +24,36 @@ function sizeMatches(cacheRow, size) {
 
 // deps: { device, store, opts }；ctx 提供 { currentStepKey, locateOrdinal }
 // opts.freshLocate=true 时不读 hint（强制重新识别）
+//
+// 写路径攒批（性能）：locate 是全系统最高频调用，旧实现每次成功定位都 upsert →
+// locate_cache 同键命中时 merged>0 触发整文件重写（O(N) 写/次）。改为 run 内先写内存
+// pending Map，去抖（FLUSH_DEBOUNCE_MS）或攒满 FLUSH_BATCH 条时一次性 upsert；
+// 读 hint 优先查 pending，保证 run 内一致性。flush 挂到返回函数上供 run 收尾 await。
+const FLUSH_DEBOUNCE_MS = 1500;
+const FLUSH_BATCH = 50;
+
 export function createCachedLocate({ device, store, opts = {}, ctx = null }) {
-  return async function locateWithCache(target) {
+  const pending = new Map();
+  let flushTimer = null;
+
+  async function flush() {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    if (!pending.size || !store) return;
+    const rows = [...pending.values()];
+    pending.clear();
+    try {
+      await store.upsert('locate_cache', 'key', rows, {});
+    } catch { /* 缓存写失败不阻断 */ }
+  }
+
+  function scheduleFlush() {
+    if (pending.size >= FLUSH_BATCH) { void flush(); return; }
+    if (flushTimer) return;
+    // 不用 unref：保证进程退出前 flush 完成，缓存不丢
+    flushTimer = setTimeout(() => { flushTimer = null; void flush(); }, FLUSH_DEBOUNCE_MS);
+  }
+
+  const locateWithCache = async function locateWithCache(target) {
     let hintBounds = null;
     let hintIdentity = null;
     let cacheRow = null;
@@ -35,8 +63,12 @@ export function createCachedLocate({ device, store, opts = {}, ctx = null }) {
 
     if (!opts.freshLocate && store) {
       try {
-        const rows = await store.read('locate_cache');
-        const found = rows.find((r) => r.key === key) || null;
+        // run 内刚写过的键优先（尚未落盘）
+        let found = pending.get(key) || null;
+        if (!found) {
+          const rows = await store.read('locate_cache');
+          found = rows.find((r) => r.key === key) || null;
+        }
         const size = await device.screenSize().catch(() => null);
         // 三重安全网之第二层：分辨率不符 → 判 miss（防跨设备误用）
         cacheRow = found && sizeMatches(found, size) ? found : null;
@@ -49,13 +81,13 @@ export function createCachedLocate({ device, store, opts = {}, ctx = null }) {
 
     const res = await device.locate(target, { hintBounds, hintIdentity });
 
-    // 定位成功 → upsert 坐标缓存（命中 cache 时不重复写，避免无效 IO）
+    // 定位成功 → 记入 pending（命中 cache 时不重复写，避免无效 IO）
     if (res.ok && res.bounds && store && res.strategy !== 'cache') {
       try {
-        const prev = cacheRow || {};
+        const prev = pending.get(key) || cacheRow || {};
         const stepKey2 = ctx?.currentStepKey ?? null;
         const ord2 = ctx?.locateOrdinal ?? 0;
-        await store.upsert('locate_cache', 'key', [{
+        pending.set(key, {
           key: buildCacheKey({ ...(stepKey2 ?? {}), locateOrdinal: ord2, target }),
           caseId: stepKey2?.caseId ?? 'unknown',
           stepIndex: stepKey2?.stepIndex ?? -1,
@@ -66,11 +98,15 @@ export function createCachedLocate({ device, store, opts = {}, ctx = null }) {
           screenSize: await device.screenSize().catch(() => null),
           hits: (prev.hits || 0) + 1,
           lastHitAt: Date.now(),
-        }], {});
+        });
+        scheduleFlush();
       } catch { /* 缓存写失败不阻断 */ }
     }
     // 每次定位后 ordinal 递增：同一步骤内多次定位各占独立缓存槽
     if (ctx) ctx.locateOrdinal = ordinal + 1;
     return res;
   };
+
+  locateWithCache.flush = flush;
+  return locateWithCache;
 }
