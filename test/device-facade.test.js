@@ -31,6 +31,7 @@ function makeExec({ dumpScript = null } = {}) {
     if (joined.includes('screencap')) return { code: 0, stdout: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1]), stderr: '' };
     if (joined.includes('uiautomator dump')) {
       const xml = dumpScript ? (dumpIdx < dumpScript.length ? dumpScript[dumpIdx++] : dumpScript.at(-1)) : FIXTURE;
+      if (xml === '__FAIL__') return { code: 1, stdout: '', stderr: 'could not get idle state' };
       return { code: 0, stdout: `${xml}\nUI hierchary dumped to: /dev/tty\n`, stderr: '' };
     }
     if (joined.includes('pidof com.lgdg.fourt')) return { code: 0, stdout: '12345', stderr: '' };
@@ -174,6 +175,23 @@ test('waitIdle：连续两次相同 hash 即稳定（fresh dump，不吃缓存�
   const device = await makeDevice({ dumpScript: [FIXTURE, FIXTURE] });
   const r = await device.waitIdle({ quiet: 2, intervalMs: 1, timeoutMs: 5000 });
   assert.deepEqual(r, { stable: true, dumps: 2 });
+  await device.close();
+});
+
+test('waitIdle：dump 失败（转场/idle 超时）不抛错，当作未稳定继续等', async () => {
+  // dumpXmlRaw 有 exec-out→shell 双通道回退：一次 dumpTree 失败要两个通道都失败，
+  // 故哨兵连给两次（消耗于同一次 dumpTree 的两通道），随后两次成功达成 quiet=2
+  const device = await makeDevice({ dumpScript: ['__FAIL__', '__FAIL__', FIXTURE, FIXTURE] });
+  const r = await device.waitIdle({ quiet: 2, intervalMs: 1, timeoutMs: 5000 });
+  assert.equal(r.stable, true);
+  assert.ok(r.dumps >= 3, '失败那次也计入 dumps');
+  await device.close();
+});
+
+test('waitIdle：全程 dump 失败 → 超时返回 stable=false 而非抛错', async () => {
+  const device = await makeDevice({ dumpScript: ['__FAIL__'] });
+  const r = await device.waitIdle({ quiet: 2, intervalMs: 1, timeoutMs: 300 });
+  assert.equal(r.stable, false);
   await device.close();
 });
 

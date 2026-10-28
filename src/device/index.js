@@ -269,13 +269,23 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       let prev = null;
       let stable = false;
       while (Date.now() - t0 < timeoutMs) {
-        const h = (await dumpTree({ fresh: true })).hash; // 必须强制新树，缓存命中会使判定失真
+        // dump 失败（转场中/uiautomator idle 超时，§20.4 已知）当作"未稳定"继续等，
+        // 不再让异常逃出（曾使整条用例在 aiWaitFor 步判 error 中断，VERIFICATION-OVERVIEW §7）
+        let h = null;
+        try {
+          h = (await dumpTree({ fresh: true })).hash; // 必须强制新树，缓存命中会使判定失真
+        } catch { /* 未稳定，继续等 */ }
         dumps++;
-        stableRun = prev !== null && h === prev ? stableRun + 1 : 1;
-        prev = h;
-        if (stableRun >= quiet) {
-          stable = true;
-          break;
+        if (h !== null) {
+          stableRun = prev !== null && h === prev ? stableRun + 1 : 1;
+          prev = h;
+          if (stableRun >= quiet) {
+            stable = true;
+            break;
+          }
+        } else {
+          stableRun = 0;
+          prev = null;
         }
         await new Promise((r) => setTimeout(r, intervalMs));
       }
