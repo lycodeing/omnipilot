@@ -151,7 +151,7 @@ export function buildActionTools(ctx) {
   const scroll = defineTool({
     name: 'scroll',
     label: 'scroll',
-    description: '滚动页面。direction=up/down/left/right 方向；distancePct 指定滚动距离（整屏=100，半屏=50，0.75屏=75，缺省视口约60）；until=edge 滚到边界即停（到底），until=top 回到顶部；画面无变化（树 hash）即停。用户说"滚一屏/翻到底/回到顶部"时用它，配合 wait_idle。',
+    description: '滚动页面。direction=up/down/left/right；distancePct=滚动距离（整屏100/半屏50，缺省约60）；until=edge 滚到底、until=top 回顶部；画面无变化（树 hash）即停。',
     parameters: Type.Object({
       direction: Type.String({ description: 'up（看更多，内容上移）/ down / left / right' }),
       distancePct: Type.Optional(Type.Number({ description: '滚动距离（屏高百分比）：整屏=100、0.75屏=75、半屏=50' })),

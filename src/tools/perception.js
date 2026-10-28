@@ -43,10 +43,11 @@ function nodeSummary(n) {
   return { index: n.index, text: n.text, cls: n.cls, resourceId: n.resourceId, contentDesc: n.contentDesc, clickable: n.clickable, bounds: n.bounds, center: n.center };
 }
 
-// 统一文本响应：content 放格式化 JSON，details 镜像原对象（data.js 复用）
+// 统一文本响应：content 放**紧凑** JSON（进模型上下文，缩进纯浪费 token：
+// 实测真机 uitree pretty 38088 字符 vs compact 21036，膨胀 44.8%）；details 镜像原对象供 recorder。
 export function textResult(obj) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }],
+    content: [{ type: 'text', text: JSON.stringify(obj) }],
     details: obj,
   };
 }

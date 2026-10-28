@@ -77,8 +77,14 @@ export function withRecording(tool, ctx) {
           if (tool.name === 'screen' && res?.content?.[0]?.type === 'image') {
             recorder.attachScreenshot(handle.index, Buffer.from(res.content[0].data, 'base64'));
           } else if (SCREENSHOT_TOOLS.has(tool.name) && !denied && d.ok !== false) {
-            const shot = await ctx.device.screencap();
-            recorder.attachScreenshot(handle.index, shot.buffer);
+            // 取证截图移出关键路径（性能）：旧实现 await screencap()（adb 回传 0.5~1.5s）
+            // 才把工具结果还给模型，每个写动作白付这笔钱。adb 层是串行队列，
+            // 不 await 直接入队仍保证"截图排在下一动作之前"的画面时序；
+            // Promise 链挂到 recorder 的待写队列，finish 前统一排空，收尾不丢图。
+            const chain = ctx.device.screencap()
+              .then((shot) => recorder.attachScreenshot(handle.index, shot.buffer))
+              .catch(() => { /* 取证截图失败不影响动作 */ });
+            recorder.trackPending?.(chain);
           }
         } catch { /* 取证截图失败不影响动作 */ }
         return res;

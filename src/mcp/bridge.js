@@ -59,9 +59,12 @@ function convert(node) {
 export function truncateResult(text, limit = RESULT_LIMIT_BYTES) {
   const size = Buffer.byteLength(text, 'utf8');
   if (size <= limit) return { text, truncated: false, bytes: size };
-  // 按字节截断（避开代理对：从字符层面回退到不越界）
-  let cut = text;
-  while (Buffer.byteLength(cut, 'utf8') > limit) cut = cut.slice(0, Math.floor(cut.length * 0.95));
+  // 一步按字节截断并回退到 UTF-8 字符边界（旧实现每轮砍 5% 再全量 byteLength，
+  // 10MB→8KB 需 ~130 次迭代、累计扫描 ~1GB 字符）
+  const buf = Buffer.from(text, 'utf8');
+  let end = Math.min(limit, buf.length);
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--; // 跳过续字节 0b10xxxxxx
+  const cut = buf.subarray(0, end).toString('utf8');
   return {
     text: cut + `\n[MCP 结果已截断：原始 ${size} 字节 > ${limit} 上限，完整内容见 run.json]`,
     truncated: true,
@@ -69,7 +72,7 @@ export function truncateResult(text, limit = RESULT_LIMIT_BYTES) {
   };
 }
 
-// 建立 MCP 桥：读配置 → 逐个连接（失败只 warn）→ 白名单过滤 → 冲突加前缀
+// 建立 MCP 桥：读配置 → **并行**连接（失败只 warn）→ 白名单过滤 → 冲突加前缀
 // connectImpl：可注入的连接实现（测试用），默认 connectServer
 export async function createMcpBridge({ config, logger = () => {}, connectImpl = connectServer } = {}) {
   const bridge = {
@@ -81,16 +84,34 @@ export async function createMcpBridge({ config, logger = () => {}, connectImpl =
   const allowTools = config?.allowTools || [];
   const toolPrefix = config?.toolPrefix !== false;
 
-  for (const server of Object.values(servers)) {
-    const res = await connectImpl(server);
-    if (res.error) {
-      bridge.servers.push({ name: server.name, status: 'error', error: res.error, toolCount: 0 });
-      logger(`[mcp] server ${server.name} 连接失败（不阻断启动）：${res.error}`);
+  // 白名单 glob 预编译（旧实现每次匹配都 new RegExp，T 工具 × G glob × 4 形态重复编译）
+  const allowRes = allowTools.map((g) => globToRegExp(String(g)));
+  const matchesCompiled = (originalName, serverName) => {
+    if (!allowRes.length) return false; // 默认拒绝
+    const forms = [
+      originalName,
+      `${serverName}__${originalName}`,
+      `${serverName}:${originalName}`,
+      `${serverName}_${originalName}`,
+    ];
+    return allowRes.some((re) => forms.some((f) => re.test(f)));
+  };
+
+  // 并行连接各 server（旧实现串行，超时最坏叠加：每 server 10s 上限）
+  const entries = Object.values(servers);
+  const results = await Promise.all(entries.map((s) => connectImpl(s).catch((e) => ({ error: String(e?.message ?? e) }))));
+
+  for (let i = 0; i < entries.length; i++) {
+    const server = entries[i];
+    const res = results[i];
+    if (!res || res.error) {
+      bridge.servers.push({ name: server.name, status: 'error', error: res?.error ?? 'connect failed', toolCount: 0 });
+      logger(`[mcp] server ${server.name} 连接失败（不阻断启动）：${res?.error ?? 'connect failed'}`);
       continue;
     }
     let registered = 0;
     for (const t of res.tools) {
-      if (!matchesAllowList(t.name, server.name, allowTools)) continue; // 默认拒绝
+      if (!matchesCompiled(t.name, server.name)) continue; // 默认拒绝
       let finalName = toolPrefix ? `${server.name}__${t.name}` : t.name;
       if (bridge.tools.some((x) => x.finalName === finalName)) {
         finalName = `${server.name}__${t.name}`;
@@ -112,10 +133,13 @@ export async function createMcpBridge({ config, logger = () => {}, connectImpl =
     bridge.servers.push({ name: server.name, status: 'ok', toolCount: registered, error: null });
   }
 
-  bridge.hasAccess = (originalName, serverName) => matchesAllowList(originalName, serverName, allowTools);
+  // 运行期 O(1) 工具查找（旧实现 callByName 每次线性 find）
+  const byFinalName = new Map(bridge.tools.map((t) => [t.finalName, t]));
+
+  bridge.hasAccess = (originalName, serverName) => matchesCompiled(originalName, serverName);
 
   bridge.callByName = async (finalName, args) => {
-    const t = bridge.tools.find((x) => x.finalName === finalName);
+    const t = byFinalName.get(finalName);
     if (!t) throw new Error(`MCP 工具未注册或未放行：${finalName}`);
     const raw = await callTool(t.client, t.originalName, args);
     return { ...truncateResult(raw), tool: t };
@@ -124,7 +148,8 @@ export async function createMcpBridge({ config, logger = () => {}, connectImpl =
   bridge.close = async () => {
     if (bridge.closed) return;
     bridge.closed = true;
-    for (const t of bridge.tools) { try { t.client.close(); } catch { /* ignore */ } }
+    const clients = new Set(bridge.tools.map((t) => t.client));
+    for (const c of clients) { try { c.close(); } catch { /* ignore */ } }
   };
 
   return bridge;

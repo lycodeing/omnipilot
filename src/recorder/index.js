@@ -65,21 +65,26 @@ function pickModel(model) {
   };
 }
 
-// 全文兜底：深遍历所有字符串，替换已登记 secret 值
-function redactDeep(node, secrets) {
-  if (typeof node === 'string') {
-    let s = node;
-    for (const { provider, key, value } of secrets) {
-      if (value) s = s.replaceAll(value, `[REDACTED:${provider}:${key}]`);
-    }
-    return s;
-  }
+// 全文兜底：深遍历所有字符串，替换已登记 secret 值。
+// 性能：secrets 为空直接短路（绝大多数 run 无 secret）；非空时把 K 个值合成单个交替
+// 正则一次扫描，避免 O(字符串数 × secret 数) 的重复 replaceAll。
+function buildRedactor(secrets) {
+  const usable = secrets.filter((s) => s && s.value);
+  if (!usable.length) return null;
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(usable.map((s) => esc(String(s.value))).join('|'), 'g');
+  const byValue = new Map(usable.map((s) => [String(s.value), `[REDACTED:${s.provider}:${s.key}]`]));
+  return (s) => s.replace(re, (m) => byValue.get(m) ?? m);
+}
+
+function redactDeep(node, redact) {
+  if (typeof node === 'string') return redact(node);
   if (Array.isArray(node)) {
-    for (let i = 0; i < node.length; i++) node[i] = redactDeep(node[i], secrets);
+    for (let i = 0; i < node.length; i++) node[i] = redactDeep(node[i], redact);
     return node;
   }
   if (node && typeof node === 'object') {
-    for (const k of Object.keys(node)) node[k] = redactDeep(node[k], secrets);
+    for (const k of Object.keys(node)) node[k] = redactDeep(node[k], redact);
     return node;
   }
   return node;
@@ -106,6 +111,7 @@ export class RunRecorder {
     this._contextLayers = [];
     this._uiDumps = [];
     this._secrets = []; // { provider, key, value }
+    this._pendingWrites = []; // attachScreenshot 的后台写盘 Promise，finish 前统一 await
     this._finished = false;
   }
 
@@ -121,6 +127,19 @@ export class RunRecorder {
   registerSecret({ provider, key, value }) {
     if (!provider || !key) throw new Error('registerSecret 需要 provider 与 key');
     this._secrets.push({ provider, key, value: value ?? null });
+  }
+
+  // 登记后台任务（取证截图链/写盘），finish 前循环排空。
+  // 用循环而非单次 Promise.all：链 Promise resolve 时可能又挂入新的写盘 Promise。
+  trackPending(promise) {
+    if (promise && typeof promise.then === 'function') this._pendingWrites.push(promise);
+  }
+
+  async _drainPending() {
+    while (this._pendingWrites.length) {
+      const batch = this._pendingWrites.splice(0, this._pendingWrites.length);
+      await Promise.all(batch);
+    }
   }
 
   startStep(type, target = null) {
@@ -161,13 +180,16 @@ export class RunRecorder {
     };
   }
 
-  // 同步落 PNG（契约签名返回 string），路径 posix 风格用于回填 step.screenshot
+  // 落 PNG（契约签名同步返回 string 路径）。写盘改异步后台：旧实现 writeFileSync
+  // 会在每个动作步阻塞事件循环（PNG 可达 MB 级，--parallel 时冻结其它设备 IO）。
+  // 路径先同步算好返回，写盘挂入 _pendingWrites，finish() 前统一 await 保证收尾完整。
   attachScreenshot(stepIndex, pngBuffer) {
     const file = `step-${stepIndex}.png`;
-    fs.writeFileSync(path.join(this._dir, file), pngBuffer);
+    const abs = path.join(this._dir, file);
     const rel = toPosix(path.join(this._runsDir, this.runId, file));
     const step = this._steps[stepIndex];
     if (step) step.screenshot = rel;
+    this._pendingWrites.push(fsp.writeFile(abs, pngBuffer).catch(() => { /* 截图写失败不阻断 run */ }));
     return rel;
   }
 
@@ -228,7 +250,10 @@ export class RunRecorder {
         uiDumps: this._uiDumps,
       },
     };
-    redactDeep(doc, this._secrets);
+    const redact = buildRedactor(this._secrets);
+    if (redact) redactDeep(doc, redact); // 无 secret 时短路，省一次全树遍历
+    // 收尾前排空后台取证截图与写盘，保证 run.json 落盘时截图已在目录中
+    await this._drainPending();
     const tmp = `${this._jsonPath}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
     await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
     await fsp.rename(tmp, this._jsonPath);

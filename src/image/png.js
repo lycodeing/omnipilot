@@ -116,10 +116,9 @@ export function encodePng(width, height, pixels, colorType = 6) {
   return Buffer.concat([PNG_SIG, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
 }
 
-// 块平均降采样（factor>=2 的整数倍）
-export function downscale(png, { factor = 2 } = {}) {
+// 块平均降采样（factor>=2 的整数倍）——从**已解码像素**出发（避免重复 decode）
+export function downscalePixels({ width, height, bpp, colorType, pixels }, { factor = 2 } = {}) {
   const f = Math.max(2, Math.floor(factor));
-  const { width, height, bpp, colorType, pixels } = decodePng(png);
   const nw = Math.max(1, Math.floor(width / f));
   const nh = Math.max(1, Math.floor(height / f));
   const out = Buffer.alloc(nw * nh * bpp);
@@ -142,32 +141,43 @@ export function downscale(png, { factor = 2 } = {}) {
       for (let k = 0; k < bpp; k++) out[o + k] = Math.round(acc[k] / n);
     }
   }
-  return { buffer: encodePng(nw, nh, out, colorType), width: nw, height: nh };
+  return { width: nw, height: nh, bpp, colorType, pixels: out };
 }
 
-// 便捷：按目标最大宽度降采样（选 2 的幂因子，返回原图或缩小图）
+export function downscale(png, { factor = 2 } = {}) {
+  const dec = decodePng(png);
+  const small = downscalePixels(dec, { factor });
+  return { buffer: encodePng(small.width, small.height, small.pixels, small.colorType), width: small.width, height: small.height };
+}
+
+// 便捷：按目标最大宽度降采样（选 2 的幂因子，返回原图或缩小图）。
+// 附带返回解码像素（pixels/bpp/colorType），供 compressForContext 直通 JPEG 编码，
+// 避免"decode→encode→再 decode"的重复解码（旧实现每张截图 3 次 decode ≈300ms）。
 export function shrinkPng(png, { maxWidth = 540 } = {}) {
-  let { width } = decodePng(png);
-  if (width <= maxWidth) return { buffer: png, width, scaled: false };
+  const dec = decodePng(png);
+  if (dec.width <= maxWidth) {
+    return { buffer: png, width: dec.width, height: dec.height, scaled: false, ...dec };
+  }
   let factor = 1;
-  while (Math.floor(width / factor) > maxWidth) factor *= 2;
-  const r = downscale(png, { factor });
-  return { buffer: r.buffer, width: r.width, height: r.height, scaled: true, factor };
+  while (Math.floor(dec.width / factor) > maxWidth) factor *= 2;
+  const small = downscalePixels(dec, { factor });
+  return {
+    buffer: encodePng(small.width, small.height, small.pixels, small.colorType),
+    width: small.width, height: small.height, scaled: true, factor, ...small,
+  };
 }
 
 // —— 截图的统一"进上下文"压缩入口（§17）——
 // 目标：base64 后体积最小，且模型仍能看清。
 // 实测（540×1200）：PNG 194KB → JPEG(q70) ~75KB（省 61%）；模型对 JPEG 无感（能准确读图内文字）。
-// 策略：先按 maxWidth 降采样（PNG 域，块平均保色准），再编码 JPEG。
+// 策略：单次 decode → 降采样 → 直通 JPEG 编码（不再二次/三次解码）。
 export async function compressForContext(png, { maxWidth = 540, quality = 70 } = {}) {
   const { encodeJpeg } = await import('./jpeg.js');
   const small = shrinkPng(png, { maxWidth });
-  const { decodePng: dec } = await import('./png.js');
-  const d = dec(small.buffer);
-  const jpg = encodeJpeg(d.width, d.height, d.pixels, { quality, bpp: d.bpp });
+  const jpg = encodeJpeg(small.width, small.height, small.pixels, { quality, bpp: small.bpp });
   // 取更小的那个（JPEG 通常更小，但极小图上 PNG 可能更优）
   if (jpg.length < small.buffer.length) {
-    return { buffer: jpg, mimeType: 'image/jpeg', width: d.width, height: d.height, format: 'jpeg', originalBytes: png.length };
+    return { buffer: jpg, mimeType: 'image/jpeg', width: small.width, height: small.height, format: 'jpeg', originalBytes: png.length };
   }
   return { buffer: small.buffer, mimeType: 'image/png', width: small.width, height: small.height, format: 'png', originalBytes: png.length };
 }

@@ -9,6 +9,7 @@ import { defineTool } from '@earendil-works/pi-coding-agent';
 import { flattenNodes, findBySelector, textResult } from './perception.js';
 import { denied } from './action.js';
 import { repairJson } from './ai.js';
+import { compressForContext } from '../image/png.js';
 
 function sampleForContext(rows, written) {
   return { written, count: rows.length, sample: rows.slice(0, 3) };
@@ -88,15 +89,24 @@ async function extractCollection(ctx, params) {
 }
 
 // —— ai 模式：截图 + 小模型抽 JSON（§7.1） ——
+// 截图先经 compressForContext 降采样+JPEG（1080×2400 PNG ~427KB → 540×1200 q70 ~64KB）：
+// 图像 token 随像素数计，原图直发每次 ai 提取多花约 3 倍图像 token；collection 每轮滚动都重发，放大更甚。
 async function extractAiOnce(ctx, query) {
   const chat = ctx.chat;
   if (!chat) return { error: 'ai 模式需要模型配置（ASK_MODEL_*）或注入 ctx.chat' };
   try {
     const shot = await ctx.device.screencap();
-    const b64 = shot.buffer.toString('base64');
+    // 压缩失败（如非标准 PNG）降级发原图，保证 ai 提取不因编码问题整体失败
+    let img;
+    try {
+      const c = await compressForContext(shot.buffer, { maxWidth: 540, quality: 70 });
+      img = { data: c.buffer.toString('base64'), mimeType: c.mimeType };
+    } catch {
+      img = { data: shot.buffer.toString('base64'), mimeType: 'image/png' };
+    }
     const text = await chat(
       `从截图提取结构化数据。要求：${query}\n只输出 JSON。`,
-      { images: [b64] },
+      { images: [img] },
     );
     return repairJson(text);
   } catch (e) {
@@ -112,18 +122,18 @@ export function buildDataTools(ctx) {
     label: 'data_extract',
     description: '页面数据提取。mode=ui：从 UI 树确定性提取（推荐，零模型调用）；mode=ai：小模型从截图提取；mode=collection：边滚边抽按主键去重。结果写入变量表供 ${var} 引用。',
     parameters: Type.Object({
-      name: Type.Optional(Type.String({ description: '存入的数据集名；缺省只返回不落库' })),
-      mode: Type.String({ description: 'ui | ai | collection' }),
+      name: Type.Optional(Type.String({ description: '数据集名；缺省不落库' })),
+      mode: Type.String({ description: 'ui|ai|collection' }),
       fields: Type.Optional(Type.Array(Type.Object({
         name: Type.String(),
-        from: Type.Optional(Type.String({ description: 'text | attr | index，默认 text' })),
+        from: Type.Optional(Type.String({ description: 'text|attr|index，默认text' })),
         selector: Type.String(),
-        attr: Type.Optional(Type.String({ description: 'from=attr 时读取的属性名' })),
-      }), { description: 'ui 模式字段定义' })),
-      container: Type.Optional(Type.String({ description: '容器 selector（如列表卡片 class）' })),
-      query: Type.Optional(Type.String({ description: 'ai 模式的提取要求，如 返回 {name: string, price: number}[]' })),
-      key: Type.Optional(Type.String({ description: 'collection 去重主键字段' })),
-      max: Type.Optional(Type.Number({ description: 'collection 最多条数，默认 20' })),
+        attr: Type.Optional(Type.String({ description: 'from=attr 的属性名' })),
+      }), { description: 'ui 字段定义' })),
+      container: Type.Optional(Type.String({ description: '容器 selector（列表卡片 class）' })),
+      query: Type.Optional(Type.String({ description: 'ai 提取要求' })),
+      key: Type.Optional(Type.String({ description: 'collection 去重主键' })),
+      max: Type.Optional(Type.Number({ description: 'collection 最多条数，默认20' })),
     }),
     execute: async (_id, params) => {
       let rows = [];

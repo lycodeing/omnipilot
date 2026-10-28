@@ -387,6 +387,19 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         return '';
       }
     },
+    // 一次 shell 读多个属性（性能）：旧实现每个属性各 spawn 一次 adb（设备事实采集
+    // 曾 4 次串行 adb 调用）。输出按行拆回，行序与入参一致；失败返回空串不抛错。
+    async getProps(names) {
+      const list = (Array.isArray(names) ? names : [names]).map((n) => String(n).trim());
+      if (!list.length) return [];
+      try {
+        const out = await adb.shell(list.map((n) => `getprop ${n}`).join('; '), { timeoutMs: adb.timeouts.command });
+        const lines = String(out).split(/\r?\n/);
+        return list.map((_, i) => (lines[i] ?? '').trim());
+      } catch {
+        return list.map(() => '');
+      }
+    },
     // 懒校验结果：最近一次动作后画面是否变化（true/false，null=无基准可比）
     get lastActionChanged() {
       return lastActionChanged;

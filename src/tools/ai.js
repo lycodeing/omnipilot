@@ -25,11 +25,17 @@ export function createChatClient({ url, key, model, fetchImpl = fetch, timeoutMs
   if (!url || !model) throw new Error('createChatClient 需要 url 与 model');
   const endpoint = url.replace(/\/+$/, '') + '/chat/completions';
   return async function chat(prompt, { system = SYSTEM_HINT, temperature = 0, maxRetries = 1, images = [] } = {}) {
-    // images: base64 PNG 数组（data_extract ai 模式把截图交给模型，§7.1）
+    // images: base64 字符串（默认 PNG，向后兼容）或 { data, mimeType } 对象（压缩后 JPEG 用）
+    const toPart = (img) => {
+      const isObj = img && typeof img === 'object';
+      const data = isObj ? img.data : img;
+      const mime = isObj && img.mimeType ? img.mimeType : 'image/png';
+      return { type: 'image_url', image_url: { url: `data:${mime};base64,${data}` } };
+    };
     const userContent = images.length
       ? [
           { type: 'text', text: prompt },
-          ...images.map((b64) => ({ type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } })),
+          ...images.map(toPart),
         ]
       : prompt;
     const body = JSON.stringify({
