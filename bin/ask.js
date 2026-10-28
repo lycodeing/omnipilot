@@ -37,6 +37,7 @@ async function gracefulExit(sig) {
       for (const run of activeRuns) {
         await restoreNetwork(run.device, run.ctx).catch(() => {});
         try { await run.ctx?.locateWithCache?.flush?.(); } catch { /* ignore */ }
+        try { await run.ctx?.recorder?.flushPending?.(); } catch { /* ignore */ }
         try { await run.bridge?.close?.(); } catch { /* ignore */ }
         try { await run.device?.close?.(); } catch { /* ignore */ }
         if (run.serial) releaseLock(WORKSPACE.lockRoot, run.serial);

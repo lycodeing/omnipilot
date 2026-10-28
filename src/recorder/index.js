@@ -135,6 +135,11 @@ export class RunRecorder {
     if (promise && typeof promise.then === 'function') this._pendingWrites.push(promise);
   }
 
+  // 公开排空入口：信号退出路径（gracefulExit）也需等齐在途截图写盘
+  flushPending() {
+    return this._drainPending();
+  }
+
   async _drainPending() {
     while (this._pendingWrites.length) {
       const batch = this._pendingWrites.splice(0, this._pendingWrites.length);
