@@ -217,7 +217,12 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
       lines.push(JSON.stringify(final));
     }
     if (lines.length) {
-      await appendFile(file, lines.join('\n') + '\n', 'utf8');
+      try {
+        await appendFile(file, lines.join('\n') + '\n', 'utf8');
+      } catch (e) {
+        invalidateCache(dataDir, name); // 写失败：缓存已原地 mutate，必须失效回磁盘真相
+        throw e;
+      }
       // 缓存原地维护：rows 追加、indexById/ids 更新；mtime/size 同步到刚写完的状态
       const st = await stat(file).catch(() => null);
       const entry = ROW_CACHE.get(file) ?? { rows: [...existing], indexById: new Map(), ids: new Set() };
@@ -270,13 +275,23 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
     }
     if (merged > 0) {
       // 有原位替换：必须全量重写保持行序（语义不变）
-      await writeRowsAtomic(file, existing);
+      try {
+        await writeRowsAtomic(file, existing);
+      } catch (e) {
+        invalidateCache(dataDir, name);
+        throw e;
+      }
       const st = await stat(file).catch(() => null);
       const e = { mtimeMs: st?.mtimeMs ?? Date.now(), size: st?.size ?? 0, rows: existing, indexById, ids: new Set(indexById.keys()) };
       commitCache(dataDir, name, e);
     } else if (appendedLines.length) {
       // 纯新增：append-only，避免全量重写
-      await appendFile(file, appendedLines.join('\n') + '\n', 'utf8');
+      try {
+        await appendFile(file, appendedLines.join('\n') + '\n', 'utf8');
+      } catch (e) {
+        invalidateCache(dataDir, name);
+        throw e;
+      }
       const st = await stat(file).catch(() => null);
       const e = entry ?? { rows: existing, indexById, ids: new Set(indexById.keys()) };
       e.mtimeMs = st?.mtimeMs ?? Date.now();

@@ -85,7 +85,7 @@ test('XML 实体解码与 parent 指针', () => {
 
 test('自闭合与空树边界', () => {
   assert.deepEqual(parseXmlDump('<hierarchy><node index="0" text="s" class="A" bounds="[1,2][3,4]"/></hierarchy>'), [
-    { index: 0, text: 's', cls: 'A', resourceId: '', contentDesc: '', clickable: false, enabled: true, bounds: [1, 2, 3, 4], center: [2, 3], children: [] },
+    { index: 0, text: 's', cls: 'A', resourceId: '', contentDesc: '', clickable: false, enabled: true, pkg: '', bounds: [1, 2, 3, 4], center: [2, 3], children: [] },
   ]);
   assert.deepEqual(parseXmlDump(''), []);
 });

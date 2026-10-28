@@ -113,7 +113,7 @@ export function buildActionTools(ctx) {
       await handlePopupBeforeAction(ctx, device);
       const loc = await locateWithCache(params.target);
       if (!loc.ok || !loc.bounds) return locateMiss(params.target, loc.error, { fallback: '未找到输入框' });
-      const r = await device.inputText(loc.bounds, params.value);
+      const r = await device.inputText(loc.bounds, params.value, { clear: params.clear !== false });
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: r.ok, target: params.target, readBack: r.readBack, match: r.ok, error: r.error }) }],
         details: { ok: r.ok, locate: loc },

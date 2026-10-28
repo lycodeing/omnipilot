@@ -34,6 +34,11 @@ function makeExec({ dumpScript = null } = {}) {
       if (xml === '__FAIL__') return { code: 1, stdout: '', stderr: 'could not get idle state' };
       return { code: 0, stdout: `${xml}\nUI hierchary dumped to: /dev/tty\n`, stderr: '' };
     }
+    // 合并命令（dumpsys+pidof 一条 shell，性能优化）：两段输出拼接
+    if (joined.includes('dumpsys') && joined.includes('pidof')) {
+      const alive = joined.includes('pidof com.lgdg.fourt');
+      return { code: 0, stdout: `${DUMPSYS.trim()}\n${alive ? '12345' : ''}\n`, stderr: '' };
+    }
     if (joined.includes('pidof com.lgdg.fourt')) return { code: 0, stdout: '12345', stderr: '' };
     if (joined.includes('pidof')) return { code: 1, stdout: '', stderr: '' };
     if (joined.includes('dumpsys activity')) return { code: 0, stdout: DUMPSYS, stderr: '' };

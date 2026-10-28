@@ -123,8 +123,10 @@ export class Adb {
         const boot = (await this.shell('getprop sys.boot_completed', { timeoutMs: this.timeouts.command })).trim();
         if (boot === '1') {
           const sizeOut = await this.shell('wm size', { timeoutMs: this.timeouts.command });
-          if (/Override size:\s*\d+x\d+|Physical size:\s*\d+x\d+/.test(sizeOut)) {
-            return { ready: true, waitedMs: Date.now() - t0, reason: null };
+          const m = /(?:Override|Physical) size:\s*(\d+)x(\d+)/.exec(sizeOut);
+          if (m) {
+            // 回传解析好的尺寸：createDevice 用它 seed sizeCache，免首次 getSize 再打一次 wm size
+            return { ready: true, waitedMs: Date.now() - t0, reason: null, size: { w: Number(m[1]), h: Number(m[2]) } };
           }
           lastReason = 'boot_completed=1 但 wm size 尚无有效输出';
         } else {

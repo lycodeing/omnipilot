@@ -84,3 +84,25 @@ test('dismissDialog：tap 失败 → 继续试下一个候选', async () => {
   assert.equal(r.ok, true);
   assert.equal(r.clicked, '允许', '第一个候选 tap 失败应继续下一个');
 });
+test('detectDialog：树根 pkg 派生前台，不再付 dumpsys 往返（性能）', async () => {
+  let fgCalls = 0;
+  const device = {
+    foreground: async () => { fgCalls++; return { package: 'com.google.android.permissioncontroller' }; },
+    dumpTree: async () => ({ nodes: [{ index: 0, text: '', cls: 'Frame', pkg: 'com.daimajia.gold', resourceId: '', contentDesc: '', clickable: false, bounds: [0,0,10,10], children: [] }] }),
+  };
+  const r = await detectDialog(device);
+  assert.equal(r.detected, false, '树根 pkg 是目标 App，不应误判系统弹窗');
+  assert.equal(fgCalls, 0, '有树 pkg 时不应调用 foreground（省一次 dumpsys）');
+});
+
+test('detectDialog：树根 pkg 是系统弹窗包 → 从树即可判弹窗（无需 dumpsys）', async () => {
+  let fgCalls = 0;
+  const device = {
+    foreground: async () => { fgCalls++; return { package: 'com.daimajia.gold' }; },
+    dumpTree: async () => ({ nodes: [{ index: 0, text: '', cls: 'Frame', pkg: 'com.google.android.permissioncontroller', resourceId: '', contentDesc: '', clickable: false, bounds: [0,0,10,10], children: [] }] }),
+  };
+  const r = await detectDialog(device);
+  assert.equal(r.detected, true);
+  assert.equal(r.reason, 'foreground-is-system-dialog');
+  assert.equal(fgCalls, 0);
+});

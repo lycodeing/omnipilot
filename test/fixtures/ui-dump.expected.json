@@ -1,9 +1,39 @@
 {
-  "description": "ui-dump.xml 的期望解析结果（手算，UiNode 契约形状 §1.1）",
+  "description": "ui-dump.xml 的期望解析结果（手算，UiNode 契约形状 §1.1 + 增量 pkg 字段）",
   "roots": 1,
   "flatCount": 14,
-  "flatTexts": ["", "", "", "相册", "", "", "电子相册", "2025-09-16", "", "", "家庭相册", "2026-01-02", "新建相册", ""],
-  "flatClickables": [false, false, true, false, false, true, false, false, true, true, false, false, true, true],
+  "flatTexts": [
+    "",
+    "",
+    "",
+    "相册",
+    "",
+    "",
+    "电子相册",
+    "2025-09-16",
+    "",
+    "",
+    "家庭相册",
+    "2026-01-02",
+    "新建相册",
+    ""
+  ],
+  "flatClickables": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true
+  ],
   "nodes": [
     {
       "index": 0,
@@ -13,8 +43,17 @@
       "contentDesc": "",
       "clickable": false,
       "enabled": true,
-      "bounds": [0, 0, 720, 1280],
-      "center": [360, 640],
+      "pkg": "com.lgdg.fourt",
+      "bounds": [
+        0,
+        0,
+        720,
+        1280
+      ],
+      "center": [
+        360,
+        640
+      ],
       "children": [
         {
           "index": 0,
@@ -24,8 +63,17 @@
           "contentDesc": "",
           "clickable": false,
           "enabled": true,
-          "bounds": [0, 64, 720, 128],
-          "center": [360, 96],
+          "pkg": "com.lgdg.fourt",
+          "bounds": [
+            0,
+            64,
+            720,
+            128
+          ],
+          "center": [
+            360,
+            96
+          ],
           "children": [
             {
               "index": 0,
@@ -35,8 +83,17 @@
               "contentDesc": "返回",
               "clickable": true,
               "enabled": true,
-              "bounds": [16, 72, 80, 120],
-              "center": [48, 96],
+              "pkg": "com.lgdg.fourt",
+              "bounds": [
+                16,
+                72,
+                80,
+                120
+              ],
+              "center": [
+                48,
+                96
+              ],
               "children": []
             },
             {
@@ -47,8 +104,17 @@
               "contentDesc": "",
               "clickable": false,
               "enabled": true,
-              "bounds": [96, 76, 200, 116],
-              "center": [148, 96],
+              "pkg": "com.lgdg.fourt",
+              "bounds": [
+                96,
+                76,
+                200,
+                116
+              ],
+              "center": [
+                148,
+                96
+              ],
               "children": []
             }
           ]
@@ -61,8 +127,17 @@
           "contentDesc": "",
           "clickable": false,
           "enabled": true,
-          "bounds": [0, 128, 720, 1100],
-          "center": [360, 614],
+          "pkg": "com.lgdg.fourt",
+          "bounds": [
+            0,
+            128,
+            720,
+            1100
+          ],
+          "center": [
+            360,
+            614
+          ],
           "children": [
             {
               "index": 0,
@@ -72,8 +147,17 @@
               "contentDesc": "",
               "clickable": true,
               "enabled": true,
-              "bounds": [16, 140, 704, 300],
-              "center": [360, 220],
+              "pkg": "com.lgdg.fourt",
+              "bounds": [
+                16,
+                140,
+                704,
+                300
+              ],
+              "center": [
+                360,
+                220
+              ],
               "children": [
                 {
                   "index": 0,
@@ -83,8 +167,17 @@
                   "contentDesc": "",
                   "clickable": false,
                   "enabled": true,
-                  "bounds": [32, 180, 300, 230],
-                  "center": [166, 205],
+                  "pkg": "com.lgdg.fourt",
+                  "bounds": [
+                    32,
+                    180,
+                    300,
+                    230
+                  ],
+                  "center": [
+                    166,
+                    205
+                  ],
                   "children": []
                 },
                 {
@@ -95,8 +188,17 @@
                   "contentDesc": "",
                   "clickable": false,
                   "enabled": true,
-                  "bounds": [32, 240, 220, 280],
-                  "center": [126, 260],
+                  "pkg": "com.lgdg.fourt",
+                  "bounds": [
+                    32,
+                    240,
+                    220,
+                    280
+                  ],
+                  "center": [
+                    126,
+                    260
+                  ],
                   "children": []
                 },
                 {
@@ -107,8 +209,17 @@
                   "contentDesc": "查看",
                   "clickable": true,
                   "enabled": true,
-                  "bounds": [640, 190, 690, 240],
-                  "center": [665, 215],
+                  "pkg": "com.lgdg.fourt",
+                  "bounds": [
+                    640,
+                    190,
+                    690,
+                    240
+                  ],
+                  "center": [
+                    665,
+                    215
+                  ],
                   "children": []
                 }
               ]
@@ -121,8 +232,17 @@
               "contentDesc": "",
               "clickable": true,
               "enabled": true,
-              "bounds": [16, 300, 704, 460],
-              "center": [360, 380],
+              "pkg": "com.lgdg.fourt",
+              "bounds": [
+                16,
+                300,
+                704,
+                460
+              ],
+              "center": [
+                360,
+                380
+              ],
               "children": [
                 {
                   "index": 0,
@@ -132,8 +252,17 @@
                   "contentDesc": "",
                   "clickable": false,
                   "enabled": true,
-                  "bounds": [32, 340, 300, 390],
-                  "center": [166, 365],
+                  "pkg": "com.lgdg.fourt",
+                  "bounds": [
+                    32,
+                    340,
+                    300,
+                    390
+                  ],
+                  "center": [
+                    166,
+                    365
+                  ],
                   "children": []
                 },
                 {
@@ -144,8 +273,17 @@
                   "contentDesc": "",
                   "clickable": false,
                   "enabled": true,
-                  "bounds": [32, 400, 220, 440],
-                  "center": [126, 420],
+                  "pkg": "com.lgdg.fourt",
+                  "bounds": [
+                    32,
+                    400,
+                    220,
+                    440
+                  ],
+                  "center": [
+                    126,
+                    420
+                  ],
                   "children": []
                 }
               ]
@@ -158,8 +296,17 @@
               "contentDesc": "",
               "clickable": true,
               "enabled": true,
-              "bounds": [200, 980, 520, 1060],
-              "center": [360, 1020],
+              "pkg": "com.lgdg.fourt",
+              "bounds": [
+                200,
+                980,
+                520,
+                1060
+              ],
+              "center": [
+                360,
+                1020
+              ],
               "children": []
             }
           ]
@@ -172,8 +319,17 @@
           "contentDesc": "搜索相册",
           "clickable": true,
           "enabled": true,
-          "bounds": [16, 1140, 704, 1220],
-          "center": [360, 1180],
+          "pkg": "com.lgdg.fourt",
+          "bounds": [
+            16,
+            1140,
+            704,
+            1220
+          ],
+          "center": [
+            360,
+            1180
+          ],
           "children": []
         }
       ]

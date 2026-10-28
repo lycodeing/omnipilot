@@ -20,10 +20,12 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
 
   // 设备就绪等待（冷启动窗口）：默认在真实设备上启用；测试注入 exec 时默认跳过（避免等 60s）
   const shouldWait = waitReady === null ? !exec : Boolean(waitReady);
+  let bootSize = null;
   if (shouldWait) {
     try {
       const r = await adb.waitForBoot({ timeoutMs: Number(process.env.ASK_BOOT_TIMEOUT_MS) || 60_000 });
       if (!r.ready) console.warn(`[warn] ${r.reason}`);
+      if (r?.size) bootSize = r.size; // waitForBoot 已解析 wm size，seed 进 sizeCache 免重复往返
     } catch (e) {
       console.warn(`[warn] 等待设备就绪失败：${e?.message ?? e}`);
     }
@@ -32,7 +34,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   const cache = new TreeCache();
   const vlmCache = new Map();
   const yadb = new Yadb(adb);
-  let sizeCache = null;
+  let sizeCache = bootSize; // waitForBoot 已探测过 wm size 时直接复用（省一次往返）
   let sizeFailedAt = 0; // 上次探测失败的时刻（负缓存冷却，避免每个工具立刻重复撞墙）
   let pendingPreHash = null; // 懒校验（§5.4.3）：上次动作前的树 hash
   let lastActionChanged = null;
@@ -62,17 +64,39 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   }
 
   // /dev/tty dump 在新版 platform-tools 上 shell 通道 stdout 只有提示行，XML 须走 exec-out 通道；
-  // exec-out 失败或返回不含 </hierarchy>（同为 shell 通道的病征）时回退 legacy shell（旧镜像/redroid 兼容）
+  // exec-out 失败或返回不含 </hierarchy>（同为 shell 通道的病征）时回退 legacy shell（旧镜像/redroid 兼容）。
+  // 通道粘性（性能）：旧实现每次 dump 都先试 exec-out、失败再回退 shell——在 exec-out 不可用的
+  // 设备上每次 dump 付双倍成本（2.2s→4.4s+）。首次探测成功后记住通道，后续直走；失败再重置重探。
+  let dumpChannel = null; // 'execout' | 'shell' | null(未探测)
   async function dumpXmlRaw() {
-    try {
+    const tryExecOut = async () => {
       const buf = await adb.execOut(['exec-out', 'uiautomator', 'dump', '/dev/tty'], {
         timeoutMs: adb.timeouts.dump,
         binary: false,
       });
       const xml = buf.toString('utf8');
-      if (xml.includes('</hierarchy>')) return xml;
-    } catch (e) { /* 落入 legacy shell 回退 */ }
-    return adb.shell('uiautomator dump /dev/tty', { timeoutMs: adb.timeouts.dump });
+      if (!xml.includes('</hierarchy>')) throw new Error('exec-out 无 hierarchy');
+      return xml;
+    };
+    const tryShell = async () => {
+      const xml = await adb.shell('uiautomator dump /dev/tty', { timeoutMs: adb.timeouts.dump });
+      if (!String(xml).includes('</hierarchy>')) throw new Error('shell 无 hierarchy');
+      return xml;
+    };
+    // 粘性通道直走；失败则重置并用另一通道兜底一次（避免永久劣化）
+    if (dumpChannel === 'shell') {
+      try { return await tryShell(); } catch (e) { dumpChannel = null; }
+    } else if (dumpChannel === 'execout') {
+      try { return await tryExecOut(); } catch (e) { dumpChannel = null; }
+    }
+    try {
+      const xml = await tryExecOut();
+      dumpChannel = 'execout';
+      return xml;
+    } catch (e) { /* 回退 shell */ }
+    const xml = await tryShell();
+    dumpChannel = 'shell';
+    return xml;
   }
 
   async function dumpTree({ fresh = false } = {}) {
@@ -156,17 +180,30 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         return { ok: false, latencyMs: Date.now() - t0, error: String(e?.message ?? e) };
       }
     },
-    async inputText(bounds, text) {
+    async inputText(bounds, text, { clear = true } = {}) {
       try {
         const xy = action.resolvePoint(bounds, await getSize());
+        const want = String(text ?? '');
+        let doClear = clear;
+        if (doClear) {
+          // 条件清空（性能）：聚焦 tap **之前**读定位阶段的缓存树（fresh）取输入框当前文本；
+          // 已为空则跳过 keyboardClear（省一次设备侧 app_process JVM 冷启动 ~300-600ms）。
+          // tap 会置脏缓存，故必须在 tap 前读；缓存不可用时保守清空（语义与旧实现一致）。
+          const preTree = cache.peek();
+          if (preTree) {
+            const cur = readTextAt(flattenNodes(preTree.nodes), xy);
+            if (cur === '') doClear = false;
+          }
+        }
         await action.tap(adb, xy); // 点击聚焦
         // 清空+输入合并为一条 adb shell（省一次 spawn+队列等待）；回读校验保留
         // （input text 对中文静默失败的防线，§5.4.5）
-        await yadb.clearAndType(String(text ?? ''));
+        if (doClear) await yadb.clearAndType(want);
+        else await yadb.type(want);
         beforeAction();
         const tree = await dumpTree({ fresh: true }); // 回读校验强制用新树（§5.4.5）
         const readBack = readTextAt(flattenNodes(tree.nodes), xy);
-        const ok = readBack === String(text ?? '');
+        const ok = readBack === want;
         return {
           ok,
           readBack,
@@ -263,12 +300,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // 等待画面稳定：连续 quiet 次 dump 的树 hash 相同即稳定。
     // quiet=2（默认，稳）＝ 需 2 次 dump（约 2.2s/dump → 4.6s）；quiet=1（快）＝ 1 次即返回（约 2.2s，但只是单次快照）。
     // intervalMs 默认 200ms（单次 dump 约 2.2s，间隔只占 8%，调小收益有限）。
-    async waitIdle({ quiet = 2, intervalMs = 200, timeoutMs = 10000 } = {}) {
+    async waitIdle({ quiet = 2, intervalMs = 50, timeoutMs = 10000 } = {}) {
       const t0 = Date.now();
       let dumps = 0;
       let stableRun = 0;
       let prev = null;
       let stable = false;
+      let failStreak = 0; // dump 连续失败退避（设备离线期避免每 intervalMs 白 spawn 一次 adb）
       while (Date.now() - t0 < timeoutMs) {
         // dump 失败（转场中/uiautomator idle 超时，§20.4 已知）当作"未稳定"继续等，
         // 不再让异常逃出（曾使整条用例在 aiWaitFor 步判 error 中断，VERIFICATION-OVERVIEW §7）
@@ -278,6 +316,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         } catch { /* 未稳定，继续等 */ }
         dumps++;
         if (h !== null) {
+          failStreak = 0;
           stableRun = prev !== null && h === prev ? stableRun + 1 : 1;
           prev = h;
           if (stableRun >= quiet) {
@@ -287,46 +326,73 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         } else {
           stableRun = 0;
           prev = null;
+          failStreak++;
         }
-        await new Promise((r) => setTimeout(r, intervalMs));
+        // 单次 dump 本身 ~2.2s，轮间 sleep 对静默判定无增益：默认 50ms；
+        // dump 连续失败时退避 200→500ms，避免空转打设备
+        const sleepMs = failStreak > 0 ? Math.min(500, 200 * failStreak) : intervalMs;
+        await new Promise((r) => setTimeout(r, sleepMs));
       }
       return { stable, dumps };
     },
     // 等元素出现（§21）：比"等树不变"更语义、通常更快——每次 dump 后查目标是否已出现，出现即返回。
     // 返回 { appeared, dumps, matched: <文本> | null }。
     // selector 支持 'text=xx' | 'text*=xx' | 'resourceId=xx' | 'class=...#index=N'（同 readText 的匹配器）。
-    async waitForElement(selector, { timeoutMs = 10000, intervalMs = 200 } = {}) {
+    async waitForElement(selector, { timeoutMs = 10000, intervalMs = 50 } = {}) {
       const sel = String(selector ?? '').trim();
       if (!sel) return { appeared: false, dumps: 0, matched: null, error: 'selector 为空' };
-      const t0 = Date.now();
+      // 首轮吃缓存（性能）：若调用前 4s 内刚 dump 过且无动作置脏，目标可能已在树上，
+      // 白付一次 2.2s fresh dump 不值得；未命中再进入 fresh 轮询循环（语义不变）。
       let dumps = 0;
+      try {
+        const cachedTree = await dumpTree(); // cacheable
+        dumps++;
+        const m = matchSelector(flattenNodes(cachedTree.nodes), sel);
+        if (m?.node) return { appeared: true, dumps, matched: m.value || sel };
+      } catch { /* 缓存不可用 → 进入 fresh 循环 */ }
+      const t0 = Date.now();
+      let failStreak = 0;
       while (Date.now() - t0 < timeoutMs) {
         let flat = [];
         try {
           const tree = await dumpTree({ fresh: true }); // 强制新树（缓存命中会让"等待"失去意义）
           flat = flattenNodes(tree.nodes);
-        } catch { /* dump 失败（转场中）→ 继续等 */ }
+          failStreak = 0;
+        } catch { failStreak++; /* dump 失败（转场中）→ 继续等 */ }
         dumps++;
         if (flat.length) {
           const m = matchSelector(flat, sel);   // 返回 { node, value } | null
           if (m?.node) return { appeared: true, dumps, matched: m.value || sel };
         }
-        await new Promise((r) => setTimeout(r, intervalMs));
+        const sleepMs = failStreak > 0 ? Math.min(500, 200 * failStreak) : intervalMs;
+        await new Promise((r) => setTimeout(r, sleepMs));
       }
       return { appeared: false, dumps, matched: null };
     },
     // 等任一元素出现（多 selector，命中其一即返回）
-    async waitForAnyElement(selectors, { timeoutMs = 10000, intervalMs = 200 } = {}) {
+    async waitForAnyElement(selectors, { timeoutMs = 10000, intervalMs = 50 } = {}) {
       const sels = (Array.isArray(selectors) ? selectors : [selectors]).map((s) => String(s ?? '').trim()).filter(Boolean);
       if (!sels.length) return { appeared: false, dumps: 0, matched: null, error: 'selectors 为空' };
-      const t0 = Date.now();
+      // 首轮吃缓存（同 waitForElement）
       let dumps = 0;
+      try {
+        const cachedTree = await dumpTree();
+        dumps++;
+        const flat = flattenNodes(cachedTree.nodes);
+        for (const sel of sels) {
+          const m = matchSelector(flat, sel);
+          if (m?.node) return { appeared: true, dumps, matched: `${sel} → ${m.value || ''}` };
+        }
+      } catch { /* 缓存不可用 → fresh 循环 */ }
+      const t0 = Date.now();
+      let failStreak = 0;
       while (Date.now() - t0 < timeoutMs) {
         let flat = [];
         try {
           const tree = await dumpTree({ fresh: true });
           flat = flattenNodes(tree.nodes);
-        } catch { /* 继续等 */ }
+          failStreak = 0;
+        } catch { failStreak++; /* 继续等 */ }
         dumps++;
         if (flat.length) {
           for (const sel of sels) {
@@ -334,7 +400,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
             if (m?.node) return { appeared: true, dumps, matched: `${sel} → ${m.value || ''}` };
           }
         }
-        await new Promise((r) => setTimeout(r, intervalMs));
+        const sleepMs = failStreak > 0 ? Math.min(500, 200 * failStreak) : intervalMs;
+        await new Promise((r) => setTimeout(r, sleepMs));
       }
       return { appeared: false, dumps, matched: null };
     },

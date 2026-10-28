@@ -55,6 +55,10 @@ test('assertNoCrash：存活+前台一致 / 被杀 / 离开 app 三态', async (
     serial: 'test',
     exec: async (args) => {
       const joined = args.join(' ');
+      // 合并命令（dumpsys+pidof 一条 shell，性能优化）：模拟真实设备把两段输出拼一起
+      if (joined.includes('dumpsys') && joined.includes('pidof')) {
+        return { code: 0, stdout: `${dumpsys.trim()}\n${pid}\n`, stderr: '' };
+      }
       if (joined.includes('pidof')) return { code: pid ? 0 : 1, stdout: pid, stderr: '' };
       return { code: 0, stdout: dumpsys, stderr: '' };
     },

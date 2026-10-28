@@ -26,10 +26,27 @@ export async function processAlive(adb, packageName, { timeoutMs } = {}) {
 // 崩溃/被杀检测：进程存活 + 前台仍是预期包
 // expectedPackage 缺省时退化为"当前前台应用存活"——不能拿 null 去 pidof（真机复现：agent 无参调用
 // assert_no_crash 会被记成 "进程不存在: null" 的失败断言，污染 run 状态）
+// 性能：expectedPackage 已知时把 dumpsys 与 pidof 合并为**一条** shell（省一次 adb spawn+排队）；
+// 缺省时仍需先取前台包，保留两段式。
 export async function assertNoCrash(adb, expectedPackage, { timeoutMs } = {}) {
-  const fg = await foreground(adb, { timeoutMs });
+  let fg;
+  let alive;
+  if (expectedPackage) {
+    const out = await adb
+      .shell(`dumpsys activity activities | grep -iE "resumedactivity"; pidof ${expectedPackage}`, { timeoutMs })
+      .catch(() => '');
+    // 输出为两段拼接：dumpsys 的匹配行（可能为空）+ pidof 的 pid 行（可能为空）
+    const lines = String(out).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const resumedLine = lines.find((l) => /resumedactivity/i.test(l)) ?? '';
+    const pidLine = lines.find((l) => /^\d+(\s+\d+)*$/.test(l)) ?? '';
+    fg = parseResumedActivity(resumedLine) ?? { package: null, activity: null, resumedActivity: null };
+    alive = /\d+/.test(pidLine);
+  } else {
+    fg = await foreground(adb, { timeoutMs });
+    const pkg = fg.package;
+    alive = pkg ? await processAlive(adb, pkg, { timeoutMs }) : false;
+  }
   const pkg = expectedPackage ?? fg.package;
-  const alive = pkg ? await processAlive(adb, pkg, { timeoutMs }) : false;
   const ok = alive && (expectedPackage ? fg.package === expectedPackage : true);
   let error = null;
   if (!alive) error = `进程不存在: ${pkg ?? 'unknown'}`;

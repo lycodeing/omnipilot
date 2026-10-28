@@ -489,7 +489,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           const msgs = session.agent?.state?.messages;
           if (Array.isArray(msgs)) {
             const { pruneImages } = await import('../src/session/image-prune.js');
-            const keepN = Number(flags.keepImages); const pr = pruneImages(msgs, { keepRecent: Number.isFinite(keepN) && keepN >= 1 ? keepN : 3 });
+            const keepN = Number(flags['keep-images']); const pr = pruneImages(msgs, { keepRecent: Number.isFinite(keepN) && keepN >= 1 ? keepN : 3 });
             if (pr.replaced > 0) ctx.imagesPruned = (ctx.imagesPruned || 0) + pr.replaced;
           }
         } catch { /* 剪枝失败不阻断 */ }
@@ -503,9 +503,6 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     if (ctx.secretCalls.length > 0 && persist.strategy !== 'fresh' && session.sessionFile) {
       try { fs.rmSync(session.sessionFile, { force: true }); console.warn('检测到 secret_get/sms_read 调用，已删除会话文件（凭据不落盘）'); } catch { /* ignore */ }
     }
-
-    // 收尾：坐标缓存攒批 flush（locate-cache 去抖写盘，run 结束前排空，避免丢写）
-    try { await ctx.locateWithCache?.flush?.(); } catch { /* 缓存 flush 失败不阻断收尾 */ }
 
     // 收尾：报告（网络还原已移至 finally，保证异常/中断路径也执行，§2.6.2 ①）
     await recorder.finish(status === 'pass' ? 'pass' : status, { exitCode: status === 'pass' ? 0 : status === 'fail' ? 1 : 2 });
@@ -526,6 +523,9 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
   } catch (e) {
     console.error(`[warn] 网络还原异常：${e?.message ?? e}`);
   }
+    // 收尾：坐标缓存攒批 flush 放 finally——run 中途抛错（环境错误等）也要排空，
+    // 否则去抖 timer 被 process.exit 掐掉，pending 缓存行丢失（旧实现即时 upsert 无此问题）
+    try { await ctx?.locateWithCache?.flush?.(); } catch { /* 缓存 flush 失败不阻断收尾 */ }
     // 只关本 run 自建的桥；cmdRun 级共享桥由其收尾统一关闭（runHandle.bridge 为 null）
     try { if (runHandle?.bridge) await runHandle.bridge.close?.(); } catch { /* ignore */ }
     try { await device.close(); } catch { /* ignore */ }
@@ -550,10 +550,11 @@ async function cmdAsk({ positional, flags }) {
   if (!serialList.length) fail('未找到在线设备（adb devices），请用 --device <serial> 指定');
   const serial = serialList[0];
   let device;
+  let ctx = null; // 提升到 try 外：finally 的坐标缓存 flush 需要可见
   try { device = await createDevice({ serial, probeFile: WORKSPACE.probeFile }); } catch (e) { fail(`设备连接失败（${serial}）：${e.message}`); }
   try {
     const store = openDataset({ dataDir: WORKSPACE.datasetDir });
-    const ctx = createRunContext({ device, recorder: null, store, opts: { yes: true, timeoutMs: Number(flags.timeout || 60) * 1000 } }); ctx.stateDir = WORKSPACE.stateDir;
+    ctx = createRunContext({ device, recorder: null, store, opts: { yes: true, timeoutMs: Number(flags.timeout || 60) * 1000 } }); ctx.stateDir = WORKSPACE.stateDir;
     const modelCfg = resolveModelConfig(flags);
     let model = null;
     let modelRuntime = null;
@@ -594,6 +595,7 @@ async function cmdAsk({ positional, flags }) {
     else console.log(answer || '(无回答)');
     return answer ? 0 : 3;
   } finally {
+    try { await ctx?.locateWithCache?.flush?.(); } catch { /* ignore */ }
     try { await device.close(); } catch { /* ignore */ }
   }
 }

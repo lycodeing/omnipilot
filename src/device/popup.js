@@ -47,20 +47,35 @@ const NEG_TTL_MS = 1000;
 export async function detectDialog(device) {
   const now = Date.now();
   const cached = negCacheByDevice.get(device);
-  let fg = null;
   if (cached && cached.fg && now - cached.at < NEG_TTL_MS) {
-    fg = cached.fg;
-  } else {
+    // 负向 TTL 命中：前台非系统弹窗，直接走树扫描分支（不再付 dumpsys）
+    return treeScan(device, cached.fg);
+  }
+  // 优先从 UI 树派生前台包（根节点 package= 即前台应用，uitree 已保留 pkg 字段）：
+  // 写动作路径上 detectDialog 之后 locate 必然要 dump 同一棵树（缓存命中），
+  // 故先 dump 不浪费；省掉旧实现每次写动作前的一次 dumpsys 往返（~0.3-0.5s）。
+  let fg = null;
+  let tree = null;
+  try {
+    tree = await device.dumpTree();
+    const rootPkg = tree?.nodes?.[0]?.pkg || null;
+    if (rootPkg) fg = { package: rootPkg, activity: null, resumedActivity: null };
+  } catch { /* 树不可用 → 回落 dumpsys */ }
+  if (!fg) {
     fg = await device.foreground().catch(() => null);
-    if (!isSystemDialogForeground(fg)) negCacheByDevice.set(device, { at: now, fg });
   }
   if (isSystemDialogForeground(fg)) {
     return { detected: true, reason: 'foreground-is-system-dialog', pkg: fg.package };
   }
-  // 前台是目标 App，也要防"App 内弹权限框"（部分 ROM 在应用内呈现）——查授权按钮文本（严格子集防误判）
+  negCacheByDevice.set(device, { at: now, fg });
+  return treeScan(device, fg, tree);
+}
+
+// App 内嵌权限框检测：查授权按钮文本（严格子集防误判）。tree 可复用调用方已 dump 的树。
+async function treeScan(device, fg, tree = null) {
   try {
-    const tree = await device.dumpTree();
-    if (hasAllowText(tree?.nodes, DETECT_TEXTS)) {
+    const t = tree ?? (await device.dumpTree());
+    if (hasAllowText(t?.nodes, DETECT_TEXTS)) {
       return { detected: true, reason: 'allow-button-visible', pkg: fg?.package ?? null };
     }
   } catch { /* dump 失败不阻断 */ }
