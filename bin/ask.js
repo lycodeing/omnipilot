@@ -128,19 +128,23 @@ async function makeConfirm(message) {
   }
 }
 
-// 取会话里最近一条 assistant 文本（thought 归因 + ask 回答回显共用）
+// 取会话里最近一条**含文本**的 assistant 消息（thought 归因 + ask 回答回显共用）
 // 兼容两种读取路径：SDK 新版的 session.agent.state.messages 与旧版 session.messages。
+// 注意：assistant 消息可能是纯 toolCall（无 text）——必须继续往前扫，
+// 否则模型用工具回应断言时会把"无文本"误判成"模型无输出"。
 function lastAssistantText(session) {
   try {
     const msgs = session?.agent?.state?.messages ?? session?.messages ?? [];
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
-      if (m?.role === 'assistant') {
-        const parts = Array.isArray(m.content)
-          ? m.content.filter((c) => c?.type === 'text').map((c) => c.text ?? '')
-          : [];
-        return parts.join('\n').trim() || null;
-      }
+      // 只在本轮（最后一次 user 消息之后）内找文本，避免取到上一步的陈旧 thought
+      if (m?.role === 'user') break;
+      if (m?.role !== 'assistant') continue;
+      const parts = Array.isArray(m.content)
+        ? m.content.filter((c) => c?.type === 'text').map((c) => c.text ?? '')
+        : (typeof m.content === 'string' ? [m.content] : []);
+      const text = parts.join('\n').trim();
+      if (text) return text;
     }
   } catch { /* 会话不可读则无 thought */ }
   return null;
@@ -445,7 +449,10 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         // 断言附图（性能）：旧实现 prompt 不带图，模型必须先调一次 screen 工具
         // （= 额外一整轮模型往返 ~10s + 工具执行 ~3s）才能作答。这里直接随 prompt
         // 附当前屏压缩图，断言一轮完成。取图失败则退回无图（模型仍可自行调 screen）。
+        // 同时注入前台包名事实：截图无法表达"前台是哪个包"，不注入会诱导模型调工具核实，
+        // 导致断言步无文本输出（曾误判"模型无输出"）。
         let promptImages = [];
+        let fgNote = '';
         if (step.type === 'aiAssert') {
           try {
             const { compressForContext } = await import('../src/image/png.js');
@@ -453,9 +460,13 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             const c = await compressForContext(shot.buffer, { maxWidth: 540, quality: 70 });
             promptImages = [{ type: 'image', data: c.buffer.toString('base64'), mimeType: c.mimeType }];
           } catch { /* 取图失败不阻断断言 */ }
+          try {
+            const fg = await device.foreground();
+            if (fg?.package) fgNote = `\n（系统事实：当前前台包名为 ${fg.package}，Activity 为 ${fg.activity ?? '未知'}）`;
+          } catch { /* 前台事实缺失不阻断 */ }
         }
         const text = (step.type === 'aiAssert')
-          ? `【断言】${stepText}\n只依据随附的当前屏幕截图判断（若未附图则先调 screen）。只输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}。`
+          ? `【断言】${stepText}${fgNote}\n只依据随附的当前屏幕截图与上述系统事实判断，不要调用任何工具。只输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}。`
           : (step.type === 'aiQuery' && step.name)
             ? `${stepText}\n（把结果用 data_extract 或 data_store 落到数据集「${step.name}」）`
             : stepText;
