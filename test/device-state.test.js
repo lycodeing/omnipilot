@@ -99,3 +99,17 @@ test('assertNoCrash：无 expectedPackage 时退化为"当前前台应用存活"
   assert.match(dead.error, /进程不存在/);
   assert.match(dead.error, /com\.lgdg\.fourt/, '错误信息里应是解析出的包名而非 null/undefined');
 });
+
+test('assertNoCrash：合并 shell 输出含 topResumedActivity= 行时仍解析冒号行（回归）', async () => {
+  // 真实设备 grep -iE resumedactivity 会同时命中 topResumedActivity=（等号）与 mResumedActivity:（冒号）；
+  // parse 只认冒号形态，合并单条 shell 后必须显式选对行
+  const combined = [
+    'topResumedActivity=ActivityRecord{aaa u0 com.lgdg.fourt/io.X t1}',
+    'mResumedActivity: ActivityRecord{948c168 u0 com.lgdg.fourt/io.dcloud.PandoraEntryActivity t123}',
+    '12345',
+  ].join('\n');
+  const adb = new Adb({ serial: "test", exec: async () => ({ code: 0, stdout: combined, stderr: "" }) });
+  const r = await assertNoCrash(adb, "com.lgdg.fourt");
+  assert.deepEqual({ ok: r.ok, alive: r.alive, foreground: r.foreground, error: r.error },
+    { ok: true, alive: true, foreground: "com.lgdg.fourt", error: null });
+});
