@@ -1,0 +1,182 @@
+{
+  "description": "ui-dump.xml 的期望解析结果（手算，UiNode 契约形状 §1.1）",
+  "roots": 1,
+  "flatCount": 14,
+  "flatTexts": ["", "", "", "相册", "", "", "电子相册", "2025-09-16", "", "", "家庭相册", "2026-01-02", "新建相册", ""],
+  "flatClickables": [false, false, true, false, false, true, false, false, true, true, false, false, true, true],
+  "nodes": [
+    {
+      "index": 0,
+      "text": "",
+      "cls": "android.widget.FrameLayout",
+      "resourceId": "",
+      "contentDesc": "",
+      "clickable": false,
+      "enabled": true,
+      "bounds": [0, 0, 720, 1280],
+      "center": [360, 640],
+      "children": [
+        {
+          "index": 0,
+          "text": "",
+          "cls": "android.widget.LinearLayout",
+          "resourceId": "com.lgdg:id/action_bar",
+          "contentDesc": "",
+          "clickable": false,
+          "enabled": true,
+          "bounds": [0, 64, 720, 128],
+          "center": [360, 96],
+          "children": [
+            {
+              "index": 0,
+              "text": "",
+              "cls": "android.widget.ImageView",
+              "resourceId": "com.lgdg:id/btn_back",
+              "contentDesc": "返回",
+              "clickable": true,
+              "enabled": true,
+              "bounds": [16, 72, 80, 120],
+              "center": [48, 96],
+              "children": []
+            },
+            {
+              "index": 1,
+              "text": "相册",
+              "cls": "android.widget.TextView",
+              "resourceId": "",
+              "contentDesc": "",
+              "clickable": false,
+              "enabled": true,
+              "bounds": [96, 76, 200, 116],
+              "center": [148, 96],
+              "children": []
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "text": "",
+          "cls": "androidx.recyclerview.widget.RecyclerView",
+          "resourceId": "com.lgdg:id/album_list",
+          "contentDesc": "",
+          "clickable": false,
+          "enabled": true,
+          "bounds": [0, 128, 720, 1100],
+          "center": [360, 614],
+          "children": [
+            {
+              "index": 0,
+              "text": "",
+              "cls": "android.widget.LinearLayout",
+              "resourceId": "com.lgdg:id/album_item",
+              "contentDesc": "",
+              "clickable": true,
+              "enabled": true,
+              "bounds": [16, 140, 704, 300],
+              "center": [360, 220],
+              "children": [
+                {
+                  "index": 0,
+                  "text": "电子相册",
+                  "cls": "android.widget.TextView",
+                  "resourceId": "com.lgdg:id/album_name",
+                  "contentDesc": "",
+                  "clickable": false,
+                  "enabled": true,
+                  "bounds": [32, 180, 300, 230],
+                  "center": [166, 205],
+                  "children": []
+                },
+                {
+                  "index": 1,
+                  "text": "2025-09-16",
+                  "cls": "android.widget.TextView",
+                  "resourceId": "com.lgdg:id/album_date",
+                  "contentDesc": "",
+                  "clickable": false,
+                  "enabled": true,
+                  "bounds": [32, 240, 220, 280],
+                  "center": [126, 260],
+                  "children": []
+                },
+                {
+                  "index": 2,
+                  "text": "",
+                  "cls": "android.widget.ImageView",
+                  "resourceId": "com.lgdg:id/album_arrow",
+                  "contentDesc": "查看",
+                  "clickable": true,
+                  "enabled": true,
+                  "bounds": [640, 190, 690, 240],
+                  "center": [665, 215],
+                  "children": []
+                }
+              ]
+            },
+            {
+              "index": 1,
+              "text": "",
+              "cls": "android.widget.LinearLayout",
+              "resourceId": "com.lgdg:id/album_item",
+              "contentDesc": "",
+              "clickable": true,
+              "enabled": true,
+              "bounds": [16, 300, 704, 460],
+              "center": [360, 380],
+              "children": [
+                {
+                  "index": 0,
+                  "text": "家庭相册",
+                  "cls": "android.widget.TextView",
+                  "resourceId": "com.lgdg:id/album_name",
+                  "contentDesc": "",
+                  "clickable": false,
+                  "enabled": true,
+                  "bounds": [32, 340, 300, 390],
+                  "center": [166, 365],
+                  "children": []
+                },
+                {
+                  "index": 1,
+                  "text": "2026-01-02",
+                  "cls": "android.widget.TextView",
+                  "resourceId": "com.lgdg:id/album_date",
+                  "contentDesc": "",
+                  "clickable": false,
+                  "enabled": true,
+                  "bounds": [32, 400, 220, 440],
+                  "center": [126, 420],
+                  "children": []
+                }
+              ]
+            },
+            {
+              "index": 2,
+              "text": "新建相册",
+              "cls": "android.widget.Button",
+              "resourceId": "com.lgdg:id/btn_create",
+              "contentDesc": "",
+              "clickable": true,
+              "enabled": true,
+              "bounds": [200, 980, 520, 1060],
+              "center": [360, 1020],
+              "children": []
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "text": "",
+          "cls": "android.widget.EditText",
+          "resourceId": "com.lgdg:id/search_input",
+          "contentDesc": "搜索相册",
+          "clickable": true,
+          "enabled": true,
+          "bounds": [16, 1140, 704, 1220],
+          "center": [360, 1180],
+          "children": []
+        }
+      ]
+    }
+  ]
+}
