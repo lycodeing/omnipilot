@@ -160,8 +160,9 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       try {
         const xy = action.resolvePoint(bounds, await getSize());
         await action.tap(adb, xy); // 点击聚焦
-        await yadb.clear();
-        await yadb.type(String(text ?? ''));
+        // 清空+输入合并为一条 adb shell（省一次 spawn+队列等待）；回读校验保留
+        // （input text 对中文静默失败的防线，§5.4.5）
+        await yadb.clearAndType(String(text ?? ''));
         beforeAction();
         const tree = await dumpTree({ fresh: true }); // 回读校验强制用新树（§5.4.5）
         const readBack = readTextAt(flattenNodes(tree.nodes), xy);

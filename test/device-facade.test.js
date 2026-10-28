@@ -134,7 +134,7 @@ test('locate 走门面：精确文本 + clickable 兜底；readText 各 selector
   await device.close();
 });
 
-test('inputText：聚焦→keyboardClear→keyboard→回读校验（yadb 序列 §5.4.5）', async () => {
+test('inputText：聚焦→清空+输入（可合并为单条 shell）→回读校验（yadb 序列 §5.4.5）', async () => {
   const exec = makeExec({ dumpScript: [FIXTURE_INPUT] });
   const device = await createDeviceWithExecutor({ serial: 'test', exec });
   const r = await device.inputText([16, 1140, 704, 1220], '中文测试');
@@ -144,8 +144,14 @@ test('inputText：聚焦→keyboardClear→keyboard→回读校验（yadb 序列
   const kbIdx = calls.findIndex((c) => c.includes(`-keyboard '中文测试'`));
   assert.notEqual(clearIdx, -1);
   assert.notEqual(kbIdx, -1);
-  assert.ok(clearIdx < kbIdx, '先清空再输入');
-  // 序列：聚焦 tap → 清空 → 输入 → dump 回读
+  // 合并为单条 shell 时两者同索引：用串内顺序判定"先清空再输入"
+  if (clearIdx === kbIdx) {
+    const one = calls[clearIdx];
+    assert.ok(one.indexOf('-keyboardClear') < one.indexOf(`-keyboard '中文测试'`), '单条 shell 内先清空再输入');
+  } else {
+    assert.ok(clearIdx < kbIdx, '先清空再输入');
+  }
+  // 序列：聚焦 tap → 清空+输入 → dump 回读
   const tapIdx = calls.findIndex((c) => c.includes('input tap'));
   assert.ok(tapIdx !== -1 && tapIdx < clearIdx, '先点击聚焦');
   const dumpIdx = calls.findIndex((c) => c.includes('uiautomator dump'));
