@@ -1,0 +1,27 @@
+# 运行时产物（已分离到工作区 <ASK_HOME>/<日期>/<实例>/，默认 C:/opt/scene-kit）
+# 若在项目内误跑出来，一律忽略，避免污染源码树
+runs/
+datasets/
+sessions/
+.ask/
+dist/
+
+# 临时文件（调试取证 / 一次性脚本 / 探针，统一放 tmp/，不提交）
+tmp/
+
+# AI 工具本地状态目录（.pi/skills 是 skills/ 的生效副本，源版本在 skills/）
+.pi/
+.zcode/
+
+# 依赖与构建
+node_modules/
+report/viewer/dist/
+report/viewer/node_modules/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.log
+
+# 本地环境变量（含密钥，不提交）
+.env

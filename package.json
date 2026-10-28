@@ -1,0 +1,23 @@
+{
+  "name": "android-scene-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Android-scenario test agent: Pi agent loop + self-built adb device layer + MCP bridge",
+  "bin": {
+    "ask": "./bin/ask.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "docs:check": "node scripts/check-mermaid.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1",
+    "marked": "^14.1.4",
+    "mermaid": "^11.17.2"
+  }
+}
