@@ -343,6 +343,7 @@ describe('perception tools', () => {
     const r = await tool.execute('id1', { target: '电子相册' }, undefined, undefined, {});
     const body = getContent(r);
     assert.equal(body.ok, true);
+    await ctx.locateWithCache.flush(); // 攒批写盘后断言
     const rows = store.read('locate_cache');
     assert.equal(rows.length, 1);
     assert.equal(rows[0].key, 'c1::3::0::电子相册', '新键 = caseId::stepIndex::locateOrdinal::target');
@@ -534,6 +535,7 @@ test('locate 用步骤身份做键：连续两次同 target 得到两行不同�
   const locate = buildTools(ctx).find((t) => t.name === 'locate');
   await locate.execute('a', { target: '热榜' }, undefined, undefined, {});
   await locate.execute('b', { target: '热榜' }, undefined, undefined, {});
+  await ctx.locateWithCache.flush(); // 攒批写盘后断言
   const rows = store.read('locate_cache');
   assert.equal(rows.length, 2, '两次定位应两行（不互相覆盖）');
   assert.notEqual(rows[0].key, rows[1].key);

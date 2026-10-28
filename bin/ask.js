@@ -25,6 +25,7 @@ const WORKSPACE = resolveWorkspace();
 // 单指针会互相覆盖——信号处理只能看到最后一个，先结束的 run 还会把别人的 ctx 清掉（复审发现）。
 const activeRuns = new Set();   // 每项 { ctx, device, bridge, serial }，runOne 开始时在册、finally 注销
 let cleaningUp = false;
+let sharedBridgeRef = null;      // cmdRun 级共享 MCP 桥：信号退出时也要能关（runOne 不持有）
 
 async function gracefulExit(sig) {
   if (cleaningUp) return;                 // 防重入（信号 + finally 双触发）
@@ -35,11 +36,13 @@ async function gracefulExit(sig) {
       const { restoreNetwork } = await import('../src/state-mutations.js');
       for (const run of activeRuns) {
         await restoreNetwork(run.device, run.ctx).catch(() => {});
+        try { await run.ctx?.locateWithCache?.flush?.(); } catch { /* ignore */ }
         try { await run.bridge?.close?.(); } catch { /* ignore */ }
         try { await run.device?.close?.(); } catch { /* ignore */ }
         if (run.serial) releaseLock(WORKSPACE.lockRoot, run.serial);
       }
     }
+    try { await sharedBridgeRef?.close?.(); } catch { /* ignore */ }
   } finally {
     process.exit(130);
   }
@@ -70,6 +73,7 @@ const usage = `ask — 安卓场景测试 agent
   --model-url/--model-key/--model-name/--model-family   覆盖 ASK_MODEL_* 环境变量
   --prompt <t> --prompt-file <f> --prompt-mode append|replace|none
   --vlm-locate --yes --timeout <sec> --fresh-locate --json --quiet --pregrant
+  --keep-images <n>   会话历史保留最近 n 张截图（默认 3；断言密集用例可设 2 省 token）
   会话保留: --keep(默认) --fresh --continue --session <file> --keep-data
 `;
 
@@ -177,23 +181,44 @@ async function cmdRun({ positional, flags }) {
   cases.forEach((c, i) => groups[i % serials.length].cases.push(c));
   const active = groups.filter((g) => g.cases.length);
   let aborted = false;
-  const settled = await Promise.all(active.map(async (g) => {
-    const results = [];
-    for (const caseObj of g.cases) {
-      if (aborted) { results.push({ case: caseObj.name, exitCode: 2, skipped: true }); continue; }
-      const lock = acquireLock(WORKSPACE.lockRoot, g.serial);
-      if (!lock.ok) { aborted = true; results.push({ case: caseObj.name, exitCode: 2, error: lock.reason }); continue; }
-      try {
-        const exitCode = await runOne(caseObj, { flags, serial: g.serial });
-        results.push({ case: caseObj.name, exitCode });
-        if (exitCode === 2) aborted = true; // 环境错误立即终止
-      } finally {
-        releaseLock(WORKSPACE.lockRoot, g.serial);
-      }
+
+  // MCP 桥提升到 cmdRun 级（性能）：旧实现每条用例都重建连接（stdio 子进程冷启动
+  // 1-5s/server + listTools），N 条用例付 N 次握手税。这里建一次、跨用例共享、收尾统一关。
+  let sharedBridge = null;
+  try {
+    const { loadMcpConfig } = await import('../src/mcp/config.js');
+    const { createMcpBridge } = await import('../src/mcp/bridge.js');
+    const mcpConfig = loadMcpConfig(path.join(PROJECT_ROOT, 'mcp.json'));
+    if (!mcpConfig.missing && Object.keys(mcpConfig.servers).length) {
+      sharedBridge = await createMcpBridge({ config: mcpConfig, logger: (m) => !flags.quiet && console.warn(m) });
+      sharedBridgeRef = sharedBridge; // 供信号退出路径关闭
     }
-    return results;
-  }));
-  const results = settled.flat();
+  } catch (e) {
+    console.warn(`[mcp] 桥创建失败（不阻断）：${e?.message ?? e}`);
+  }
+
+  let results = [];
+  try {
+    const settled = await Promise.all(active.map(async (g) => {
+      const perGroup = [];
+      for (const caseObj of g.cases) {
+        if (aborted) { perGroup.push({ case: caseObj.name, exitCode: 2, skipped: true }); continue; }
+        const lock = acquireLock(WORKSPACE.lockRoot, g.serial);
+        if (!lock.ok) { aborted = true; perGroup.push({ case: caseObj.name, exitCode: 2, error: lock.reason }); continue; }
+        try {
+          const exitCode = await runOne(caseObj, { flags, serial: g.serial, bridge: sharedBridge });
+          perGroup.push({ case: caseObj.name, exitCode });
+          if (exitCode === 2) aborted = true; // 环境错误立即终止
+        } finally {
+          releaseLock(WORKSPACE.lockRoot, g.serial);
+        }
+      }
+      return perGroup;
+    }));
+    results = settled.flat();
+  } finally {
+    try { await sharedBridge?.close?.(); } catch { /* ignore */ }
+  }
   if (!flags.quiet && parallel > 1) {
     for (const r of results) console.log(`run ${r.case} → exit ${r.exitCode}${r.skipped ? '（已跳过）' : ''}`);
   }
@@ -203,7 +228,7 @@ async function cmdRun({ positional, flags }) {
 }
 
 // 单条用例执行：锁 → createDevice → RunRecorder → createAskSession → 逐步 prompt → finish
-async function runOne(caseObj, { flags, serial }) {
+async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
   const { createDevice } = await import('../src/device/index.js');
   const { RunRecorder } = await import('../src/recorder/index.js');
   const { openDataset } = await import('../src/store/dataset.js');
@@ -250,12 +275,18 @@ async function runOne(caseObj, { flags, serial }) {
     activeRuns.add(runHandle);
     if (!opts.yes && process.stdin.isTTY) ctx.confirm = makeConfirm; // 交互确认钩子（§13.3）
 
-    // MCP（连接失败只 warn 不阻断）
-    const mcpConfig = loadMcpConfig(path.join(PROJECT_ROOT, 'mcp.json'));
-    if (!mcpConfig.missing && Object.keys(mcpConfig.servers).length) {
-      bridge = await createMcpBridge({ config: mcpConfig, logger: (m) => !flags.quiet && console.warn(m) });
+    // MCP：复用 cmdRun 级共享桥（跨用例免重复握手）；未注入时退回自建（兼容 do/ask 直调）
+    if (sharedBridge) {
+      bridge = sharedBridge;
       ctx.mcp = bridge;
-      runHandle.bridge = bridge;
+      runHandle.bridge = null; // 共享桥由 cmdRun 收尾关闭，runOne 不得关
+    } else {
+      const mcpConfig = loadMcpConfig(path.join(PROJECT_ROOT, 'mcp.json'));
+      if (!mcpConfig.missing && Object.keys(mcpConfig.servers).length) {
+        bridge = await createMcpBridge({ config: mcpConfig, logger: (m) => !flags.quiet && console.warn(m) });
+        ctx.mcp = bridge;
+        runHandle.bridge = bridge;
+      }
     }
 
     // preflight 预授权（§2.7.2 一层）：**默认关闭**，`--pregrant` 显式开启。
@@ -296,14 +327,15 @@ async function runOne(caseObj, { flags, serial }) {
 
     // 设备事实采集（L2 占位符填充）：try/catch 包住，采集失败降级为不传
     let deviceFacts = null;
-    try { deviceFacts = await collectDeviceFacts(device); } catch { /* 降级 */ }
+    try { deviceFacts = await collectDeviceFacts(device, { serial }); } catch { /* 降级 */ }
 
     // 启动自检（§2.6.2 ⑤）：上次 run 可能没还原干净。仅当设备支持 net 时才检查，避免噪音。
+    // 复用 facts 已采的 netProfile（旧实现在 facts 内已查一次 netStatus，这里又查一次）。
     if (deviceFacts && deviceFacts.netSupported === true) {
       try {
-        const st = await device.netStatus();
-        if (st?.profile && st.profile !== 'off' && st.profile !== 'unknown') {
-          console.warn(`[warn] 设备网络档位为 ${st.profile}（上次 run 未还原？），已自动恢复为 off`);
+        const profile = deviceFacts.netProfile ?? null;
+        if (profile && profile !== 'off' && profile !== 'unknown') {
+          console.warn(`[warn] 设备网络档位为 ${profile}（上次 run 未还原？），已自动恢复为 off`);
           await device.netSetProfile('off');
         }
       } catch { /* 自检失败不阻断 */ }
@@ -319,16 +351,20 @@ async function runOne(caseObj, { flags, serial }) {
     });
     for (const w of prompt.warnings) console.warn(`[warn] ${w}`);
 
+    // 工具实例只建一次（性能+一致性）：旧实现 createAskSession 内建一套、toolMap 又建一套，
+    // screen_diff 的基线 hash 等闭包状态会分裂成两份。同一数组同时给 agent 与引擎直执行。
+    const { buildTools } = await import('../src/tools/index.js');
+    const runTools = buildTools(ctx);
     const session = await createAskSession(ctx, {
       systemPrompt: prompt.systemPrompt,
       sessionManager,
       model,
       modelRuntime,
+      tools: runTools,
     });
 
-    // 引擎直执行步骤用：工具名 → 工具（含记账包装，复用与 agent 相同的执行路径）
-    const { buildTools } = await import('../src/tools/index.js');
-    const toolMap = new Map(buildTools(ctx).map((t) => [t.name, t]));
+    // 引擎直执行步骤用：工具名 → 工具（与 agent 共用同一批实例）
+    const toolMap = new Map(runTools.map((t) => [t.name, t]));
 
     // 逐步骤执行。ai/aiQuery/aiAssert 的设备动作由工具记账包装自动写入 steps[]（§14.1），
     // 这里只记用例级的 net/sleep/aiWaitFor（它们不走工具层）。
@@ -369,7 +405,7 @@ async function runOne(caseObj, { flags, serial }) {
             const tool = toolMap.get(call.tool);
             if (tool) {
               // 引擎直执行：0 轮模型往返（这正是拆分粗粒度 ai: 的收益来源）。
-              // 结果**不进 session**（那会多一轮 LLM 请求）；改为记录到 ctx.engineLog 供报告审计。
+              // 结果**不进 session**（那会多一轮 LLM 请求）；记录到 ctx.engineLog 仅作 run 内调试/排查用（recorder 不消费，引擎步的 run.json 记录来自 withRecording 包装）。
               const res = await tool.execute(`engine-${i}`, call.params, null, null, {});
               const d = res?.details ?? {};
               ctx.engineLog.push({ step: i, type: step.type, tool: call.tool, ok: d.ok !== false, error: d.error ?? null });
@@ -405,12 +441,24 @@ async function runOne(caseObj, { flags, serial }) {
           continue;
         }
 
+        // 断言附图（性能）：旧实现 prompt 不带图，模型必须先调一次 screen 工具
+        // （= 额外一整轮模型往返 ~10s + 工具执行 ~3s）才能作答。这里直接随 prompt
+        // 附当前屏压缩图，断言一轮完成。取图失败则退回无图（模型仍可自行调 screen）。
+        let promptImages = [];
+        if (step.type === 'aiAssert') {
+          try {
+            const { compressForContext } = await import('../src/image/png.js');
+            const shot = await device.screencap();
+            const c = await compressForContext(shot.buffer, { maxWidth: 540, quality: 70 });
+            promptImages = [{ type: 'image', data: c.buffer.toString('base64'), mimeType: c.mimeType }];
+          } catch { /* 取图失败不阻断断言 */ }
+        }
         const text = (step.type === 'aiAssert')
-          ? `【断言】${stepText}\n只依据当前屏幕可见元素判断。回答第一行给结论（通过/不通过），依据写清楚；也可以输出 JSON {"passed": true/false, "reason": "..."}。`
+          ? `【断言】${stepText}\n只依据随附的当前屏幕截图判断（若未附图则先调 screen）。只输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}。`
           : (step.type === 'aiQuery' && step.name)
             ? `${stepText}\n（把结果用 data_extract 或 data_store 落到数据集「${step.name}」）`
             : stepText;
-        await session.prompt(text, { images: [] });
+        await session.prompt(text, { images: promptImages });
         const answer = lastAssistantText(session);
         ctx.lastThought = answer;
         if (step.type === 'aiAssert') {
@@ -423,13 +471,13 @@ async function runOne(caseObj, { flags, serial }) {
         status = 'error';
         break;
       } finally {
-        // 会话历史截图治理（§16）：保留最近 3 张图，更早的替换为文字占位符，
-        // 避免 prompt tokens 随历史线性膨胀（实测 20 张图 → 67k tokens / 单轮 26s）。
+        // 会话历史截图治理（§16）：保留最近 N 张图（--keep-images，默认 3），更早的替换为
+        // 文字占位符，避免 prompt tokens 随历史线性膨胀（实测 20 张图 → 67k tokens / 单轮 26s）。
         try {
           const msgs = session.agent?.state?.messages;
           if (Array.isArray(msgs)) {
             const { pruneImages } = await import('../src/session/image-prune.js');
-            const pr = pruneImages(msgs, { keepRecent: 3 });
+            const keepN = Number(flags.keepImages); const pr = pruneImages(msgs, { keepRecent: Number.isFinite(keepN) && keepN >= 1 ? keepN : 3 });
             if (pr.replaced > 0) ctx.imagesPruned = (ctx.imagesPruned || 0) + pr.replaced;
           }
         } catch { /* 剪枝失败不阻断 */ }
@@ -443,6 +491,9 @@ async function runOne(caseObj, { flags, serial }) {
     if (ctx.secretCalls.length > 0 && persist.strategy !== 'fresh' && session.sessionFile) {
       try { fs.rmSync(session.sessionFile, { force: true }); console.warn('检测到 secret_get/sms_read 调用，已删除会话文件（凭据不落盘）'); } catch { /* ignore */ }
     }
+
+    // 收尾：坐标缓存攒批 flush（locate-cache 去抖写盘，run 结束前排空，避免丢写）
+    try { await ctx.locateWithCache?.flush?.(); } catch { /* 缓存 flush 失败不阻断收尾 */ }
 
     // 收尾：报告（网络还原已移至 finally，保证异常/中断路径也执行，§2.6.2 ①）
     await recorder.finish(status === 'pass' ? 'pass' : status, { exitCode: status === 'pass' ? 0 : status === 'fail' ? 1 : 2 });
@@ -463,7 +514,8 @@ async function runOne(caseObj, { flags, serial }) {
   } catch (e) {
     console.error(`[warn] 网络还原异常：${e?.message ?? e}`);
   }
-    try { await bridge?.close?.(); } catch { /* ignore */ }
+    // 只关本 run 自建的桥；cmdRun 级共享桥由其收尾统一关闭（runHandle.bridge 为 null）
+    try { if (runHandle?.bridge) await runHandle.bridge.close?.(); } catch { /* ignore */ }
     try { await device.close(); } catch { /* ignore */ }
     if (runHandle) activeRuns.delete(runHandle);
   }
@@ -502,7 +554,7 @@ async function cmdAsk({ positional, flags }) {
     }
     // 设备事实采集（L2 占位符填充）：try/catch 包住，采集失败降级为不传
     let deviceFacts = null;
-    try { deviceFacts = await collectDeviceFacts(device); } catch { /* 降级 */ }
+    try { deviceFacts = await collectDeviceFacts(device, { serial }); } catch { /* 降级 */ }
     const prompt = assemblePrompt({
       // replace：跳过 L1 引擎层、保留 L2 安卓层，并把只读约束作为 L3 用户层注入；
       // 之前用 none 会把这段约束整个丢掉（评审发现：L3 在 none 模式下被跳过）

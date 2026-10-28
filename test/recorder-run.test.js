@@ -124,7 +124,7 @@ test('未收口的步骤在 finish 时自动标记 unfinished', async (t) => {
   assert.equal(typeof doc.steps[0].durationMs, 'number');
 });
 
-test('attachScreenshot 落 PNG 并回填 step.screenshot 相对路径', async (t) => {
+test('attachScreenshot 回填相对路径；PNG 异步落盘、finish 后保证在盘', async (t) => {
   const runsDir = tmpRuns(t);
   const rec = new RunRecorder({ runsDir, caseName: 'c.yaml' });
   const h = rec.startStep('tap', 'x');
@@ -132,10 +132,11 @@ test('attachScreenshot 落 PNG 并回填 step.screenshot 相对路径', async (t
   const rel = rec.attachScreenshot(h.index, PNG);
   const abs = path.join(runsDir, rec.runId, `step-${h.index}.png`);
   assert.equal(rel, toPosix(abs));
+  assert.equal(rec._steps[0].screenshot, rel);
+  await rec.finish('pass'); // finish 前统一 await 后台写盘
   assert.equal(fs.existsSync(abs), true);
   assert.ok(fs.statSync(abs).size > 0);
   assert.equal(fs.readFileSync(abs).subarray(0, 4).toString('latin1'), '\x89PNG');
-  assert.equal(rec._steps[0].screenshot, rel);
 });
 
 test('脱敏三处落点：secret 步结果强制替换、thought 与全文兜底扫描', async (t) => {
