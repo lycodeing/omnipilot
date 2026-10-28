@@ -17,5 +17,6 @@ if (!data || !Array.isArray(data.executions) || data.executions.length === 0) {
       '</div></div>'
   }
 } else if (root) {
-  createApp(App).mount('#root')
+  // 只解析一次（P1-2）：解析结果经 provide 注入 App，App 不再自行 parseReportDocument
+  createApp(App).provide('reportData', data).mount('#root')
 }

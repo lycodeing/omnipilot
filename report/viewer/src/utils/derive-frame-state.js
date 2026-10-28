@@ -36,18 +36,17 @@ export function deriveFrameState(frame, layout) {
     return emptyState(f);
   }
 
-  // 命中段 = startFrame <= f 的最后一个段（含 0 帧段，同 startFrame 取后者，瞬时状态生效）
-  let hit = null;
-  let hitIndex = -1;
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    if ((seg.startFrame ?? 0) <= f) {
-      hit = seg;
-      hitIndex = i;
-    } else {
-      break; // 游标累加保证 startFrame 升序
-    }
+  // 命中段 = startFrame <= f 的最后一个段（含 0 帧段，同 startFrame 取后者，瞬时状态生效）。
+  // startFrame 由游标累加保证非降序 → 二分找第一个 startFrame > f 的位置，其前一个即命中段（P2-7）
+  let lo = 0;
+  let hi = segments.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((segments[mid]?.startFrame ?? 0) <= f) lo = mid + 1;
+    else hi = mid;
   }
+  let hitIndex = lo - 1;
+  let hit = hitIndex >= 0 ? segments[hitIndex] : null;
   if (!hit) {
     hit = segments[0];
     hitIndex = 0;

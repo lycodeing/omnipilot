@@ -2,7 +2,7 @@
 // 布局装配：顶部导航 + 侧栏（桌面静态 / 平板抽屉 / 手机 Tab 切换）+ 主区卡片（播放器 + 详情卡）；
 // 持有 currentExecutionIndex / currentTaskId（契约 §4）。视觉参考 Midscene 报告：#f2f4f7 页面底、
 // 白色圆角主卡、#1677ff 交互色、状态语义色 pass/fail。
-import { computed, nextTick, ref } from 'vue'
+import { computed, inject, nextTick, ref } from 'vue'
 import { parseReportDocument } from './composables/useDump.js'
 import Sidebar from './components/Sidebar.vue'
 import Player from './components/Player.vue'
@@ -11,7 +11,9 @@ import AssertionCard from './components/AssertionCard.vue'
 import NetworkLane from './components/NetworkLane.vue'
 import LocateStats from './components/LocateStats.vue'
 
-const data = parseReportDocument()
+// P1-2：数据由 main.js 解析一次并 provide('reportData')；这里 inject 复用，避免二次全量解析
+// （inject 缺失时才回退自行解析，保证组件在独立挂载场景仍可用）
+const data = inject('reportData', null) || parseReportDocument()
 const meta = data.meta || {}
 const executions = Array.isArray(data.executions) ? data.executions : []
 const screenshots = data.screenshots || {}

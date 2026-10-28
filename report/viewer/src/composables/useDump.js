@@ -30,6 +30,33 @@ function isStr(v) {
   return typeof v === 'string'
 }
 
+// single-html 模式的截图是 MB 级 base64 data URL：一次性转 Blob + objectURL。
+// 收益：浏览器对 blob 解码结果可缓存复用（换图预热/交叉淡入不再重复同步解码），
+// 且 JS 层不再长期持有 base64 大字符串。非 data URL（assets 模式相对路径）直通。
+function toDisplayUrl(src) {
+  if (!isStr(src) || !src.startsWith('data:')) return src
+  const comma = src.indexOf(',')
+  if (comma < 0) return src
+  const meta = src.slice(5, comma) // 如 image/png;base64
+  if (!/;\s*base64$/i.test(meta)) return src
+  if (
+    typeof atob !== 'function' ||
+    typeof Blob !== 'function' ||
+    typeof URL === 'undefined' ||
+    typeof URL.createObjectURL !== 'function'
+  ) {
+    return src // 环境不支持（如老 Node 测试环境）→ 保持原值
+  }
+  try {
+    const bin = atob(src.slice(comma + 1))
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return URL.createObjectURL(new Blob([bytes], { type: meta.split(';')[0] || 'image/png' }))
+  } catch {
+    return src // base64 损坏等 → 保持原值
+  }
+}
+
 // 同 data-group-id 去重保最新；ask-image 收进 screenshots；assets 模式相对路径直通
 // 返回 { meta, executions, screenshots, assertions, networkTimeline, rollbacks }
 // （后三项为契约 §4.1 形状之外的增加项，供 AssertionCard/NetworkLane 取数，见最终报告偏差说明）
@@ -72,7 +99,7 @@ export function parseReportDocument(doc = document) {
     if (dump.screenshots && typeof dump.screenshots === 'object' && !Array.isArray(dump.screenshots)) {
       for (const [id, src] of Object.entries(dump.screenshots)) {
         // single-html 为 "" 占位（真图在 ask-image 标签）；assets 模式为相对路径
-        if (id && isStr(src)) screenshots[id] = src
+        if (id && isStr(src) && src) screenshots[id] = toDisplayUrl(src)
       }
     }
     if (Array.isArray(dump.assertions)) assertions.push(...dump.assertions)
@@ -89,7 +116,7 @@ export function parseReportDocument(doc = document) {
   for (const tag of imageTags) {
     const id = tag.getAttribute('data-id')
     const src = (tag.textContent || '').trim()
-    if (id && src) screenshots[id] = src // ask-image 为权威数据源，覆盖占位
+    if (id && src) screenshots[id] = toDisplayUrl(src) // ask-image 为权威数据源，覆盖占位
   }
 
   return { meta, executions, screenshots, assertions, networkTimeline, rollbacks }

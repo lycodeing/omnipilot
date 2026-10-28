@@ -1,7 +1,7 @@
 <script setup>
 // 播放器：buildReplayScripts → layoutScripts → createFramePlayer，逐帧 deriveFrameState 下发；
 // 控制条：seek（100% = lastEffectiveFrame）/ 章节标记 / 倍速 / 空格 / 全屏（契约 §4 / §19.8.5）
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { createFramePlayer } from '../composables/useFramePlayer.js'
 import { buildReplayScripts } from '../utils/buildReplayScripts.js'
 import { layoutScripts } from '../utils/playback-math.js'
@@ -19,13 +19,44 @@ const EMPTY_LAYOUT = { segments: [], totalFrames: 0, lastEffectiveFrame: 0 }
 
 const stageRef = ref(null)
 const seekBarRef = ref(null)
-const layoutRef = ref(EMPTY_LAYOUT)
-const state = ref(deriveFrameState(0, EMPTY_LAYOUT))
+// P1-3：layout 与逐帧 state 都是整值替换、从不内部突变 → shallowRef，
+// 30fps 热路径读写不再经过深响应 Proxy
+const layoutRef = shallowRef(EMPTY_LAYOUT)
+const state = shallowRef(deriveFrameState(0, EMPTY_LAYOUT))
 const currentFrame = ref(0)
 const playing = ref(false)
 const rate = ref(1)
 
 let engine = null
+let lastTaskId = null // P2-8：仅 taskId 变化时 emit('task-change')
+const prewarmed = new Set() // P2-6：已预热截图 id（layout 重建时清空）
+
+// 预热"当前段 + 后 1-2 段"的截图解码（P2-6）：换图瞬间不再同步解码 MB 级图片。
+// single-html 模式下 src 已是 blob URL（useDump 转换），解码结果可被浏览器缓存复用。
+const PREWARM_AHEAD = 2
+function prewarmUpcoming(segmentIndex) {
+  if (typeof Image !== 'function') return
+  const segments = layoutRef.value.segments
+  const shots = props.screenshots
+  if (!Array.isArray(segments) || !shots || segmentIndex < 0) return
+  for (let i = segmentIndex; i <= segmentIndex + PREWARM_AHEAD && i < segments.length; i++) {
+    const id = segments[i] && segments[i].script && segments[i].script.screenshotId
+    if (!id || prewarmed.has(id)) continue
+    const src = shots[id]
+    if (typeof src !== 'string' || !src) continue
+    prewarmed.add(id)
+    try {
+      const img = new Image()
+      img.src = src
+      if (typeof img.decode === 'function') {
+        const p = img.decode()
+        if (p && typeof p.catch === 'function') p.catch(() => {})
+      }
+    } catch {
+      /* 预热失败不影响播放 */
+    }
+  }
+}
 
 const totalFrames = computed(() => layoutRef.value.totalFrames)
 const lastEffective = computed(() => layoutRef.value.lastEffectiveFrame)
@@ -35,7 +66,12 @@ function handleFrame(frame) {
   const st = deriveFrameState(frame, layoutRef.value)
   state.value = st
   playing.value = engine ? engine.isPlaying() : false
-  if (st.taskId != null) emit('task-change', st.taskId) // End 段 taskId=null 不发
+  // P2-8：End 段 taskId=null 不发；同 task 内逐帧不再重复 emit
+  if (st.taskId != null && st.taskId !== lastTaskId) {
+    lastTaskId = st.taskId
+    emit('task-change', st.taskId)
+  }
+  if (st.segmentIndex >= 0) prewarmUpcoming(st.segmentIndex)
 }
 
 function rebuild() {
@@ -48,7 +84,10 @@ function rebuild() {
   currentFrame.value = 0
   playing.value = false
   state.value = deriveFrameState(0, layoutRef.value)
+  lastTaskId = null
+  prewarmed.clear()
   engine = createFramePlayer({ totalFrames: layoutRef.value.totalFrames, onFrame: handleFrame })
+  prewarmUpcoming(state.value.segmentIndex >= 0 ? state.value.segmentIndex : 0)
 }
 
 watch(() => props.execution, rebuild)

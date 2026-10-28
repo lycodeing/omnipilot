@@ -3,6 +3,8 @@ import vue from '@vitejs/plugin-vue'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// P2-9：dev 数据管线复用生成端单一实现（recorder.buildDump/makeDumpTag），消除双胞胎代码
+import { buildDump, makeDumpTag } from '../recorder.js'
 
 const viewerRoot = path.dirname(fileURLToPath(import.meta.url))
 // runs 目录解析优先顺序：
@@ -38,60 +40,53 @@ function latestRunDir() {
 const runsRoot = latestRunDir()
 const projectRoot = path.dirname(path.dirname(runsRoot))
 
-// ---- dev-only 数据管线：把 runs/*.json 按报告契约（§19.5 映射，同 report/recorder.js buildDump）
-// 转成 ask-dump 注入 dev 页面，并把 /runs/** 映射到项目 runs 目录供截图外链。
+// ---- dev-only 数据管线：把 runs/*.json 按报告契约（§19.5 映射）转成 ask-dump 注入 dev 页面，
+// 并把 /runs/** 映射到项目 runs 目录供截图外链。
 // 仅 apply: 'serve'，构建产物（dist/）完全不受影响。
+// P2-9：§19.5 映射单一实现源 = report/recorder.js buildDump（本文件不再维护双胞胎 runToDump）；
+// 解析结果按 mtime 做内存缓存，dev 请求未变更的 run.json 不重复读盘+JSON.parse。
 
+// run.json → dump：复用 recorder.buildDump，再做 dev 专属适配
+// （确定性 screenshotId + 截图 src 指向 /runs/ 中间件；产物模式里 src 是占位/相对文件路径）
 function runToDump(run, runId) {
-  const screenshots = {}
-  const tasks = (run.steps ?? []).map((step) => {
-    const task = {
-      taskId: String(step.index),
-      type: step.type,
-      status: step.result === 'ok' ? 'finished' : 'failed',
-      thought: step.thought ?? '',
-      errorMessage: step.error ?? null,
-      timing: {
-        start: step.startedAt ?? 0,
-        end: (step.startedAt ?? 0) + (step.durationMs ?? 0),
-        durationMs: step.durationMs ?? 0,
-      },
+  const screenshotIds = {}
+  for (const step of run.steps ?? []) {
+    if (step?.screenshot != null && step?.index != null) {
+      screenshotIds[step.index] = `${runId}-step-${step.index}`
     }
-    if (step.target != null) {
-      task.param = step.type === 'assert' ? { text: step.target } : { target: step.target }
-    }
-    if (step.locate) task.locate = { ...step.locate }
-    if (step.screenshot) {
-      const id = `${runId}-step-${step.index}`
-      task.screenshotId = id
-      if (task.locate) task.locate.screenshotId = id
-      screenshots[id] = `/${step.screenshot.replace(/\\/g, '/')}` // run.json 内为项目根相对路径
-    }
-    return task
-  })
-
-  const dump = {
-    sdkVersion: run.sdkVersion ?? 'ask-0.1.0',
-    groupName: run.case ?? runId,
-    groupDescription: '',
-    deviceType: 'android',
-    modelBriefs: run.model?.name ? [{ intent: 'planning', name: run.model.name }] : [],
-    executions: [
-      {
-        id: runId,
-        name: run.case ?? runId,
-        logTime: run.startedAt ?? null,
-        tasks,
-      },
-    ],
-    screenshots,
   }
-  if (run.device != null) dump.device = run.device
-  if (run.durationMs != null) dump.durationMs = run.durationMs
-  if (run.status != null) dump.status = run.status
-  if (Array.isArray(run.networkTimeline)) dump.networkTimeline = run.networkTimeline
-  if (Array.isArray(run.assertions)) dump.assertions = run.assertions
-  if (Array.isArray(run.rollbacks)) dump.rollbacks = run.rollbacks
+  const dump = buildDump(run, { groupName: run.case ?? runId, runId, screenshotIds })
+  // buildDump 固定 sdkVersion 'ask-0.1.0'；dev 下优先展示 run.json 自带版本
+  if (run.sdkVersion != null) dump.sdkVersion = run.sdkVersion
+  for (const step of run.steps ?? []) {
+    if (!step?.screenshot || step?.index == null) continue
+    const id = screenshotIds[step.index]
+    // run.json 内为项目根相对路径；dev 经 /runs/ 中间件读文件
+    dump.screenshots[id] = `/${String(step.screenshot).replace(/\\/g, '/')}`
+  }
+  return dump
+}
+
+// mtime 缓存：Map<绝对路径, { mtimeMs, size, dump }>；未变更直接复用（P2-9）
+const dumpCache = new Map()
+
+function cachedRunDump(file) {
+  let st
+  try {
+    st = fs.statSync(file)
+  } catch {
+    return null
+  }
+  const hit = dumpCache.get(file)
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.dump
+  let dump = null
+  try {
+    const run = JSON.parse(fs.readFileSync(file, 'utf8'))
+    dump = runToDump(run, path.basename(file).replace(/\.json$/, ''))
+  } catch {
+    return null // 坏文件跳过（不缓存，下次重试）
+  }
+  dumpCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, dump })
   return dump
 }
 
@@ -105,20 +100,14 @@ function latestRunDumps(count) {
   }
   const dumps = []
   for (const file of files.slice(0, count)) {
-    try {
-      const run = JSON.parse(fs.readFileSync(path.join(runsDir, file), 'utf8'))
-      dumps.push(runToDump(run, file.replace(/\.json$/, '')))
-    } catch {
-      // 坏文件跳过
-    }
+    const dump = cachedRunDump(path.join(runsDir, file))
+    if (dump) dumps.push(dump)
   }
   return dumps
 }
 
-function makeDumpTag(dump) {
-  const json = JSON.stringify(dump).replace(/<\//g, '<\\/')
-  const gid = dump.groupName || 'default'
-  return `<script type="ask-dump" data-group-id="${gid}">${json}</script>`
+function dumpTag(dump) {
+  return makeDumpTag(dump.groupName || 'default', dump)
 }
 
 function devDataPlugin() {
@@ -146,7 +135,7 @@ function devDataPlugin() {
       const count = Math.max(1, Math.min(15, Number(new URL(url, 'http://localhost').searchParams.get('runs')) || 1))
       const dumps = latestRunDumps(count)
       if (!dumps.length) return html
-      return html.replace('</body>', dumps.map(makeDumpTag).join('\n') + '\n</body>')
+      return html.replace('</body>', dumps.map(dumpTag).join('\n') + '\n</body>')
     },
   }
 }
