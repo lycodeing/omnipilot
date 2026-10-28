@@ -37,9 +37,12 @@ test('build：产出单文件报告（--out 子目录、--group-name 生效）',
 
 test('build：缺省 --out 落 run.json 同级目录（工作区布局不污染 cwd）；--out 目录参数落 report.html', (t) => {
   const cwd = tmpDir(t);
-  let r = runCli(['build', FIXTURE], cwd);
+  // 缺省输出写 run.json 同级目录：输入必须用临时副本，否则会覆盖仓库内 fixtures/report.html
+  const sampleTmp = path.join(cwd, 'run.sample.json');
+  fs.copyFileSync(FIXTURE, sampleTmp);
+  let r = runCli(['build', sampleTmp], cwd);
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(fs.existsSync(path.join(path.dirname(path.resolve(FIXTURE)), 'report.html')), '缺省输出到 run.json 同级');
+  assert.ok(fs.existsSync(path.join(cwd, 'report.html')), '缺省输出到 run.json 同级');
 
   r = runCli(['build', FIXTURE, '--out', 'assetsout/'], cwd);
   assert.equal(r.status, 0, r.stderr);
