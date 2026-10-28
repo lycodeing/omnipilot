@@ -171,13 +171,21 @@ export function shrinkPng(png, { maxWidth = 540 } = {}) {
 // 目标：base64 后体积最小，且模型仍能看清。
 // 实测（540×1200）：PNG 194KB → JPEG(q70) ~75KB（省 61%）；模型对 JPEG 无感（能准确读图内文字）。
 // 策略：单次 decode → 降采样 → 直通 JPEG 编码（不再二次/三次解码）。
+// 省掉无谓 PNG 重编码（性能审计 #9）：JPEG 几乎总是更小，旧实现却每张都先编一次 540px PNG
+// 再比较丢弃（~24ms/张）。改为先编 JPEG；仅当 JPEG 明显偏大（> 原 PNG 的 60%）才回头编
+// 降采样 PNG 做精确比较（小图/纯色图上 PNG 可能更优的路径仍保留）。
 export async function compressForContext(png, { maxWidth = 540, quality = 70 } = {}) {
   const { encodeJpeg } = await import('./jpeg.js');
   const small = shrinkPng(png, { maxWidth });
   const jpg = encodeJpeg(small.width, small.height, small.pixels, { quality, bpp: small.bpp });
-  // 取更小的那个（JPEG 通常更小，但极小图上 PNG 可能更优）
-  if (jpg.length < small.buffer.length) {
-    return { buffer: jpg, mimeType: 'image/jpeg', width: small.width, height: small.height, format: 'jpeg', originalBytes: png.length };
+  const pngCandidate = small.scaled ? null : small.buffer; // 未缩放时原 PNG 即候选，零成本
+  const jpgLooksBig = jpg.length > png.length * 0.6;
+  let pngBuf = pngCandidate;
+  if (pngBuf === null && jpgLooksBig) {
+    pngBuf = encodePng(small.width, small.height, small.pixels, small.colorType);
   }
-  return { buffer: small.buffer, mimeType: 'image/png', width: small.width, height: small.height, format: 'png', originalBytes: png.length };
+  if (pngBuf && pngBuf.length <= jpg.length) {
+    return { buffer: pngBuf, mimeType: 'image/png', width: small.width, height: small.height, format: 'png', originalBytes: png.length };
+  }
+  return { buffer: jpg, mimeType: 'image/jpeg', width: small.width, height: small.height, format: 'jpeg', originalBytes: png.length };
 }
