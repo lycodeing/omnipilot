@@ -1,0 +1,105 @@
+/* 设计令牌 + 基础样式（Midscene 报告风：#f2f4f7 页面底、白色圆角主卡、antd 蓝交互色、
+   系统字体栈、充足留白、细腻边框） */
+
+:root {
+  /* 底色 */
+  --bg-page: #f2f4f7;
+  --bg-card: #ffffff;
+  --bg-subtle: #f7f8fa;
+  --bg-hover: #eef1f5;
+  --bg-active: #e9f2ff;
+  --bg-track: #e8ebf0;
+
+  /* 边框 */
+  --border: #e5e8ec;
+  --border-strong: #d4d9e0;
+  --divider: #eceff3;
+
+  /* 文字 */
+  --text-1: #1b2430;
+  --text-2: #4e5969;
+  --text-3: #86909c;
+  --text-4: #b4bcc6;
+
+  /* 交互色 */
+  --accent: #1677ff;
+  --accent-hover: #3c8dff;
+  --accent-weak: #e9f3ff;
+  --accent-border: #b8dcff;
+
+  /* 状态语义色 */
+  --pass: #16a34a;
+  --pass-weak: #e9f8ef;
+  --fail: #e5484d;
+  --fail-weak: #feeff0;
+  --warn: #d97706;
+  --warn-weak: #fdf4e3;
+  --neutral: #64748b;
+  --neutral-weak: #eef1f5;
+
+  /* 播放器舞台（截图 letterbox 底） */
+  --stage: #15171c;
+
+  /* 圆角 / 阴影 */
+  --radius-card: 12px;
+  --radius-ctl: 8px;
+  --radius-chip: 999px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --shadow-pop: 0 8px 28px rgba(16, 24, 40, 0.16);
+
+  /* 字体 */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, Menlo, monospace;
+
+  /* 布局 */
+  --nav-h: 56px;
+  --sidebar-w: 288px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg-page);
+  color: var(--text-1);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-size-adjust: 100%;
+}
+
+/* 通用小控件（跨组件复用的原子样式） */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d3d9e0;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b9c1cb;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

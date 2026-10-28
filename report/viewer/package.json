@@ -1,0 +1,14 @@
+{
+  "name": "ask-report-viewer",
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.4"
+  },
+  "devDependencies": {
+    "vite": "^5",
+    "@vitejs/plugin-vue": "^5"
+  }
+}

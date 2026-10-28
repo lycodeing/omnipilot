@@ -1,0 +1,112 @@
+{
+  "sdkVersion": "ask-0.1.0",
+  "groupName": "巡检-20261026",
+  "groupDescription": "A 线样例 dump：覆盖各编排分支",
+  "deviceType": "android",
+  "device": { "serial": "emulator-5554", "model": "redroid", "size": "720x1280" },
+  "modelBriefs": [ { "intent": "planning", "name": "glm-4.6v" } ],
+  "durationMs": 48213,
+  "status": "pass",
+  "executions": [
+    {
+      "id": "run-20261026-153012-a1b2",
+      "name": "相册列表",
+      "logTime": "2026-10-26T15:30:12+08:00",
+      "tasks": [
+        {
+          "taskId": "0",
+          "type": "tap",
+          "status": "finished",
+          "thought": "在相册首页点击“电子相册”入口",
+          "param": { "target": "电子相册" },
+          "errorMessage": null,
+          "timing": { "start": 4210, "end": 4522, "durationMs": 312 },
+          "locate": {
+            "strategy": "exact_text",
+            "bounds": [512, 760, 704, 880],
+            "treeCacheHit": true,
+            "vlmCacheHit": false,
+            "dumpMs": 0,
+            "screenshotId": "shot-0001"
+          }
+        },
+        {
+          "taskId": "1",
+          "type": "key",
+          "status": "finished",
+          "thought": "",
+          "param": { "target": "back" },
+          "errorMessage": null,
+          "timing": { "start": 5200, "end": 5400, "durationMs": 200 }
+        },
+        {
+          "taskId": "2",
+          "type": "assert",
+          "status": "finished",
+          "thought": "校验列表按时间倒序",
+          "param": { "text": "列表按时间倒序" },
+          "errorMessage": null,
+          "timing": { "start": 6000, "end": 7800, "durationMs": 1800 },
+          "locate": {
+            "strategy": "vlm",
+            "bounds": null,
+            "treeCacheHit": false,
+            "vlmCacheHit": false,
+            "dumpMs": 1200,
+            "screenshotId": "shot-0002"
+          }
+        },
+        {
+          "taskId": "3",
+          "type": "screenshot",
+          "status": "finished",
+          "thought": "",
+          "param": { "target": "留档截图" },
+          "errorMessage": null,
+          "timing": { "start": 8000, "end": 8100, "durationMs": 100 },
+          "locate": {
+            "strategy": "exact_text",
+            "bounds": [0, 0, 720, 1280],
+            "treeCacheHit": true,
+            "vlmCacheHit": false,
+            "dumpMs": 0,
+            "screenshotId": "shot-0003"
+          }
+        },
+        {
+          "taskId": "4",
+          "type": "tap",
+          "status": "failed",
+          "thought": "尝试点击不存在的入口",
+          "param": { "target": "云端回收站" },
+          "errorMessage": "locate_miss_x3: 未找到目标元素",
+          "timing": { "start": 9000, "end": 14000, "durationMs": 5000 },
+          "locate": {
+            "strategy": "vlm",
+            "bounds": null,
+            "treeCacheHit": false,
+            "vlmCacheHit": true,
+            "dumpMs": 2300,
+            "screenshotId": "shot-0004"
+          }
+        }
+      ]
+    }
+  ],
+  "screenshots": {
+    "shot-0001": "",
+    "shot-0002": "",
+    "shot-0003": "",
+    "shot-0004": ""
+  },
+  "networkTimeline": [
+    { "at": 4210, "profile": "3g" },
+    { "at": 12000, "profile": "wifi" }
+  ],
+  "assertions": [
+    { "text": "列表按时间倒序", "passed": true, "reason": "首项时间 15:30 晚于次项 15:28" }
+  ],
+  "rollbacks": [
+    { "stepIndex": 4, "reason": "locate_miss_x3", "recovered": true }
+  ]
+}

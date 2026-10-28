@@ -1,0 +1,120 @@
+{
+  "runId": "run-20261026-153012-ab12",
+  "case": "cases/相册列表.yaml",
+  "status": "fail",
+  "exitCode": 1,
+  "startedAt": "2026-10-26T15:30:12+08:00",
+  "durationMs": 48213,
+  "device": { "serial": "172.16.198.174:5555", "model": "redroid", "size": "720x1280" },
+  "model": { "family": "glm", "name": "glm-4.6v", "baseUrlHash": "a1b2c3d4" },
+  "contextLayers": [{ "name": "KIT", "chars": 1204 }],
+  "steps": [
+    {
+      "index": 0,
+      "type": "tap",
+      "target": "电子相册",
+      "startedAt": 4210,
+      "durationMs": 312,
+      "result": "ok",
+      "locate": {
+        "ok": true,
+        "bounds": [512, 760, 704, 880],
+        "center": [608, 820],
+        "strategy": "exact_text",
+        "treeCacheHit": true,
+        "vlmCacheHit": false,
+        "dumpMs": 0,
+        "identity": { "text": "电子相册" },
+        "error": null
+      },
+      "screenshot": "runs/run-20261026-153012-ab12/step-0.png",
+      "error": null,
+      "thought": "首页点击电子相册入口"
+    },
+    {
+      "index": 1,
+      "type": "key",
+      "target": "back",
+      "startedAt": 5000,
+      "durationMs": 120,
+      "result": "ok",
+      "locate": null,
+      "screenshot": "runs/run-20261026-153012-ab12/step-1.png",
+      "error": null,
+      "thought": ""
+    },
+    {
+      "index": 2,
+      "type": "assert",
+      "target": "列表按时间倒序",
+      "startedAt": 5300,
+      "durationMs": 800,
+      "result": "ok",
+      "locate": null,
+      "screenshot": null,
+      "error": null
+    },
+    {
+      "index": 3,
+      "type": "tap",
+      "target": "最近相册",
+      "startedAt": 6400,
+      "durationMs": 5000,
+      "result": "fail",
+      "locate": {
+        "ok": false,
+        "bounds": null,
+        "center": null,
+        "strategy": "vlm",
+        "treeCacheHit": false,
+        "vlmCacheHit": false,
+        "dumpMs": 120,
+        "identity": null,
+        "error": "locate_miss"
+      },
+      "screenshot": "runs/run-20261026-153012-ab12/step-3.png",
+      "error": "locate_miss_x3",
+      "thought": "目标元素未找到，重试三次仍失败"
+    },
+    {
+      "index": 4,
+      "type": "secret_get",
+      "target": "sms_code",
+      "startedAt": 12000,
+      "durationMs": 200,
+      "result": "[REDACTED:mcp-sms:code]",
+      "locate": null,
+      "screenshot": null,
+      "error": null,
+      "thought": "从短信读取验证码 654321"
+    },
+    {
+      "index": 5,
+      "type": "sms_read",
+      "target": "验证码短信",
+      "startedAt": 12200,
+      "durationMs": 150,
+      "result": "fail",
+      "locate": null,
+      "screenshot": null,
+      "error": "no_sms",
+      "thought": "通知栏未找到验证码短信"
+    }
+  ],
+  "assertions": [
+    { "text": "列表按时间倒序", "passed": true, "reason": "模型确认排序正确" },
+    { "text": "点击后进入详情页", "passed": false, "reason": "页面未跳转" }
+  ],
+  "extracts": null,
+  "networkTimeline": [
+    { "at": 4210, "profile": "3g" },
+    { "at": 12000, "profile": "wifi" }
+  ],
+  "rollbacks": [
+    { "stepIndex": 3, "reason": "locate_miss_x3", "recovered": false }
+  ],
+  "artifacts": {
+    "report": "runs/run-20261026-153012-ab12/index.html",
+    "uiDumps": []
+  }
+}
