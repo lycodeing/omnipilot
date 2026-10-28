@@ -326,6 +326,22 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       model = built.model;
       modelRuntime = built.modelRuntime;
       ctx.chat = createChatClient({ url: modelCfg.url, key: modelCfg.key, model: modelCfg.name });
+      // --vlm-locate：把 chat 客户端包装成视觉定位函数注入 locate 策略链第 5 环（§5.1）。
+      // 旧实现该 flag 只被读去做统计、vlm 从未接线（定位失败无视觉兜底）。
+      // 坐标约定用 model family 的 describeForPrompt 描述，返回交给 toPixels 解析。
+      if (opts.vlmLocate) {
+        const { resolveStrategy } = await import('../src/device/coord/registry.js');
+        const cs = resolveStrategy(modelCfg.family);
+        ctx.vlm = async ({ png, target, instruction }) => {
+          const b64 = png.toString('base64');
+          const fmt = cs?.describeForPrompt?.() || 'Return coordinates normalized to 0-1000.';
+          const raw = await ctx.chat(
+            `Locate the UI element described as: ${target}. ${instruction || ''} ${fmt} Reply with ONLY the numbers.`,
+            { images: [{ data: b64, mimeType: 'image/png' }] },
+          );
+          return { raw, family: modelCfg.family };
+        };
+      }
     } else {
       console.warn('未配置 ASK_MODEL_*，将以无模型模式执行（仅日志回放/干跑）');
     }

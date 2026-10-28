@@ -79,7 +79,8 @@ export function createCachedLocate({ device, store, opts = {}, ctx = null }) {
       } catch { /* 缓存缺失不阻断 */ }
     }
 
-    const res = await device.locate(target, { hintBounds, hintIdentity });
+    // vlm 兜底由调用方注入（--vlm-locate 时 ctx.vlm 为视觉定位函数；缺省 null 不启用）
+    const res = await device.locate(target, { hintBounds, hintIdentity, vlm: ctx?.vlm ?? null });
 
     // 定位成功 → 记入 pending（命中 cache 时不重复写，避免无效 IO）
     if (res.ok && res.bounds && store && res.strategy !== 'cache') {

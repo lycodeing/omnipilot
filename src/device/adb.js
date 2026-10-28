@@ -22,7 +22,24 @@ export class Adb {
   }
 
   _runRaw(args, { binary = false, timeoutMs } = {}) {
-    if (this._exec) return Promise.resolve().then(() => this._exec(args, { binary }));
+    // 注入执行器路径（测试/自定义）：exec 本身无超时能力，这里用 race 强制预算
+    // （真实 spawn 路径由下方内部定时器负责——它持有 child 句柄能 kill）
+    if (this._exec) {
+      const budget = timeoutMs ?? this.timeouts.command;
+      return new Promise((resolve, reject) => {
+        let timer = null;
+        if (budget) {
+          timer = setTimeout(() => {
+            const e = new Error(`adb 命令超时(${budget}ms): adb ${args.join(' ')}`);
+            e.code = 'ETIMEDOUT';
+            reject(e);
+          }, budget);
+        }
+        Promise.resolve()
+          .then(() => this._exec(args, { binary }))
+          .then((r) => { if (timer) clearTimeout(timer); resolve(r); }, (e) => { if (timer) clearTimeout(timer); reject(e); });
+      });
+    }
     return new Promise((resolve, reject) => {
       let child;
       try {
@@ -61,32 +78,22 @@ export class Adb {
     });
   }
 
-  _withTimeout(factory, timeoutMs, label) {
-    if (!timeoutMs) return factory();
-    let timer;
-    const guard = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        const e = new Error(`adb 命令超时(${timeoutMs}ms): adb ${label}`);
-        e.code = 'ETIMEDOUT';
-        reject(e);
-      }, timeoutMs);
-    });
-    return Promise.race([factory(), guard]).finally(() => clearTimeout(timer));
-  }
-
   _looksDisconnected(res) {
     if (!res || res.code === 0) return false;
     if (typeof res.stdout !== 'string') return DISCONNECT_RE.test(String(res.stderr ?? ''));
     return DISCONNECT_RE.test(`${res.stdout}\n${res.stderr}`);
   }
 
-  // 串行队列：同设备命令排队执行；断连时重连一次后重试一次
+  // 串行队列：同设备命令排队执行；断连时重连一次后重试一次。
+  // 超时统一由 _runRaw 内部定时器负责（它持有 child 句柄能 kill）；旧实现外层再包
+  // _withTimeout 的 race：到点只 reject 不 kill，泄漏的 adb.exe 子进程会在设备侧与
+  // 下一条命令交错（低概率高危害）。
   _enqueue(args, opts = {}) {
     const task = async () => {
-      let res = await this._withTimeout(() => this._runRaw(args, opts), opts.timeoutMs, args.join(' '));
+      let res = await this._runRaw(args, opts);
       if (this._looksDisconnected(res) && !opts.retried) {
         await this.reconnect().catch(() => {});
-        res = await this._withTimeout(() => this._runRaw(args, opts), opts.timeoutMs, args.join(' '));
+        res = await this._runRaw(args, opts);
       }
       return res;
     };
@@ -95,10 +102,14 @@ export class Adb {
     return p;
   }
 
-  // TCP 序列号用 connect，USB 用 reconnect offline
+  // TCP 序列号用 connect，USB 用 reconnect offline。
+  // in-flight 去重：队列中多条命令相继判定断连时共享同一次 reconnect（旧实现会并发多次）。
   async reconnect() {
+    if (this._reconnecting) return this._reconnecting;
     const args = String(this.serial).includes(':') ? ['connect', this.serial] : ['reconnect', 'offline'];
-    await this._withTimeout(() => this._runRaw(args, {}), this.timeouts.connect, args.join(' '));
+    this._reconnecting = this._runRaw(args, { timeoutMs: this.timeouts.connect })
+      .finally(() => { this._reconnecting = null; });
+    return this._reconnecting;
   }
 
   async ensureConnected() {
