@@ -1,0 +1,237 @@
+// 执行记录器（§1.4 / §14.1）：run.json 的唯一写入口。
+// - runId = run-YYYYMMDD-HHmmss-<4位随机>；目录 runs/<runId>/，记录 runs/<runId>.json
+// - startStep/end 记 startedAt（相对 run 起点 ms）与 durationMs；locate 原样透传
+// - attachScreenshot 落 runs/<runId>/step-<i>.png，回填 step.screenshot 相对路径
+// - finish(status,{exitCode}) 组装 §14.1 完整形状，tmp+rename 原子写
+// - 脱敏（§19.7）：secret 步结果字段强制替换 [REDACTED:<provider>:<key>]；
+//   全文兜底扫描依赖已登记的 secret 值（end 的 secret.value 或 registerSecret）
+
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
+const STATUSES = ['pass', 'fail', 'error', 'timeout', 'cancelled'];
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+function stamp(d) {
+  return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}` +
+    `-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+}
+
+function localIso(ms) {
+  const d = new Date(ms);
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? '+' : '-';
+  const abs = Math.abs(off);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` +
+    `T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}` +
+    `${sign}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`;
+}
+
+function toPosix(p) {
+  return p.split(path.sep).join('/');
+}
+
+// device 可为 §1.1 门面（duck-type 调用）或 { serial, model, size } 描述对象
+async function snapshotDevice(device) {
+  if (!device) return null;
+  const out = { serial: null, model: null, size: null };
+  if (typeof device.serial === 'string') out.serial = device.serial;
+  if (typeof device.model === 'string') out.model = device.model;
+  try {
+    if (typeof device.screenSize === 'function') {
+      const s = await device.screenSize();
+      if (s) out.size = `${s.w}x${s.h}`;
+    } else if (typeof device.size === 'string') {
+      out.size = device.size;
+    } else if (device.size && typeof device.size === 'object') {
+      out.size = `${device.size.w}x${device.size.h}`;
+    }
+  } catch {
+    // 设备快照失败不阻塞收尾
+  }
+  return out;
+}
+
+function pickModel(model) {
+  if (!model) return null;
+  // 只挑白名单字段，密钥类内容（如 apiKey）结构性不落盘
+  return {
+    family: model.family ?? null,
+    name: model.name ?? null,
+    baseUrlHash: model.baseUrlHash ?? null,
+  };
+}
+
+// 全文兜底：深遍历所有字符串，替换已登记 secret 值
+function redactDeep(node, secrets) {
+  if (typeof node === 'string') {
+    let s = node;
+    for (const { provider, key, value } of secrets) {
+      if (value) s = s.replaceAll(value, `[REDACTED:${provider}:${key}]`);
+    }
+    return s;
+  }
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i++) node[i] = redactDeep(node[i], secrets);
+    return node;
+  }
+  if (node && typeof node === 'object') {
+    for (const k of Object.keys(node)) node[k] = redactDeep(node[k], secrets);
+    return node;
+  }
+  return node;
+}
+
+export class RunRecorder {
+  constructor({ runsDir = 'runs', caseName = null, device = null, model = null } = {}) {
+    this.runId = `run-${stamp(new Date())}-${crypto.randomBytes(2).toString('hex')}`;
+    this._runsDir = runsDir;
+    this._dir = path.join(runsDir, this.runId);
+    this._jsonPath = path.join(runsDir, `${this.runId}.json`);
+    fs.mkdirSync(this._dir, { recursive: true });
+    this._startMs = Date.now();
+    this._startedAt = localIso(this._startMs);
+    this._caseName = caseName ?? null;
+    this._device = device;
+    this._model = pickModel(model);
+    this._steps = [];
+    this._stepStarts = [];
+    this._assertions = [];
+    this._network = [];
+    this._rollbacks = [];
+    this._extracts = null;
+    this._contextLayers = [];
+    this._uiDumps = [];
+    this._secrets = []; // { provider, key, value }
+    this._finished = false;
+  }
+
+  get dir() {
+    return this._dir;
+  }
+
+  get jsonPath() {
+    return this._jsonPath;
+  }
+
+  // B 的 secret_get/sms_read 拿到值后登记，供 finish 全文兜底扫描
+  registerSecret({ provider, key, value }) {
+    if (!provider || !key) throw new Error('registerSecret 需要 provider 与 key');
+    this._secrets.push({ provider, key, value: value ?? null });
+  }
+
+  startStep(type, target = null) {
+    if (this._finished) throw new Error('run 已收尾，不能再 startStep');
+    const absStart = Date.now();
+    const index = this._steps.length;
+    const step = {
+      index,
+      type,
+      target,
+      startedAt: absStart - this._startMs,
+      durationMs: null,
+      result: null,
+      locate: null,
+      screenshot: null,
+      error: null,
+    };
+    this._steps.push(step);
+    this._stepStarts.push(absStart);
+    return {
+      index,
+      end: (opts = {}) => {
+        if (this._finished) throw new Error('run 已收尾，不能再 end');
+        if (step.result !== null) throw new Error(`step ${index} 已 end，不能重复收口`);
+        const { result = 'ok', locate = null, secret = null, error = null, thought = null } = opts ?? {};
+        step.durationMs = Date.now() - absStart;
+        step.result = result;
+        step.locate = locate; // 原样透传（§1.4）
+        step.error = error;
+        if (thought != null) step.thought = thought;
+        if (secret) {
+          if (!secret.provider || !secret.key) throw new Error('secret 需要 provider 与 key');
+          // 结果字段强制脱敏（§14.1 / §19.7）
+          step.result = `[REDACTED:${secret.provider}:${secret.key}]`;
+          if (secret.value != null) this.registerSecret(secret);
+        }
+      },
+    };
+  }
+
+  // 同步落 PNG（契约签名返回 string），路径 posix 风格用于回填 step.screenshot
+  attachScreenshot(stepIndex, pngBuffer) {
+    const file = `step-${stepIndex}.png`;
+    fs.writeFileSync(path.join(this._dir, file), pngBuffer);
+    const rel = toPosix(path.join(this._runsDir, this.runId, file));
+    const step = this._steps[stepIndex];
+    if (step) step.screenshot = rel;
+    return rel;
+  }
+
+  addUiDump(relPath) {
+    this._uiDumps.push(relPath);
+  }
+
+  addAssertion({ text, passed, reason = null } = {}) {
+    this._assertions.push({ text, passed, reason });
+  }
+
+  addNetworkEvent({ at, profile } = {}) {
+    this._network.push({ at, profile });
+  }
+
+  addRollback({ stepIndex, reason, recovered } = {}) {
+    this._rollbacks.push({ stepIndex, reason, recovered });
+  }
+
+  setExtracts(obj) {
+    this._extracts = obj ?? null;
+  }
+
+  setContextLayers(layers) {
+    if (!Array.isArray(layers)) throw new Error('setContextLayers 需要数组');
+    this._contextLayers = layers;
+  }
+
+  async finish(status, { exitCode = 0 } = {}) {
+    if (this._finished) throw new Error('finish 不能重复调用');
+    if (!STATUSES.includes(status)) {
+      throw new Error(`finish.status 必须是 ${STATUSES.join('|')}，收到 "${status}"`);
+    }
+    this._finished = true;
+    for (let i = 0; i < this._steps.length; i++) {
+      if (this._steps[i].result === null) {
+        this._steps[i].result = 'unfinished';
+        this._steps[i].durationMs = Date.now() - this._stepStarts[i];
+      }
+    }
+    const doc = {
+      runId: this.runId,
+      case: this._caseName,
+      status,
+      exitCode,
+      startedAt: this._startedAt,
+      durationMs: Date.now() - this._startMs,
+      device: await snapshotDevice(this._device),
+      model: this._model,
+      contextLayers: this._contextLayers,
+      steps: this._steps,
+      assertions: this._assertions,
+      extracts: this._extracts,
+      networkTimeline: this._network,
+      rollbacks: this._rollbacks,
+      artifacts: {
+        report: toPosix(path.join(this._runsDir, this.runId, 'index.html')), // 预留
+        uiDumps: this._uiDumps,
+      },
+    };
+    redactDeep(doc, this._secrets);
+    const tmp = `${this._jsonPath}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
+    await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
+    await fsp.rename(tmp, this._jsonPath);
+    return doc;
+  }
+}
