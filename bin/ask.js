@@ -700,13 +700,15 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         // 第 2 次重试要求显式 BLOCKED 回复：把"静默空转"变成可观测结果（进报告 thought），
         // 否则 ai 步静默无操作会让后续步骤在错误页面上连锁失败（真机事故根因）。
         if (!answer && recorder.stepCount === stepsBefore && step.type !== 'aiAssert') {
-          for (let retry = 0; retry < 2 && !answer; retry++) {
+          for (let retry = 0; retry < 3 && !answer; retry++) {
             // 第 2 次重试去图：网关对"带图+短文本"偶发空响应，去图可绕开该触发面
             const imgs = retry === 0 ? aiImages : [];
-            if (!flags.quiet) console.warn(`[warn] 模型空轮（无文本无工具），重试 ${retry + 1}/2（${retry === 0 ? '附屏' : '去图'}）`);
+            if (!flags.quiet) console.warn(`[warn] 模型空轮（无文本无工具），重试 ${retry + 1}/3（${retry === 0 ? '附屏' : retry === 1 ? '去图' : '换措辞去图'}）`);
             const extra = retry === 0
               ? '（随附当前屏幕截图；直接调用工具执行，不要只描述意图）'
-              : '（这是第二次重试。你必须现在调用至少一个工具执行上述任务；若确实无法执行，回复一行：BLOCKED: <原因>）';
+              : retry === 1
+              ? '（第二次重试。你必须现在调用至少一个工具执行上述任务；若确实无法执行，回复一行：BLOCKED: <原因>）'
+              : '（第三次重试，换一种说法）请执行：' + text + '。直接调用工具；无法执行则回复 BLOCKED: 原因';
             await session.prompt(`${text}\n${extra}`, { images: imgs });
             answer = lastAssistantText(session);
           }
