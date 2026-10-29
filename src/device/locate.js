@@ -47,6 +47,27 @@ function findByKind(flat, parsed) {
   return findByExactText(flat, parsed.text).concat(findByContains(flat, parsed.text));
 }
 
+// 节点级 selector 匹配（tools/perception.js 的 matchSelector 同源逻辑，设备层自用）：
+// 'text=' 精确 | 'text*=' 包含 | 'resourceId='/'id=' | 'class=#index=' | 're:' 正则
+export function matchNodeSelector(node, sel) {
+  const s = String(sel ?? '').trim();
+  if (s.startsWith('text*=')) return String(node.text || '').includes(s.slice(6));
+  if (s.startsWith('text=')) return node.text === s.slice(5) || node.contentDesc === s.slice(5);
+  if (s.startsWith('resourceId=')) return node.resourceId === s.slice(11);
+  if (s.startsWith('id=')) return node.resourceId === s.slice(3);
+  if (s.startsWith('class=')) {
+    const [cls, idxPart] = s.slice(6).split('#index=');
+    if (node.cls !== cls) return false;
+    if (idxPart !== undefined) return Number(node.index) === Number(idxPart);
+    return true;
+  }
+  if (s.startsWith('re:')) {
+    let re;
+    try { re = new RegExp(s.slice(3), 'i'); } catch { return false; }
+    return re.test(String(node.text || '')) || re.test(String(node.contentDesc || ''));
+  }
+  return false;
+}
 export function findByExactText(flat, text) {
   return flat.filter((n) => n.text === text || n.contentDesc === text);
 }

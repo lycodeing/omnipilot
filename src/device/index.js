@@ -4,12 +4,14 @@ import { Adb } from './adb.js';
 import * as screen from './screen.js';
 import { truncateAtHierarchyEnd, parseXmlDump, flattenNodes, treeHash } from './uitree.js';
 import { TreeCache } from './cache.js';
-import { createLocator, matchSelector, inScreen } from './locate.js';
+import { createLocator, matchSelector, inScreen, matchNodeSelector as matchNode } from './locate.js';
+
 import * as action from './action.js';
 import { Yadb, readTextAt } from './input.js';
 import { withLocateRetry, StepRollout } from './rollout.js';
 import * as state from './state.js';
 import * as net from '../net/profile.js';
+import { decodePng, pixelAt, isBlueish } from './png.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
@@ -257,17 +259,21 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // 无变化判定用树 hash（禁止截图 hash，§5.0.1）
     // 形状严守契约 §1.1 { scrolls, changed }；getSize 失败时抛出，由工具层转 ok:false
     // distancePct（§2.4）：按屏高百分比滚动（整屏≈100），替代固定的 0.6 屏
+    // direction 为**内容语义**（与工具 schema/用例/模型直觉一致）：down=看更多下方内容（前进），
+    // up=回看上方内容；映射到手指滑动时方向相反（前进=手指上滑 bottom→top）。
     async scroll(direction, { max = 5, stopWhenNoChange = true, distancePct = null } = {}) {
       const size = await getSize();
       const useDist = distancePct != null;
-      const moves = { up: ['bottom', 'top'], down: ['top', 'bottom'], left: ['right', 'left'], right: ['left', 'right'] };
+      const moves = { down: ['bottom', 'top'], up: ['top', 'bottom'], right: ['right', 'left'], left: ['left', 'right'] };
       const [fromRegion, toRegion] = moves[String(direction ?? 'up').toLowerCase()] ?? moves.up;
       let prev = (await dumpTree()).hash;
       let scrolls = 0;
       let changed = false;
       while (scrolls < max) {
         if (useDist) {
-          const [p1, p2] = action.scrollDistancePoints(direction, size, distancePct);
+          // scrollDistancePoints 吃手指方向：内容语义取反后传入
+          const finger = { down: 'up', up: 'down', left: 'right', right: 'left' }[String(direction ?? 'down').toLowerCase()] ?? 'up';
+          const [p1, p2] = action.scrollDistancePoints(finger, size, distancePct);
           await action.swipe(adb, p1, p2, 300);
         } else {
           await action.swipe(adb, action.regionPoint(fromRegion, size), action.regionPoint(toRegion, size), 300);
@@ -283,6 +289,123 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         }
       }
       return { scrolls, changed };
+    },
+    // 逐行作用域批量点击（引擎确定性，0 模型往返）：表单/问卷作答场景。
+    // 关键事实（实测）：① WebView 选中态（蓝底）不进 a11y 树，adb tap 无回执；② 选中会触发
+    // scroll-into-view，**tap 后整页滚动**，同轮内后续行的坐标立即失效（也是历史"点错行"根因）。
+    // 因此每轮只 tap 一行：dump → 取文档序第一个未答行 → tap 其行内最左在屏选项 → 等渲染 →
+    // 双信号验证（树 hash 变化=页面滚动/响应；或原坐标像素变蓝=未滚动但选中）→ 记 answered；
+    // 双信号皆无 = 渲染器挂死计数（连续 2 次报错退出，不再空转记假已答）。
+    // 转向：无在屏可答行时按第一个未答行几何：选项在屏下 → down 前进；行与选项都在屏上 → up 回退。
+    // stopWhen 可见**且**全文档无未答行才 done。零面积节点（隐藏预渲染层）一律排除。
+    async tapEachRow({ rows, tap, stopWhen = null, maxRounds = 60 } = {}) {
+      const result = { rounds: 0, taps: 0, verified: 0, unverified: 0, done: false, bottom: false, error: null, skipped: [] };
+      if (!rows || !tap) { result.error = 'tapEachRow 需要 rows 与 tap 参数'; return result; }
+      const answered = new Set(); // 已作答行文本（跳过重 tap）
+      const skipped = new Set(); // 选项集不匹配、无法作答的行（避免转向死循环）
+      const tapSels = String(tap).split('|').map((s) => s.trim()).filter(Boolean);
+      let prevKey = null;
+      let noProgress = 0; // 连续"0 tap 且转向目标不变"轮数；WebView 过滚回弹只抖一帧，2 轮才判到底
+      let hangRounds = 0; // 连续"tap 后双信号皆无"次数；2 次即判渲染器挂死退出
+      for (let round = 0; round < maxRounds; round++) {
+        result.rounds = round + 1;
+        let flat = [];
+        let hash0 = null;
+        try {
+          const t = await dumpTree({ fresh: true });
+          flat = flattenNodes(t.nodes);
+          hash0 = t.hash;
+        } catch (e) {
+          result.error = `dump 失败: ${e?.message ?? e}`;
+          return result;
+        }
+        const size = await getSize().catch(() => null);
+        const h = size?.h ?? 2400;
+        // 零面积（隐藏预渲染层 bounds=[0,0,0,0]）先排除，再看中心点是否在屏
+        const areaOk = (n) => Array.isArray(n.bounds) && n.bounds.length === 4 && n.bounds[2] - n.bounds[0] > 0 && n.bounds[3] - n.bounds[1] > 0;
+        const vis = (n) => areaOk(n) && (!size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= h));
+        // 行节点取 bounds 真实者（含滚出屏幕的行，保持文档序）
+        const rowNodes = flat.filter((n) => matchNode(n, rows) && areaOk(n));
+        const clusters = [];
+        for (const n of rowNodes.sort((a, b) => a.center[1] - b.center[1])) {
+          const last = clusters[clusters.length - 1];
+          if (last && Math.abs(n.center[1] - last.cy) < Math.max(40, (n.bounds[3] - n.bounds[1]) / 2)) {
+            last.nodes.push(n);
+            last.cy = last.nodes.reduce((a, x) => a + x.center[1], 0) / last.nodes.length;
+          } else {
+            clusters.push({ cy: n.center[1], nodes: [n], text: String(n.text || '') });
+          }
+        }
+        const optsFor = (cl) => flat
+          .filter((n) => tapSels.some((s) => matchNode(n, s)) && n.center[1] > cl.cy && n.center[1] <= cl.cy + 400 && areaOk(n))
+          .sort((a, b) => a.center[0] - b.center[0]);
+        const pending = clusters.filter((c) => !(c.text && (answered.has(c.text) || skipped.has(c.text))));
+        if (stopWhen) {
+          const stop = matchSelector(flat, stopWhen);
+          // 终止标记要求在屏（隐藏预渲染层的提交按钮不算），且全文档无未答行
+          if (stop?.node && vis(stop.node) && pending.length === 0) { result.done = true; return result; }
+        }
+        // 本轮只 tap 第一个在屏可答行（选中即触发滚动，同轮第二 tap 坐标必失效）
+        let target = null;
+        for (const cl of pending) {
+          const pick = optsFor(cl).find((n) => vis(n));
+          if (pick) { target = { cl, pick }; break; }
+        }
+        if (!target) {
+          // 无在屏可答行：按第一个未答行几何转向（direction 内容语义：down=前进看下方，up=回退）
+          const firstUn = pending[0];
+          let dir = 'down';
+          if (firstUn) {
+            const opts = optsFor(firstUn);
+            if (!opts.length && firstUn.cy >= 0 && firstUn.cy <= h) {
+              skipped.add(firstUn.text); // 在屏但选项集不匹配：记跳过，避免死循环
+              continue;
+            }
+            const lastOpt = opts[opts.length - 1];
+            if (firstUn.cy < 0 && (!lastOpt || lastOpt.center[1] < 0)) dir = 'up'; // 行与选项都在屏上 → 回退
+          }
+          const key = `${firstUn?.text ?? ''}@${dir}`;
+          if (key === prevKey && ++noProgress >= 2) { result.bottom = true; break; }
+          prevKey = key;
+          await this.scroll(dir, { max: 1, stopWhenNoChange: true });
+          continue;
+        }
+        noProgress = 0; prevKey = null;
+        try {
+          await action.tap(adb, target.pick.center);
+        } catch { /* 单行 tap 失败本轮重来 */ continue; }
+        result.taps++;
+        await new Promise((r) => setTimeout(r, 700)); // 选中渲染 + scroll-into-view 动画
+        // 双信号验证：树 hash 变化（页面滚动/响应）或原坐标像素变蓝（未滚动但选中）
+        let hash1 = null;
+        try { hash1 = (await dumpTree({ fresh: true })).hash; } catch { hash1 = null; }
+        let blue = false;
+        if (hash1 === hash0) {
+          try {
+            const { buffer } = await this.screencap();
+            const png = decodePng(buffer);
+            let hits = 0;
+            for (const dx of [-22, 0, 22]) for (const dy of [-22, 0, 22]) {
+              const px = pixelAt(png, target.pick.center[0] + dx, target.pick.center[1] + dy);
+              if (px && isBlueish(px)) hits++;
+            }
+            blue = hits >= 5;
+          } catch { blue = true; } // 截图/解码失败不阻断，按通过放行
+        }
+        if (hash1 !== hash0 || blue) {
+          result.verified++;
+          hangRounds = 0;
+          if (target.cl.text) answered.add(target.cl.text);
+        } else {
+          result.unverified++;
+          if (++hangRounds >= 2) {
+            result.error = 'renderer_unresponsive: 连续两次 tap 后页面无响应（树未变且选项未变蓝），WebView 渲染器疑似挂死';
+            break;
+          }
+        }
+      }
+      result.skipped = [...skipped];
+      return result;
     },
     async key(name) {
       try {
