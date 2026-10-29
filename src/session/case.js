@@ -23,7 +23,7 @@ export const AGENT_TYPES = new Set(['ai', 'aiAct']);
 export const ASSERT_TYPES = new Set(['aiAssert']);
 export const QUERY_TYPES = new Set(['aiQuery']);
 export const WAIT_TYPES = new Set(['aiWaitFor']);
-export const ENGINE_TYPES = new Set(['aiTap', 'aiInput', 'aiLongPress', 'aiKeyboardPress', 'aiScroll', 'launch', 'terminate', 'uiDump']);
+export const ENGINE_TYPES = new Set(['aiTap', 'aiInput', 'aiLongPress', 'aiKeyboardPress', 'aiScroll', 'aiTapEach', 'launch', 'terminate', 'uiDump']);
 export const SPECIAL_TYPES = new Set(['net', 'sleep']);
 
 const ALL_TYPES = new Set([...AGENT_TYPES, ...ASSERT_TYPES, ...QUERY_TYPES, ...WAIT_TYPES, ...ENGINE_TYPES, ...SPECIAL_TYPES]);
@@ -32,6 +32,7 @@ const ALL_TYPES = new Set([...AGENT_TYPES, ...ASSERT_TYPES, ...QUERY_TYPES, ...W
 const PARAM_KEYS = new Set([
   'value', 'direction', 'distancePct', 'until', 'keyName', 'name', 'timeout',
   'max', 'maxScrolls', 'durationMs', 'appId', 'package', 'packageName', 'selector', 'mode', 'path',
+  'rows', 'tap', 'stopWhen', 'maxRounds',
 ]);
 const NUMBER_KEYS = new Set(['seconds', 'max', 'timeout', 'maxScrolls', 'durationMs', 'distancePct']);
 
@@ -194,6 +195,7 @@ export function buildToolCall(step) {
       },
     };
   }
+  if (t === 'aiTapEach') return { tool: 'tap_each_row', params: { rows: step.rows ?? '', tap: step.tap ?? '', ...(step.stopWhen ? { stopWhen: step.stopWhen } : {}), ...(step.maxRounds != null ? { maxRounds: Number(step.maxRounds) } : {}) } };
   if (t === 'uiDump') return { tool: 'ui_dump', params: { ...(step.path ? { path: step.path } : {}) } };
   if (t === 'launch') return { tool: 'launch', params: { appId: step.appId || step.text } };
   if (t === 'terminate') return { tool: 'terminate', params: { packageName: step.packageName || step.package || step.text } };
