@@ -811,6 +811,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               steps: recorder.stepsSince(0),
               assertions: ctx.assertions,
               vars: ctx.vars,
+              datasets: ctx.datasetWrites ?? null,
             });
             const pr = pruneStepHistory(session.agent.state.messages, ctx.stepMsgCounts, { keepSteps: contextKeep, digest });
             if (pr.changed && !flags.quiet) console.warn(`[context] 窗口折叠：移除最旧 ${pr.removed} 条消息，保留最近 ${contextKeep} 步原文 + 整体描述`);

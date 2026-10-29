@@ -152,10 +152,16 @@ export function buildDataTools(ctx) {
 
       let written = null;
       if (params.name && store) {
-        written = await store.append(params.name, rows, { run: recorder?.runId || null, step: ctx.currentStepIndex ?? null });
+        written = await store.append(params.name, rows, { run: recorder?.runId ?? null, step: ctx.currentStepIndex ?? null });
       }
       // 写入运行时变量表（§7.5）：data_extract 写入，后续步骤 ${var} 引用
-      if (params.name) ctx.vars.set(params.name, rows);
+      if (params.name) {
+        ctx.vars.set(params.name, rows);
+        // 数据集写入计数留痕（Manus"结果留进上下文"教训）：整体描述（buildStepDigest）
+        // 引用此表，让窗口折叠后远处的书断言仍能看到"数据集 X=N 条"的证据。
+        ctx.datasetWrites = ctx.datasetWrites ?? new Map();
+        ctx.datasetWrites.set(params.name, rows.length);
+      }
       const last = rows[rows.length - 1];
       return textResult({
         ok: true,
@@ -213,10 +219,13 @@ export function buildDataTools(ctx) {
       let res;
       if (action === 'upsert') {
         if (!params.key) return textResult({ ok: false, error: 'upsert 需要 key 主键字段' });
-        res = await store.upsert(params.name, params.key, rows, { run: recorder?.runId || null, step: ctx.currentStepIndex ?? null });
+        res = await store.upsert(params.name, params.key, rows, { run: recorder?.runId ?? null, step: ctx.currentStepIndex ?? null });
       } else {
-        res = await store.append(params.name, rows, { run: recorder?.runId || null, step: ctx.currentStepIndex ?? null });
+        res = await store.append(params.name, rows, { run: recorder?.runId ?? null, step: ctx.currentStepIndex ?? null });
       }
+      // 数据集写入计数留痕（供整体描述引用，见 data_extract 同款注释）
+      ctx.datasetWrites = ctx.datasetWrites ?? new Map();
+      ctx.datasetWrites.set(params.name, res.written ?? rows.length);
       return textResult({ ok: true, action, name: params.name, ...sampleForContext(rows, res.written) });
     },
   });

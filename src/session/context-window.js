@@ -37,7 +37,7 @@ export function pruneStepHistory(messages, stepCounts, { keepSteps = 3, digest =
 
 // 确定性"整体描述"构造（bin/ask.js 每步调一次）：进度 + 最近步骤行 + 断言计数。
 // steps: recorder.stepsSince(0) 形状（{index,type,target,result,error}）；caseName/caseTotal 步数。
-export function buildStepDigest({ caseName, caseTotal, steps = [], assertions = [], vars = {}, keepLines = 8 } = {}) {
+export function buildStepDigest({ caseName, caseTotal, steps = [], assertions = [], vars = {}, datasets = null, keepLines = 8 } = {}) {
   const done = steps.length;
   const lines = steps.slice(-keepLines).map((s) => {
     const ok = s.result === 'ok' || s.result === undefined;
@@ -46,10 +46,13 @@ export function buildStepDigest({ caseName, caseTotal, steps = [], assertions = 
   const passed = assertions.filter((a) => a.passed).length;
   const failedList = assertions.filter((a) => !a.passed).map((a) => `「${String(a.text).slice(0, 24)}」`);
   const varLines = Object.entries(vars).filter(([, v]) => v != null && v !== '').map(([k2, v]) => `${k2}=${String(v).slice(0, 30)}`);
+  // 数据集写入计数（ctx.datasetWrites）：书断言（"数据集 X 至少3条"）的证据必须能越过窗口折叠
+  const dsLines = datasets instanceof Map ? [...datasets.entries()].map(([k2, n]) => `${k2}=${n}条`) : [];
   const parts = [
     `${STEP_DIGEST_PREFIX}用例《${caseName ?? '?'}》${caseTotal ? `共 ${caseTotal} 步，` : ''}已完成 ${done} 步`,
     lines.length ? `最近：${lines.join('；')}` : null,
     assertions.length ? `断言 ${passed}/${assertions.length} 通过${failedList.length ? `（失败：${failedList.join('、')}）` : ''}` : null,
+    dsLines.length ? `已落库数据集：${dsLines.join('、')}（后续数据集断言以此为准）` : null,
     varLines.length ? `变量：${varLines.join(' ')}` : null,
     '以下仅保留最近步骤的完整上下文，更早步骤细节已省略。',
   ];
