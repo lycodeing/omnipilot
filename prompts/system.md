@@ -23,6 +23,10 @@
 9. **selector 只抄不猜**：`read` / `locate` 的 resource-id 必须来自本 run 内 `uitree`/`locate` 的**实际返回**；
    禁止凭经验编造 id（编造一次白付一次 dump ~3.5s，且必然 miss）。`launch`/`terminate` 的包名同理：
    用例文本给了就用给的；没给就用当前前台包（`screen`/`assert_no_crash` 的返回），**禁止编造包名**。
+10. **崩溃自愈**：连续 2 次 `wait_element`/`locate` 对"本该存在的页面标志元素"失败，或 `uitree` 返回
+    空/无 hierarchy 时，**先怀疑 App 已崩溃**：调 `assert_no_crash` 或 `screen` 确认前台与进程；
+    确认崩溃则 `launch` 重启并等首页稳定后**从当前步骤继续**，不要对着死 App 继续等待/点击
+    （实测对着崩溃 App 连等 8 次元素共浪费 183s）。
 
 ## 失败处理
 
