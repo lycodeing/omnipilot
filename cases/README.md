@@ -18,7 +18,8 @@
 | `aiInput` + `value:` | **引擎直执行** | 定位输入框并输入（等价 input 工具） |
 | `aiLongPress` + `durationMs:` | **引擎直执行** | 长按 |
 | `aiKeyboardPress` + `keyName:` | **引擎直执行** | 按键（enter/back/home/recent） |
-| `aiScroll` + `direction:`/`distancePct:`/`until:` | **引擎直执行** | 滚动（距离/边界，见下） |
+| `aiScroll` + `direction:`/`distancePct:`/`until:` | **引擎直执行** | 滚动（距离/边界，见下；direction 为内容语义：down=前进） |
+| `aiTapEach` + `rows:`/`tap:`/`stopWhen:`/`maxRounds:` | **引擎直执行** | 逐行批量点击（问卷/表单作答；每轮 1 tap + 双信号验证，见 compat 样例） |
 | `launch` / `terminate` | **引擎直执行** | 启动/强停 App |
 | `net` / `sleep` | 特殊 | 网络档位 / 等待秒数 |
 
