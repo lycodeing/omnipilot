@@ -44,9 +44,12 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       try { size = await getSize(); } catch { return { ...m, inWebView: false }; }
     }
     const b = m.node.bounds;
-    const zeroArea = !Array.isArray(b) || b[2] <= b[0] || b[3] <= b[1];
-    if (!zeroArea && !inScreen(b, size)) return null;
     const wv = flat.find((x) => /WebView/i.test(x.cls || ''));
+    const zeroArea = !Array.isArray(b) || b[2] <= b[0] || b[3] <= b[1];
+    // 零面积放行仅限 WebView 壳 App（其可见元素常报 [0,0][0,0]，且由视觉确认把关）；
+    // 纯原生树里零面积 = 隐藏节点，保持严格过滤，避免 aiWaitFor 对隐藏元素误报。
+    if (zeroArea && !wv) return null;
+    if (!zeroArea && !inScreen(b, size)) return null;
     const inWebView = !!(wv && Array.isArray(wv.bounds)
       && (zeroArea || (Array.isArray(b)
         && b[0] >= wv.bounds[0] && b[1] >= wv.bounds[1]
