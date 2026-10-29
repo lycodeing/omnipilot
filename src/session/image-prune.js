@@ -69,3 +69,38 @@ export function pruneImages(messages, { keepRecent = 3 } = {}) {
   }
   return { total, kept: total - replaced, replaced, changed: replaced > 0 };
 }
+
+// —— 旧工具结果截断（上下文治理第二道）——
+// uitree/screen_diff/read 等工具结果单条可达 20-40KB；长 run（百步）累积数 MB 进上下文，
+// 实测 deepseek 在长上下文下对部分轮次返回空消息（无文本无 toolCall）。图片已有 pruneImages，
+// 工具结果此前无治理。策略：保留最近 keepRecent 条 toolResult 完整，更早的截断为前 N 字符摘要。
+// 模型仍知道"该步调用过、返回过大意"，只是不再重传全文。
+export const TOOLRESULT_PLACEHOLDER = '[工具结果已截断';
+
+export function pruneToolResults(messages, { keepRecent = 6, keepChars = 300 } = {}) {
+  let replaced = 0;
+  // 从后往前数 toolResult，前 keepRecent 条保留
+  let seen = 0;
+  for (let mi = messages.length - 1; mi >= 0; mi--) {
+    const m = messages[mi];
+    if (m?.role !== 'toolResult') continue;
+    seen++;
+    if (seen <= keepRecent) continue;
+    const c = m.content;
+    if (typeof c === 'string') {
+      if (c.length > keepChars && !c.startsWith(TOOLRESULT_PLACEHOLDER)) {
+        m.content = `${TOOLRESULT_PLACEHOLDER}: 原 ${c.length} 字符] ${c.slice(0, keepChars)}…`;
+        replaced++;
+      }
+    } else if (Array.isArray(c)) {
+      for (let bi = 0; bi < c.length; bi++) {
+        const b = c[bi];
+        if (b?.type === 'text' && typeof b.text === 'string' && b.text.length > keepChars && !b.text.startsWith(TOOLRESULT_PLACEHOLDER)) {
+          b.text = `${TOOLRESULT_PLACEHOLDER}: 原 ${b.text.length} 字符] ${b.text.slice(0, keepChars)}…`;
+          replaced++;
+        }
+      }
+    }
+  }
+  return { replaced, changed: replaced > 0 };
+}
