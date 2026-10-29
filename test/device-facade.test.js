@@ -136,6 +136,9 @@ test('locate 走门面：精确文本 + clickable 兜底；readText 各 selector
   assert.match(t3.error, /未匹配/);
   const t4 = await device.readText('index=0');
   assert.equal(t4.value, '');
+  // 等值 MISS → 包含兜底（WebView 文本节点粒度波动防线；'text*=xx' 不经 parseTarget，直接 includes）
+  const t5 = await device.readText('text=子相');
+  assert.deepEqual({ ok: t5.ok, value: t5.value, strategy: t5.strategy }, { ok: true, value: '电子相册', strategy: 'contains-fallback' });
   await device.close();
 });
 

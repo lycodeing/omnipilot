@@ -179,10 +179,16 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         const flat = flattenNodes(tree.nodes);
         const m = matchSelector(flat, selector);
         if (m) return { ok: true, value: m.value, error: null };
-        // 兜底（与 locate 策略链对齐）：text= 严格等值 MISS 时降级 text*= 包含匹配。
+        // 兜底（与 locate 策略链对齐）：text= 严格等值 MISS 时按包含匹配。
         // WebView 树的文本节点粒度随版本/渲染波动（"热度"↔"热度榜"），只查等值会假报"未匹配"。
-        const c = matchSelector(flat, String(selector).replace(/^text=/, 'text*='));
-        if (c) return { ok: true, value: c.value, error: null, strategy: 'contains-fallback' };
+        // 注意不能把 'text*=xx' 再喂回 matchSelector——parseTarget 不认识该前缀，会搜字面量。
+        const s0 = String(selector);
+        const mm = /^text=(.+)$/.exec(s0);
+        if (mm) {
+          const needle = mm[1];
+          const n = flat.find((x) => String(x.text || '').includes(needle) || String(x.contentDesc || '').includes(needle));
+          if (n) return { ok: true, value: n.text || n.contentDesc || '', error: null, strategy: 'contains-fallback' };
+        }
         return { ok: false, value: null, error: `未匹配: ${selector}` };
       } catch (e) {
         return { ok: false, value: null, error: String(e?.message ?? e) };
