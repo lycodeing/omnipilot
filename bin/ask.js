@@ -196,7 +196,10 @@ async function cmdRun({ positional, flags }) {
       const resolved = resolveCasePath(t);
       let text;
       try { text = fs.readFileSync(resolved, 'utf8'); } catch { fail(`用例文件不可读：${t}（已尝试 ${resolved}）`); }
-      cases.push(parseCaseText(text, { source: t }));
+      const parsed = parseCaseText(text, { source: t });
+      // 装载期告警（外部框架兼容提示：sleep 毫秒换算、被忽略的 timeout 等）
+      for (const w of parsed.warnings || []) console.warn(`[warn] ${w}`);
+      cases.push(parsed);
     } else {
       cases.push(caseFromText(t, { source: t }));
     }
@@ -439,6 +442,30 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               const d = res?.details ?? {};
               ctx.engineLog.push({ step: i, type: step.type, tool: call.tool, ok: d.ok !== false, error: d.error ?? null });
               if (d.ok === false) console.warn(`[engine] ${step.type}「${step.text ?? ''}」失败：${d.error || ''}`);
+              // 视觉接地降级（外部框架兼容）：aiTap/aiLongPress 的定位目标是**描述性视觉短语**
+              // （如"屏幕最底部导航栏中的'生活'标签"）时，引擎文本/资源定位必然 MISS。
+              // 此时花**一轮** agent 往返让模型看屏接地并点击，避免整步失败。
+              // 注意 locateMiss 把标记放在 details.code（details.error 可能为 undefined）。
+              const missText = `${d.code ?? ''} ${d.error ?? ''}`;
+              const isLocateMiss = d.ok === false && /LOCATE_MISS|未找到目标/i.test(missText);
+              const isTapFamily = call.tool === 'tap' || call.tool === 'long_press';
+              if (isLocateMiss && isTapFamily) {
+                const verb = call.tool === 'long_press' ? '长按' : '点击';
+                if (!flags.quiet) console.warn(`[engine] ${step.type} 定位失败，降级一轮视觉接地`);
+                // 随降级 prompt 附当前屏压缩图，免模型再花一轮调 screen
+                let fbImages = [];
+                try {
+                  const { compressForContext } = await import('../src/image/png.js');
+                  const shot = await device.screencap();
+                  const cc = await compressForContext(shot.buffer, { maxWidth: 540, quality: 70 });
+                  fbImages = [{ type: 'image', data: cc.buffer.toString('base64'), mimeType: cc.mimeType }];
+                } catch { /* 取图失败则模型自行 screen */ }
+                await session.prompt(
+                  `引擎定位失败，改用视觉接地：请在随附截屏对应的当前屏幕上找到并${verb}以下目标（只这一次操作，做完即止，不要滚动/返回/做其它事）：${step.text}\n若确实找不到，回复"未找到"并说明原因。`,
+                  { images: fbImages },
+                );
+                ctx.engineLog.push({ step: i, type: `${step.type}+visual-fallback`, tool: 'agent', ok: true, error: null });
+              }
               continue;
             }
             console.warn(`[warn] 引擎步骤 ${step.type} 找不到工具 ${call.tool}`);

@@ -85,7 +85,8 @@ describe('lint rules', () => {
   });
 
   test('返回形状统一 {level,rule,message,line}，行号从 1 计', () => {
-    const r = lintCaseText('# 注释行\n\nsteps:\n  - do: 已进入设置页');
+    // 用断言行做夹具：推断式/全称类规则只对断言行生效（步骤描述文本不属断言判据）
+    const r = lintCaseText('# 注释行\n\nsteps:\n  - assert: 已进入设置页');
     assert.equal(r.length, 1);
     assert.deepEqual(Object.keys(r[0]).sort(), ['level', 'line', 'message', 'rule']);
     assert.equal(r[0].line, 4);

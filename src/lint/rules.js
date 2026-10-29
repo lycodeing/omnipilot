@@ -44,13 +44,16 @@ const RULES = [
   {
     id: 'inferred-assert',
     level: 'warn',
-    test: (line) => /(已进入|已跳转到|成功进入了?|导航到了?)\s*\S{0,10}(页|界面|页面)/.test(line),
+    // 仅对断言行生效：规则语义是"断言含推断式"，命中 ai:/aiTap: 等步骤的描述文本属误报
+    // （外部框架用例的拖动/滚动描述常含"已进入/跳转到"字样，非断言）
+    test: (line) => /(aiAssert|assert|断言)/.test(line) && /(已进入|已跳转到|成功进入了?|导航到了?)\s*\S{0,10}(页|界面|页面)/.test(line),
     message: '断言含推断式"已进入 XX 页"，应描述当前屏幕可见元素',
   },
   {
     id: 'universal-assert',
     level: 'warn',
-    test: (line) => /(每个|所有|全部)[\u4e00-\u9fa5A-Za-z0-9_]{0,12}(都|均)|红色|绿色|蓝色|白色|黑色|已变化|有变化/.test(line),
+    // 仅对断言行生效：步骤描述里的"没有变化/有变化"（如拖动到底判定）不是断言判据
+    test: (line) => /(aiAssert|assert|断言)/.test(line) && /(每个|所有|全部)[\u4e00-\u9fa5A-Za-z0-9_]{0,12}(都|均)|红色|绿色|蓝色|白色|黑色|已变化|有变化/.test(line),
     message: '断言含全称量词/颜色词/"已变化"类脆弱判据（踩坑清单 §1）',
   },
   {
@@ -62,9 +65,10 @@ const RULES = [
       const prev = allLines[idx - 1];
       // 点击/跳转类动作：旧名（tap/click/点击）+ 新引擎名（aiTap/aiInput/launch/…）
       if (!/(tap|click|点击|跳转|navigate|launch|启动|aiTap|aiInput|aiLongPress|aiKeyboardPress)/.test(prev)) return false;
-      // 前一行是点击且之间没有 wait_idle/sleep，且当前行之前也没有
+      // 前一行是点击且之间没有 wait_idle/sleep/aiWaitFor，且当前行之前也没有
+      // （aiWaitFor 是等待步骤：外部框架风格用例常用它分隔点击与断言）
       for (let j = idx - 1; j >= 0 && j >= idx - 2; j--) {
-        if (/(wait_idle|sleep|等待)/.test(allLines[j])) return false;
+        if (/(wait_idle|aiWaitFor|sleep|等待)/.test(allLines[j])) return false;
       }
       return true;
     },

@@ -318,3 +318,33 @@ describe('wait selector', () => {
     }
   });
 });
+
+test('外部框架兼容：flow: 顶层键等价 steps:，sleep 毫秒换算', () => {
+  const c = parseCaseText('name: X\nflow:\n  - aiTap: 热榜\n  - sleep: 3000\n');
+  assert.equal(c.steps.length, 2);
+  assert.equal(c.steps[0].type, 'aiTap');
+  assert.equal(c.steps[1].type, 'sleep');
+  assert.equal(c.steps[1].seconds, 3, 'sleep: 3000 按毫秒换算为 3s');
+  assert.ok((c.warnings || []).some((w) => /毫秒/.test(w)), '毫秒换算有 warn');
+});
+
+test('外部框架兼容：ai 步的 timeout 参数保留但 warn 忽略；aiWaitFor 不 warn', () => {
+  const c = parseCaseText('name: X\nsteps:\n  - ai: 做某事\n    timeout: 300000\n  - aiWaitFor: 等「x」出现\n    timeout: 30000\n');
+  assert.equal(c.steps.length, 2);
+  assert.equal(c.steps[0].timeout, 300000);
+  const warns = c.warnings || [];
+  assert.ok(warns.some((w) => /timeout 参数被忽略/.test(w)), 'ai 的 timeout 有忽略 warn');
+  assert.ok(!warns.some((w) => /:6 /.test(w)), 'aiWaitFor 行（第6行）不应有 warn');
+});
+
+test('外部框架兼容：aiWaitFor 直引号文本可提取 selector', async () => {
+  const { waitSelectorFromText } = await import('../src/session/case.js');
+  assert.equal(waitSelectorFromText("屏幕底部出现'生活'这一排导航栏"), '生活');
+});
+
+test('lint：aiWaitFor 作为点击与断言之间的等待分隔，不误报 assert-after-click', async () => {
+  const { lintCaseText } = await import('../src/lint/rules.js');
+  const text = 'steps:\n  - aiTap: 提交\n  - aiWaitFor: 等「结果」出现\n    timeout: 20000\n  - aiAssert: 结果页有内容\n';
+  const issues = lintCaseText(text);
+  assert.equal(issues.filter((x) => x.rule === 'assert-after-click').length, 0);
+});

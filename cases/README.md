@@ -86,6 +86,24 @@ steps:
 > 注：s4/m3 耗时偏长是掘金 App 在 x86_64 上的 native 崩溃（转译层硬限制）导致，agent 靠自愈完成。
 
 
+## 外部框架语法兼容（2026-10-29）
+
+支持直接跑其它框架风格的 YAML 用例（如健康自测类流程用例），兼容点：
+
+| 外部写法 | 本 kit 行为 |
+|---|---|
+| 顶层 `flow:` | 等价 `steps:`（装载器别名） |
+| `sleep: 3000`（毫秒） | 值 >100 自动按毫秒换算为秒，并 warn |
+| `ai:` 步挂 `timeout: 300000` | 参数保留但忽略（仅 aiWaitFor 支持 timeout），装载期 warn；整 run 时长由 `--timeout` 控制 |
+| aiWaitFor 用直引号 `'生活'` | 选择器提取支持直引号（与「」/“”同等待遇） |
+| aiTap 描述性视觉目标（"屏幕最底部导航栏中的'生活'标签"） | 引擎定位 MISS 后**自动降级一轮视觉接地**：附当前屏压缩图让 agent 看屏点击 |
+| aiTap→aiWaitFor→aiAssert 序列 | lint 的 assert-after-click 规则认 aiWaitFor 为等待分隔，不再误报 |
+
+样例：[compat-health-flow.yaml.example](./compat-health-flow.yaml.example)（目标 App 需自行安装；
+本机模拟器无该 App，语法与运行时链路已用相册 App 冒烟验证）。
+
+已知边界：外部用例的"AI 连续作答直到出现提交按钮"类长任务步（单步 `ai:` 内含多轮工具调用）
+受全局 `--timeout` 约束，建议此类用例 `--timeout 600` 以上。
 ## 环境注意事项
 
 - 本模拟器为 google_apis 镜像，**没有 redroid 的 `net` 命令**：`net_profile` 返回 `ok=false` 属预期，用例按容错设计。

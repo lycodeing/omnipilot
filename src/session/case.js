@@ -90,7 +90,7 @@ function coerce(key, val) {
 
 export function parseCaseText(text, { source = 'text' } = {}) {
   const lines = String(text ?? '').split(/\r?\n/);
-  const caseObj = { name: source, source, steps: [] };
+  const caseObj = { name: source, source, steps: [], warnings: [] };
   let inSteps = false;
   let current = null;
 
@@ -104,7 +104,8 @@ export function parseCaseText(text, { source = 'text' } = {}) {
       caseObj.name = unquote(trimmed.replace(/^name\s*[:：]/, ''));
       continue;
     }
-    if (/^steps\s*[:：]?\s*$/.test(trimmed)) { inSteps = true; continue; }
+    // 步骤区起始：steps: 或 flow:（外部框架别名，兼容健康自测类用例）
+    if (/^(?:steps|flow)\s*[:：]?\s*$/.test(trimmed)) { inSteps = true; continue; }
     if (!inSteps) continue;
 
     const item = trimmed.match(/^-\s*(.*)$/);
@@ -117,8 +118,17 @@ export function parseCaseText(text, { source = 'text' } = {}) {
         if (cls.ok) {
           const type = normalizeType(kv[1]);
           current = { type };
-          if (type === 'sleep') current.seconds = Number(unquote(kv[2])) || 0;
-          else if (type === 'net') current.profile = unquote(kv[2]);
+          if (type === 'sleep') {
+            // 兼容毫秒写法（外部框架 sleep: 3000 = 3s）：>100 一律视为毫秒换算，
+            // 否则 3000 会被当 3000 秒（静默睡 50 分钟的灾难）
+            const rawV = Number(unquote(kv[2])) || 0;
+            if (rawV > 100) {
+              current.seconds = rawV / 1000;
+              caseObj.warnings.push(`${source}:${i + 1} sleep 值 ${rawV} 按毫秒解释为 ${current.seconds}s（外部框架写法）`);
+            } else {
+              current.seconds = rawV;
+            }
+          } else if (type === 'net') current.profile = unquote(kv[2]);
           else current.text = unquote(kv[2]);
           caseObj.steps.push(current);
           continue;
@@ -138,6 +148,11 @@ export function parseCaseText(text, { source = 'text' } = {}) {
       const p = trimmed.match(/^([\w-]+)\s*[:：]\s*(.*)$/);
       if (p && PARAM_KEYS.has(p[1])) {
         current[p[1]] = coerce(p[1], p[2]);
+        // timeout 仅 aiWaitFor 支持；外部框架常给 ai/aiTap 步挂 timeout（毫秒），
+        // 静默忽略会让作者误以为生效——装载期显式 warn（整 run 时长由 --timeout 控制）
+        if (p[1] === 'timeout' && !WAIT_TYPES.has(current.type)) {
+          caseObj.warnings.push(`${source}:${i + 1} ${current.type} 步骤的 timeout 参数被忽略（仅 aiWaitFor 支持）；单步/整 run 时长由 --timeout 控制`);
+        }
         continue;
       }
       if (p && (ALL_TYPES.has(p[1]) || p[1] === 'aiAct')) {
@@ -223,7 +238,7 @@ export function waitSelectorFromText(text) {
   // 已是显式 selector（text=/text*=/resourceId=/class=）
   const explicit = /(?:^|\s)((?:text|resourceId|resource-id|id|class|type|desc|re)=[^\s，。]+)/.exec(t);
   if (explicit) return explicit[1];
-  // 引号里的文本：「xxx」/'xxx'/“xxx”
+  // 引号里的文本：「xxx」/'xxx'/“xxx”/直引号 'xxx'（外部框架常用直引号）
   const quoted = /[「“"']([^」”"']{1,40})[」”"']/.exec(t);
   if (quoted) return quoted[1]; // 裸文本（device 层 auto 链：精确→包含）
   // 形如 '等 XXX 出现' / '等 XXX 加载' / 'XXX 可见'
