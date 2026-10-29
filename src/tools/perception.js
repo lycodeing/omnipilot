@@ -16,20 +16,12 @@ export function flattenNodes(nodes, out = []) {
   return out;
 }
 
-// selector：'text=xx' | 'index=N' | 'class=...#index=N' | 'resourceId=...'
+// selector 节点匹配：单一实现源在 device/locate.js（matchNodeSelector），此处委托，避免两份分叉。
+import { matchNodeSelector } from '../device/locate.js';
 export function matchSelector(node, sel) {
-  if (sel.startsWith('text=')) return node.text === sel.slice(5);
-  if (sel.startsWith('text*=')) return String(node.text || '').includes(sel.slice(6));
-  if (sel.startsWith('resourceId=')) return node.resourceId === sel.slice(11);
-  if (sel.startsWith('class=')) {
-    const [cls, idxPart] = sel.slice(6).split('#index=');
-    if (node.cls !== cls) return false;
-    if (idxPart !== undefined) return Number(node.index) === Number(idxPart);
-    return true;
-  }
-  return false;
+  if (String(sel).startsWith('index=')) return false; // index= 由 findBySelector 处理
+  return matchNodeSelector(node, sel);
 }
-
 // 在 scope 内按 selector 找节点；'index=N' 按在 scope 中的序号
 export function findBySelector(flat, sel) {
   if (sel.startsWith('index=')) {

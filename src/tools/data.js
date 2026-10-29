@@ -81,8 +81,8 @@ async function extractCollection(ctx, params) {
       const k = params.key ? String(row[params.key] ?? JSON.stringify(row)) : JSON.stringify(row);
       if (!seen.has(k)) seen.set(k, row);
     }
-    // 滚动一屏；无变化即停（树 hash 判定）
-    const r = await device.scroll('up', { max: 1, stopWhenNoChange: true });
+    // 滚动一屏看后续内容（direction 内容语义：down=前进）；无变化即停（树 hash 判定）
+    const r = await device.scroll('down', { max: 1, stopWhenNoChange: true });
     if (!r.changed) break;
   }
   return [...seen.values()];

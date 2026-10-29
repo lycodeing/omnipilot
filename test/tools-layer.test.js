@@ -133,7 +133,7 @@ describe('tools registry', () => {
     for (const name of EXPECTED_TOOLS) {
       assert.ok(names.has(name), `缺少工具: ${name}`);
     }
-    assert.equal(EXPECTED_TOOLS.length, 24, '感知5+操作8+环境6+数据扩展5');
+    assert.equal(EXPECTED_TOOLS.length, 25, '感知5+操作9+环境6+数据扩展5');
   });
 
   test('每个工具都有 name/label/description/parameters/execute', () => {

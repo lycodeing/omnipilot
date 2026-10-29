@@ -189,6 +189,23 @@ export function buildActionTools(ctx) {
     },
   });
 
+  const tapEachRow = defineTool({
+    name: 'tap_each_row',
+    label: 'tap_each_row',
+    description: '逐行作用域批量点击（引擎确定性，0 模型往返）：rows=行 scope selector、tap=行内目标 selector（取每行最左匹配）、stopWhen=终止标记 selector、maxRounds=滚动轮数上限。用于问卷/表单逐行作答。',
+    parameters: Type.Object({
+      rows: Type.String(),
+      tap: Type.String(),
+      stopWhen: Type.Optional(Type.String()),
+      maxRounds: Type.Optional(Type.Number()),
+    }),
+    execute: async (_id, params) => {
+      const gate = await confirmWrite(ctx, 'tap_each_row', params.rows);
+      if (!gate.allowed) return denied('tap_each_row');
+      const r = await device.tapEachRow({ rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null, maxRounds: params.maxRounds ?? 12 });
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: !r.error, ...r }) }], details: { ok: !r.error, ...r } };
+    },
+  });
   const key = defineTool({
     name: 'key',
     label: 'key',
@@ -233,5 +250,5 @@ export function buildActionTools(ctx) {
     },
   });
 
-  return [tap, longPress, input, swipe, scroll, key, launch, terminate];
+  return [tap, longPress, input, swipe, scroll, tapEachRow, key, launch, terminate];
 }
