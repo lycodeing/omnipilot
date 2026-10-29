@@ -529,7 +529,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                 { images: shot },
               );
               const ans = lastAssistantText(session);
-              if (ans && /"visible"\s*:\s*true/.test(ans)) { confirmed = true; break; }
+              // 否定优先：'不可见/否/false' 先判负，避免"不可见"中的"可见"被正向误匹配
+              if (ans && !/不可见|否|false/i.test(ans) && /"?visible"?\s*[:：]\s*"?(true|是|可见)"?/i.test(ans)) { confirmed = true; break; }
               if (Date.now() - t0 >= timeout) break;
               await new Promise((res2) => setTimeout(res2, 5000)); // WebView 壳 App 页面加载慢，确认间隔放宽到 5s
             }
