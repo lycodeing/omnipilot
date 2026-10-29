@@ -70,8 +70,11 @@ async function buildVlmLocate(ctx, modelCfg) {
       img = { data: c.buffer.toString('base64'), mimeType: c.mimeType };
     } catch { /* 压缩失败用原图 */ }
     const fmt = cs?.describeForPrompt?.() || 'Return coordinates normalized to 0-1000.';
+    // 必须给"找不到"的出口：否则目标不在屏上时模型会被迫编造坐标（真机事故：
+    // 编造坐标点中无关卡片 → 进入错误页面）。toNumbers 对无数字回复返回空 →
+    // locate 走"VLM 返回无法解析"失败路径，安全。
     const raw = await ctx.chat(
-      `Locate the UI element described as: ${target}. ${instruction || ''} ${fmt} Reply with ONLY the numbers.`,
+      `Locate the UI element described as: ${target}. ${instruction || ''} ${fmt} If the target is NOT visible on this screen, reply with exactly: NOT_FOUND. Otherwise reply with ONLY the numbers.`,
       { images: [img] },
     );
     return { raw, family: modelCfg.family };
@@ -578,11 +581,18 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         const stepsBefore = recorder.stepCount;
         await session.prompt(text, { images: step.type === 'aiAssert' ? promptImages : aiImages });
         let answer = lastAssistantText(session);
-        // 空轮检测：无文本且无工具调用 = 模型空转（网关/模型偶发空响应）→ 附屏重试一轮
+        // 空轮检测：无文本且无工具调用 = 模型空转（网关/模型偶发空响应）→ 附屏重试。
+        // 第 2 次重试要求显式 BLOCKED 回复：把"静默空转"变成可观测结果（进报告 thought），
+        // 否则 ai 步静默无操作会让后续步骤在错误页面上连锁失败（真机事故根因）。
         if (!answer && recorder.stepCount === stepsBefore && step.type !== 'aiAssert') {
-          if (!flags.quiet) console.warn('[warn] 模型空轮（无文本无工具），附屏重试一次');
-          await session.prompt(`${text}\n（随附当前屏幕截图；直接调用工具执行，不要只描述意图）`, { images: aiImages });
-          answer = lastAssistantText(session);
+          for (let retry = 0; retry < 2 && !answer; retry++) {
+            if (!flags.quiet) console.warn(`[warn] 模型空轮（无文本无工具），附屏重试 ${retry + 1}/2`);
+            const extra = retry === 0
+              ? '（随附当前屏幕截图；直接调用工具执行，不要只描述意图）'
+              : '（这是第二次重试。你必须现在调用至少一个工具执行上述任务；若确实无法执行，回复一行：BLOCKED: <原因>）';
+            await session.prompt(`${text}\n${extra}`, { images: aiImages });
+            answer = lastAssistantText(session);
+          }
         }
         if (!answer && step.type === 'aiAssert') {
           // 断言步：模型以纯 toolCall 或空消息收尾（网关/模型偶发空响应）→ 最多催答 3 轮
