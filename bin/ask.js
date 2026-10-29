@@ -419,7 +419,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       const targets = [];
       for (let k = fromIdx; k < steps.length && targets.length < 6; k++) {
         const s = steps[k];
-        if (s.type !== 'aiTap' && s.type !== 'aiLongPress') break; // 只批量连续 tap 族
+        if (s.type === 'sleep') continue; // sleep 不改屏幕，可跨过收集
+        if (s.type !== 'aiTap' && s.type !== 'aiLongPress') break; // 遇改屏步骤即停
         const txt = interpolate(s.text, ctx.vars);
         if (txt && !targets.includes(txt)) targets.push(txt);
       }
@@ -659,7 +660,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         // 动作就收尾（如 27 题只答 1 题）。每轮结束后若未自报完成/受阻，就催它继续，最多 6 轮。
         const marathon = /直到|重复|逐题|每一题|依次/.test(stepText);
         if ((step.type === 'ai' || step.type === 'aiAct') && marathon) {
-          for (let resume = 0; resume < 6; resume++) {
+          for (let resume = 0; resume < 10; resume++) {
             if (answer && doneRe.test(answer)) break; // 模型自报完成/受阻 → 结束
             if (!flags.quiet) console.warn(`[warn] 马拉松步未完成（无完成标记），催促继续 ${resume + 1}/6`);
             // 每轮取新截图：题目推进后屏幕已变，步首旧图会误导模型
@@ -671,7 +672,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               freshImgs = [{ type: 'image', data: c5.buffer.toString('base64'), mimeType: c5.mimeType }];
             } catch { /* 取图失败不阻断 */ }
             await session.prompt(
-              `任务尚未完成（终止条件未满足）。继续执行：${text}\n（直接调用工具继续；若终止条件已满足回复"完成"，无法继续回复"BLOCKED: 原因"）`,
+              `任务尚未完成（终止条件未满足）。继续执行：${text}\n（高效做法：一次 uitree 看清当前屏全部待处理项，然后**一轮并行 tap** 处理完本屏所有项，再滚动看下一屏；若终止条件已满足回复"完成"，无法继续回复"BLOCKED: 原因"）`,
               { images: freshImgs },
             );
             answer = lastAssistantText(session);
