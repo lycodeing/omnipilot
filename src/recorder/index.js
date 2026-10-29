@@ -124,6 +124,11 @@ export class RunRecorder {
     return this._steps.length;
   }
 
+  // 返回 index >= fromIndex 的已记账步骤（run 循环检测本轮是否调过动作类工具）
+  stepsSince(fromIndex) {
+    return this._steps.filter((s) => s.index >= fromIndex);
+  }
+
   get jsonPath() {
     return this._jsonPath;
   }

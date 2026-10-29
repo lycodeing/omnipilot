@@ -582,6 +582,30 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         const stepsBefore = recorder.stepCount;
         await session.prompt(text, { images: step.type === 'aiAssert' ? promptImages : aiImages });
         let answer = lastAssistantText(session);
+        // 续作循环（ai/aiAct 步）：长任务步（如"逐题作答直到出现提交按钮"）模型常做一两个
+        const doneRe = /完成|完毕|已提交|DONE|BLOCKED/i;
+        // 马拉松步续作循环：步骤文本含终止条件（直到/重复/逐题/每一题）时，模型每轮只做部分
+        // 动作就收尾（如 27 题只答 1 题）。每轮结束后若未自报完成/受阻，就催它继续，最多 6 轮。
+        const marathon = /直到|重复|逐题|每一题|依次/.test(stepText);
+        if ((step.type === 'ai' || step.type === 'aiAct') && marathon) {
+          for (let resume = 0; resume < 6; resume++) {
+            if (answer && doneRe.test(answer)) break; // 模型自报完成/受阻 → 结束
+            if (!flags.quiet) console.warn(`[warn] 马拉松步未完成（无完成标记），催促继续 ${resume + 1}/6`);
+            // 每轮取新截图：题目推进后屏幕已变，步首旧图会误导模型
+            let freshImgs = [];
+            try {
+              const { compressForContext } = await import('../src/image/png.js');
+              const s5 = await device.screencap();
+              const c5 = await compressForContext(s5.buffer, { maxWidth: 540, quality: 70 });
+              freshImgs = [{ type: 'image', data: c5.buffer.toString('base64'), mimeType: c5.mimeType }];
+            } catch { /* 取图失败不阻断 */ }
+            await session.prompt(
+              `任务尚未完成（终止条件未满足）。继续执行：${text}\n（直接调用工具继续；若终止条件已满足回复"完成"，无法继续回复"BLOCKED: 原因"）`,
+              { images: freshImgs },
+            );
+            answer = lastAssistantText(session);
+          }
+        }
         // 空轮检测：无文本且无工具调用 = 模型空转（网关/模型偶发空响应）→ 附屏重试。
         // 第 2 次重试要求显式 BLOCKED 回复：把"静默空转"变成可观测结果（进报告 thought），
         // 否则 ai 步静默无操作会让后续步骤在错误页面上连锁失败（真机事故根因）。
@@ -598,8 +622,35 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         if (!answer && step.type === 'aiAssert') {
           // 断言步：模型以纯 toolCall 或空消息收尾（网关/模型偶发空响应）→ 最多催答 3 轮
           for (let nudge = 0; nudge < 3 && !answer; nudge++) {
-            await session.prompt('不要再调用工具。直接输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}', { images: [] });
+            // 第 2 轮起附当前屏图：空响应多发生在"长上下文+无图"轮，附图可显著降低空响应率
+            let imgs = [];
+            if (nudge >= 1) {
+              try {
+                const { compressForContext } = await import('../src/image/png.js');
+                const s3 = await device.screencap();
+                const c3 = await compressForContext(s3.buffer, { maxWidth: 540, quality: 70 });
+                imgs = [{ type: 'image', data: c3.buffer.toString('base64'), mimeType: c3.mimeType }];
+              } catch { /* 取图失败不阻断 */ }
+            }
+            await session.prompt('不要再调用工具。直接输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}', { images: imgs });
             answer = lastAssistantText(session);
+          }
+          if (!answer && ctx.chat) {
+            // 会话催答耗尽仍空（长上下文空响应）：无状态单发 chat 兜底判定（不依赖会话历史）
+            try {
+              let shot2 = [];
+              try {
+                const { compressForContext } = await import('../src/image/png.js');
+                const s4 = await device.screencap();
+                const c4 = await compressForContext(s4.buffer, { maxWidth: 540, quality: 70 });
+                shot2 = [{ data: c4.buffer.toString('base64'), mimeType: c4.mimeType }];
+              } catch { /* 无图也判 */ }
+              answer = await ctx.chat(
+                `【断言】${stepText}
+只依据随附截图判断。只输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}`,
+                { images: shot2 },
+              );
+            } catch { /* 兜底失败维持无输出 */ }
           }
         } else if (!answer && step.type === 'aiQuery' && recorder.stepCount > stepsBefore) {
           // 查询步已执行工具但无收尾文本：催一句结果汇报（1 轮）
