@@ -15,9 +15,14 @@ function area([l, t, r, b]) {
 }
 
 // 'text=xx' | 'id=xx' | 'resource-id=xx' | 'class=C#index=N' | 'type=C' | 'desc=xx' | 're:pattern' | 自动
+// 'within=<scopeSel>::<targetSel>'：行内作用域定位——先找 scope 节点，再在其 bounds 内匹配 target。
+// 用于点某一行右侧按钮这类需求（列表行序与 #index 不一致时 index 定位会点错行）。
 export function parseTarget(target) {
   const t = String(target ?? '').trim();
   let m;
+  if ((m = /^within=(.+?)::(.+)$/s.exec(t))) {
+    return { kind: 'within', scope: m[1], inner: m[2] };
+  }
   if ((m = /^(?:resource-id|id)=(.+?)(?:#index=(\d+))?$/i.exec(t))) {
     return { kind: 'resource_id', id: m[1], index: m[2] ? Number(m[2]) : 0 };
   }
@@ -30,6 +35,16 @@ export function parseTarget(target) {
   if ((m = /^desc=(.+)$/i.exec(t))) return { kind: 'contains', text: m[1], field: 'contentDesc' };
   if ((m = /^re:(.+)$/s.exec(t))) return { kind: 'regex', pattern: m[1] };
   return { kind: 'auto', text: t };
+}
+
+// 按 parseTarget 结果取候选节点（within 作用域定位复用）
+function findByKind(flat, parsed) {
+  if (parsed.kind === 'exact_text') return findByExactText(flat, parsed.text);
+  if (parsed.kind === 'contains') return findByContains(flat, parsed.text, parsed.field);
+  if (parsed.kind === 'regex') return findByRegex(flat, parsed.pattern);
+  if (parsed.kind === 'resource_id') return findByResourceId(flat, parsed.id);
+  if (parsed.kind === 'class_index') return findByClass(flat, parsed.cls);
+  return findByExactText(flat, parsed.text).concat(findByContains(flat, parsed.text));
 }
 
 export function findByExactText(flat, text) {
@@ -183,6 +198,20 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
     const parsed = parseTarget(target);
     let matched = null;
     let strategy = 'none';
+    if (parsed.kind === 'within') {
+      // 行内作用域：scope 命中后，在与其垂直相交（同一行）的节点中匹配 inner。不用包含于 scope bounds：行文本节点的 bounds 只覆盖左侧文字，行右侧按钮不在其内；同一行判据为 y 区间相交。
+      const scopeParsed = parseTarget(parsed.scope);
+      const scopeNodes = findByKind(flat, scopeParsed);
+      const scope = scopeNodes[0] ?? null;
+      if (scope && Array.isArray(scope.bounds)) {
+        const innerParsed = parseTarget(parsed.inner);
+        const innerNodes = findByKind(flat, innerParsed).filter((n) => Array.isArray(n.bounds)
+          && n !== scope
+          && n.bounds[1] < scope.bounds[3] && n.bounds[3] > scope.bounds[1]);
+        matched = innerNodes.sort((a, b) => area(a.bounds) - area(b.bounds))[0] ?? null;
+        if (matched) strategy = 'within';
+      }
+    }
     const tryStrategy = (nodes, name) => {
       if (matched || !nodes?.length) return;
       matched = nodes.filter((n) => inScreen(n.bounds, size)).sort((a, b) => area(a.bounds) - area(b.bounds))[0] ?? null;

@@ -193,3 +193,25 @@ test('clickable=false 且无祖先可点 → 向下找可点子孙（§5.4.2 顺
   const r = await locate('确定');
   assert.deepEqual(r.bounds, [10, 10, 90, 90], '解析到可点子节点');
 });
+
+test('within 行内作用域定位：scope 行内的目标按钮', async () => {
+  // 两行列表：行1=中医体质辨识+测评按钮A，行2=卒中风险评估+测评按钮B
+  const flat = [
+    { index:0, text:'中医体质辨识', cls:'TextView', resourceId:'', contentDesc:'', clickable:false, bounds:[40,300,700,400], center:[370,350], children:[] },
+    { index:1, text:'测评', cls:'TextView', resourceId:'', contentDesc:'', clickable:true, bounds:[800,320,1000,380], center:[900,350], children:[] },
+    { index:2, text:'卒中风险评估', cls:'TextView', resourceId:'', contentDesc:'', clickable:false, bounds:[40,450,700,550], center:[370,500], children:[] },
+    { index:3, text:'测评', cls:'TextView', resourceId:'', contentDesc:'', clickable:true, bounds:[800,470,1000,530], center:[900,500], children:[] },
+  ];
+  const probeFile = join(mkdtempSync(join(tmpdir(), 'ask-locate-w-')), 'family-probe.json');
+  const locate = createLocator({
+    getTree: async () => ({ nodes: flat, hash: treeHash(flat), dumpMs: 1, fromCache: false }),
+    getSize: async () => ({ w: 1080, h: 2340 }),
+    screencap: async () => Buffer.alloc(8),
+    vlmCache: new Map(),
+    probeFile,
+  });
+  const r = await locate('within=text=中医体质辨识::text=测评', {});
+  assert.equal(r.ok, true);
+  assert.equal(r.strategy, 'within');
+  assert.deepEqual(r.bounds, [800,320,1000,380], '应命中行1的测评按钮而非行2');
+});
