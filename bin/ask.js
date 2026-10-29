@@ -768,13 +768,17 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         try {
           const msgs = session.agent?.state?.messages;
           if (Array.isArray(msgs)) {
-            const { pruneImages, pruneToolResults } = await import('../src/session/image-prune.js');
+            const { pruneImages, pruneToolResults, pruneToolHistory } = await import('../src/session/image-prune.js');
             const keepN = Number(flags['keep-images']); const pr = pruneImages(msgs, { keepRecent: Number.isFinite(keepN) && keepN >= 1 ? keepN : 3 });
             if (pr.replaced > 0) ctx.imagesPruned = (ctx.imagesPruned || 0) + pr.replaced;
             // 旧工具结果截断：uitree/screen_diff 单条 20-40KB，长 run 累积数 MB 进上下文，
             // 实测诱发模型空响应；只保留最近 1 条完整（当前步所需），更早截断为 300 字符摘要
             const pr2 = pruneToolResults(msgs, { keepRecent: 1, keepChars: 300 });
             if (pr2.replaced > 0) ctx.toolResultsPruned = (ctx.toolResultsPruned || 0) + pr2.replaced;
+            // 旧工具轮折叠为纯文本：网关对 role:tool 历史返回 400（对照实验实证），
+            // 只保留最近 1 轮原始工具形态，更早折叠为文本描述（语义保留、网关接受）
+            const pr3 = pruneToolHistory(msgs, { keepRecent: 1 });
+            if (pr3.folded > 0) ctx.toolHistoryFolded = (ctx.toolHistoryFolded || 0) + pr3.folded;
           }
         } catch { /* 剪枝失败不阻断 */ }
       }

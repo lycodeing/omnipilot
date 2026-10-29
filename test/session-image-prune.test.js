@@ -1,7 +1,7 @@
 // 会话历史截图治理（§16）单测：旧图替换为占位符、最近 N 张保留
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pruneImages, replaceImagesWithPlaceholder, countImages, PLACEHOLDER_PREFIX , pruneToolResults, TOOLRESULT_PLACEHOLDER } from '../src/session/image-prune.js';
+import { pruneImages, replaceImagesWithPlaceholder, countImages, PLACEHOLDER_PREFIX , pruneToolResults, TOOLRESULT_PLACEHOLDER , pruneToolHistory } from '../src/session/image-prune.js';
 
 const img = (kb = 100) => ({ type: 'image', mimeType: 'image/png', data: 'A'.repeat(Math.round(kb * 1024 * 4 / 3)) });
 
@@ -125,4 +125,24 @@ test('pruneToolResults：字符串 content 形态同样截断且幂等', () => {
   const before = msgs[0].content;
   pruneToolResults(msgs, { keepRecent: 1, keepChars: 50 });
   assert.equal(msgs[0].content, before, '已截断的不再二次截断');
+});
+
+test('pruneToolHistory：旧工具轮折叠为纯文本，最近 1 轮保留原形态', () => {
+  const tc = { type: 'toolCall', name: 'tap', arguments: { target: 'x' } };
+  const msgs = [
+    { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+    { role: 'assistant', content: [tc] },
+    { role: 'toolResult', content: [{ type: 'text', text: '{"ok":true}' }] },
+    { role: 'user', content: [{ type: 'text', text: 'q2' }] },
+    { role: 'assistant', content: [tc] },
+    { role: 'toolResult', content: [{ type: 'text', text: '{"ok":true}' }] },
+  ];
+  const r = pruneToolHistory(msgs, { keepRecent: 1 });
+  assert.equal(r.folded, 2, '第一轮（assistant toolCall + toolResult）被折叠');
+  assert.equal(msgs[1].content[0].type, 'text', '旧 assistant toolCall 折叠为文本');
+  assert.ok(msgs[1].content[0].text.includes('调用工具 tap'));
+  assert.equal(msgs[2].role, 'user', '旧 toolResult 折叠为 user 文本');
+  assert.ok(msgs[2].content[0].text.includes('[工具结果]'));
+  assert.equal(msgs[4].content[0].type, 'toolCall', '最近一轮 assistant 保持原形态');
+  assert.equal(msgs[5].role, 'toolResult', '最近一轮 toolResult 保持原形态');
 });

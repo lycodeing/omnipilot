@@ -77,6 +77,53 @@ export function pruneImages(messages, { keepRecent = 3 } = {}) {
 // 模型仍知道"该步调用过、返回过大意"，只是不再重传全文。
 export const TOOLRESULT_PLACEHOLDER = '[工具结果已截断';
 
+// —— 旧工具轮折叠为纯文本（网关兼容治理，第三道）——
+// 实测（2026-10-29 对照实验）：u2a 网关/deepseek 对**任何含 role:'tool' + tool_calls 历史**的
+// 请求返回 400（"模型无法处理此请求"），纯文本历史则 200 且能正常返回 tool_calls。
+// SDK 的 openai-completions 转换会把 toolResult 发成 role:'tool' → 多轮工具历史必然触发 400，
+// 表现为模型"空响应"。对策：把**旧的**工具轮折叠为纯文本消息（assistant toolCall→文本描述、
+// toolResult→user 文本），只保留最近 keepRecent 轮原始形态（模型需要看到自己上一次调用的结果）。
+// 折叠后历史无 tool role → 网关接受；语义保留（模型仍知道调过什么、结果大意）。
+export function pruneToolHistory(messages, { keepRecent = 1 } = {}) {
+  if (!Array.isArray(messages)) return { folded: 0, changed: false };
+  // 从后往前数"工具轮"（assistant 含 toolCall 块 或 role=toolResult 的消息）
+  const toolMsgIdx = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const hasToolCall = m?.role === 'assistant' && Array.isArray(m.content)
+      && m.content.some((b) => b?.type === 'toolCall');
+    if (hasToolCall || m?.role === 'toolResult') toolMsgIdx.push(i);
+  }
+  // 保留最近 keepRecent 轮：一轮 = 一个 assistant toolCall 消息 + 其后跟随的 toolResult 消息。
+  // 简化：按 assistant-toolCall 消息计数保留 keepRecent 个，其后的 toolResult 一并保留。
+  const assistantToolIdx = toolMsgIdx.filter((i) => messages[i].role === 'assistant').reverse(); // 旧→新
+  const keepFrom = assistantToolIdx.length > keepRecent
+    ? assistantToolIdx[assistantToolIdx.length - keepRecent]
+    : -1; // keepFrom 及之后的工具轮保留原形态
+  let folded = 0;
+  for (let i = 0; i < messages.length; i++) {
+    if (keepFrom !== -1 && i >= keepFrom) break; // 之后的保留
+    const m = messages[i];
+    if (m?.role === 'assistant' && Array.isArray(m.content) && m.content.some((b) => b?.type === 'toolCall')) {
+      const calls = m.content.filter((b) => b?.type === 'toolCall')
+        .map((b) => `[调用工具 ${b.name ?? b.toolName ?? '?'} ${JSON.stringify(b.arguments ?? b.input ?? {}).slice(0, 120)}]`)
+        .join(' ');
+      const texts = m.content.filter((b) => b?.type === 'text').map((b) => b.text ?? '');
+      m.content = [{ type: 'text', text: [...texts, calls].filter(Boolean).join(' ') || calls }];
+      folded++;
+    } else if (m?.role === 'toolResult') {
+      const c = m.content;
+      const txt = Array.isArray(c)
+        ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join(' ')
+        : String(c ?? '');
+      m.role = 'user';
+      m.content = [{ type: 'text', text: `[工具结果] ${txt.slice(0, 300)}${txt.length > 300 ? '…' : ''}` }];
+      folded++;
+    }
+  }
+  return { folded, changed: folded > 0 };
+}
+
 export function pruneToolResults(messages, { keepRecent = 6, keepChars = 300 } = {}) {
   let replaced = 0;
   // 从后往前数 toolResult，前 keepRecent 条保留
