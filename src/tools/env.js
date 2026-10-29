@@ -68,13 +68,22 @@ export function buildEnvTools(ctx) {
   const waitElement = defineTool({
     name: 'wait_element',
     label: 'wait_element',
-    description: '等待指定元素出现（selector 同 read：text=/text*=/resourceId=/class=#index=）。转场后**优先**用它等页面标志元素（出现即返回，2-4s）；只有无标志元素可等时才退回 wait_idle（动画期常等满超时 10-20s）。',
+    description: '等待元素出现（selector 同 read：text=/text*=/resourceId=/class=#index=）。支持 selectors 数组（任一命中即返回，降低单 selector 猜错概率）。转场后**优先**用它等页面标志元素（出现即返回 2-6s）；只有无标志元素可等时才退回 wait_idle（动画期常等满超时 10-20s）。',
     parameters: Type.Object({
-      selector: Type.String({ description: '元素 selector，如 text=热榜 / resourceId=com.x:id/tv' }),
+      selector: Type.Optional(Type.String({ description: '单个元素 selector' })),
+      selectors: Type.Optional(Type.Array(Type.String(), { description: '多个候选 selector，任一出现即返回' })),
       timeoutMs: Type.Optional(Type.Number({ description: '最长等待，默认 10000' })),
     }),
     execute: async (_id, params) => {
-      const r = await device.waitForElement(params.selector, { timeoutMs: params.timeoutMs ?? 10_000 });
+      const sels = Array.isArray(params.selectors) && params.selectors.length
+        ? params.selectors
+        : (params.selector ? [params.selector] : []);
+      if (!sels.length) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: '需要 selector 或 selectors 参数' }) }], details: { ok: false } };
+      }
+      const r = sels.length === 1
+        ? await device.waitForElement(sels[0], { timeoutMs: params.timeoutMs ?? 10_000 })
+        : await device.waitForAnyElement(sels, { timeoutMs: params.timeoutMs ?? 10_000 });
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: r.appeared, appeared: r.appeared, matched: r.matched ?? null, dumps: r.dumps }) }],
         details: { ok: r.appeared, appeared: r.appeared },

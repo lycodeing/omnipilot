@@ -45,7 +45,8 @@ const SCREENSHOT_TOOLS = new Set(['tap', 'long_press', 'input', 'swipe', 'scroll
 
 function targetOf(params = {}) {
   return params.target ?? params.appId ?? params.packageName ?? params.provider ?? params.name
-    ?? params.profile ?? params.direction ?? params.label ?? params.question ?? null;
+    ?? params.profile ?? params.direction ?? params.label ?? params.question
+    ?? params.selector ?? (Array.isArray(params.selectors) ? params.selectors.join('|') : null) ?? null;
 }
 
 // 记账包装：不动工具自身逻辑，只在外层记 step（§14.1）
