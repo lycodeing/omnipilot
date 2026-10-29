@@ -43,9 +43,15 @@ flow:
   - aiWaitFor: "页面出现'我的体质'卡片和柱状图"
     timeout: 90000
   - aiAssert: "页面顶部有'我的体质'卡片并显示体质名称，下方有柱状图，请用中文说明判断原因"
-  - ai: "向下滚动，查看结果页的体质说明和特征内容"
+  # 结果页分段浏览：until=selector 小步滚动到目标段可见（WebView fling 惯性大，
+  # 定量距离会过冲整段——实测 70% 屏 swipe 直接越过特征段；小步+树检可见天然抗过冲）
+  - aiScroll: down
+    until: "text*=总体特征"
+    max: 12
   - aiAssert: "页面能看到体质说明文字和'特征'相关内容，请用中文说明判断原因"
-  - ai: "继续向下滚动，查看结果页的调理建议内容"
+  - aiScroll: down
+    until: "text*=起居调摄"
+    max: 12
   - aiAssert: "页面能看到相关建议，请用中文说明判断原因"
   - aiTap: 屏幕左上角那个向左的箭头图标
   - sleep: 2000

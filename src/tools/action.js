@@ -155,20 +155,28 @@ export function buildActionTools(ctx) {
     parameters: Type.Object({
       direction: Type.String({ description: 'down（看更多下方内容，内容上移）/ up（回看上方）/ left / right' }),
       distancePct: Type.Optional(Type.Number({ description: '滚动距离（屏高百分比）：整屏=100、0.75屏=75、半屏=50' })),
-      until: Type.Optional(Type.String({ description: "edge（滚到边界即停，用于'翻到最底部'）| top（回到顶部）" })),
+      until: Type.Optional(Type.String({ description: "edge（滚到边界即停，用于'翻到最底部'）| top（回到顶部）| selector（小步滚动直到该元素在屏可见，抗 WebView fling 过冲）" })),
       max: Type.Optional(Type.Number({ description: '最大滚动次数，默认 5（until 时默认 20）' })),
       stopWhenNoChange: Type.Optional(Type.Boolean({ description: '默认 true' })),
     }),
     execute: async (_id, params) => {
       const gate = await confirmWrite(ctx, 'scroll', params.direction);
       if (!gate.allowed) return denied('scroll');
-      // 冷启动期 getSize 失败等异常在此兜住：转结构化失败而非上抛（上抛会把整个 run 判 error）
+      // 冷启动期 getSize 失败等异常在此兜住：转结构化失败而非上抛（会把整个 run 判 error）
       let r;
       try {
         if (params.until === 'edge' || params.until === 'top') {
           // 边界跳转（§2.4）：循环滚到画面不再变化（复用 stopWhenNoChange 语义）
           const dir = params.until === 'top' ? 'up' : (params.direction === 'up' ? 'up' : 'down');
           r = await device.scroll(dir, { max: params.max ?? 20, stopWhenNoChange: true });
+        } else if (params.until) {
+          // selector 形态：小步滚到目标在屏（WebView fling 惯性大，定量距离会过冲整段）
+          r = await device.scrollUntil(params.until, {
+            direction: params.direction || 'down',
+            max: params.max ?? 12,
+            ...(params.distancePct != null ? { distancePct: params.distancePct } : {}),
+          });
+          if (!r.found && !r.error) r.error = `滚动 ${r.scrolls} 步后目标仍不可见: ${params.until}`;
         } else {
           r = await device.scroll(params.direction, {
             max: params.max ?? 5,
@@ -183,8 +191,8 @@ export function buildActionTools(ctx) {
         };
       }
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true, ...r }) }],
-        details: { ok: true, scrolls: r.scrolls, changed: r.changed },
+        content: [{ type: 'text', text: JSON.stringify({ ok: !r.error, ...r }) }],
+        details: { ok: !r.error, scrolls: r.scrolls, changed: r.changed, ...(r.found != null ? { found: r.found } : {}) },
       };
     },
   });

@@ -290,6 +290,27 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       }
       return { scrolls, changed };
     },
+    // 小步滚动直到 selector 在屏可见（内容语义 direction，默认 down 前进）。
+    // WebView fling 惯性大：单次大距离 swipe 会过冲整段（实测 70% 屏 swipe 越过特征段），
+    // 定量距离不可靠；小步（30% 屏）+ 每步树检可见才停，天然抗过冲。
+    async scrollUntil(selector, { direction = 'down', max = 12, distancePct = 30 } = {}) {
+      const result = { scrolls: 0, found: false, changed: false, error: null };
+      if (!selector) { result.error = 'scrollUntil 需要 selector'; return result; }
+      const size = await getSize().catch(() => null);
+      const inScr = (n) => !size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= size.h);
+      const areaOk = (n) => Array.isArray(n.bounds) && n.bounds.length === 4 && n.bounds[2] - n.bounds[0] > 0 && n.bounds[3] - n.bounds[1] > 0;
+      for (let i = 0; i < max; i++) {
+        let flat = [];
+        try { flat = flattenNodes((await dumpTree({ fresh: true })).nodes); } catch (e) { result.error = `dump 失败: ${e?.message ?? e}`; return result; }
+        // 任一匹配节点在屏即算可见（隐藏预渲染层零面积节点排除）
+        if (flat.some((n) => matchNode(n, selector) && areaOk(n) && inScr(n))) { result.found = true; return result; }
+        const sr = await this.scroll(direction, { max: 1, stopWhenNoChange: true, distancePct });
+        result.scrolls++;
+        result.changed = result.changed || sr.changed;
+        if (!sr.changed) return result; // 到底仍未见 → found=false 由调用方判定
+      }
+      return result;
+    },
     // 逐行作用域批量点击（引擎确定性，0 模型往返）：表单/问卷作答场景。
     // 关键事实（实测）：① WebView 选中态（蓝底）不进 a11y 树，adb tap 无回执；② 选中会触发
     // scroll-into-view，**tap 后整页滚动**，同轮内后续行的坐标立即失效（也是历史"点错行"根因）。
