@@ -151,9 +151,9 @@ export function buildActionTools(ctx) {
   const scroll = defineTool({
     name: 'scroll',
     label: 'scroll',
-    description: '滚动页面。direction=up/down/left/right；distancePct=滚动距离（整屏100/半屏50，缺省约60）；until=edge 滚到底、until=top 回顶部；画面无变化（树 hash）即停。',
+    description: '滚动页面。direction 为内容语义：down=看更多下方内容（内容上移）/ up=回看上方内容 / left / right；distancePct=滚动距离（整屏100/半屏50，缺省约60）；until=edge 滚到底、until=top 回顶部；画面无变化（树 hash）即停。',
     parameters: Type.Object({
-      direction: Type.String({ description: 'up（看更多，内容上移）/ down / left / right' }),
+      direction: Type.String({ description: 'down（看更多下方内容，内容上移）/ up（回看上方）/ left / right' }),
       distancePct: Type.Optional(Type.Number({ description: '滚动距离（屏高百分比）：整屏=100、0.75屏=75、半屏=50' })),
       until: Type.Optional(Type.String({ description: "edge（滚到边界即停，用于'翻到最底部'）| top（回到顶部）" })),
       max: Type.Optional(Type.Number({ description: '最大滚动次数，默认 5（until 时默认 20）' })),
