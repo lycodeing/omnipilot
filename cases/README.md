@@ -23,6 +23,10 @@
 | `launch` / `terminate` | **引擎直执行** | 启动/强停 App |
 | `net` / `sleep` | 特殊 | 网络档位 / 等待秒数 |
 
+**步骤上下文窗口**（顶层 `context:` 键）：保留最近 N 步原文 + 一条确定性"整体描述"（进度/最近步骤/断言计数/变量），
+更早步骤原文折叠删除——上下文不随步数线性膨胀。默认 N=3；`context: all` 保留全部；CLI `--context-steps=<n|all>` 优先。
+设计依据见 `docs/CONTEXT-COMPRESSION-RESEARCH.md`（Cline/Claude Code"保近摘要远"共识 + Manus 前缀稳定 + OpenHands 确定性压缩）。
+
 > 旧名迁移：`do:` → `ai:`，`ask:` → `aiQuery:`，`assert:` → `aiAssert:`。
 
 **混合执行的意义**：`aiTap` 这类显式命令由引擎直接调用对应工具（不经 agent 选工具），更快、更省 token、

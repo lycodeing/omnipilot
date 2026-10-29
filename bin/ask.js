@@ -99,6 +99,8 @@ const usage = `ask — 安卓场景测试 agent
   --prompt <t> --prompt-file <f> --prompt-mode append|replace|none
   --vlm-locate --yes --timeout <sec> --fresh-locate --json --quiet --pregrant
   --keep-images <n>   会话历史保留最近 n 张截图（默认 3；断言密集用例可设 2 省 token）
+  --context-steps <n|all> 步骤上下文窗口：保留最近 n 步原文 + 整体描述（默认 3；all=全部保留；
+                      优先级高于用例 YAML 顶层 context: 键）
   会话保留: --keep(默认) --fresh --continue --session <file> --keep-data
 `;
 
@@ -487,17 +489,30 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       return seeded;
     }
 
+    // 步骤上下文窗口（docs/CONTEXT-COMPRESSION-RESEARCH.md）：优先级 CLI > YAML 顶层 context: > 默认 3。
+    // 'all'/'全部' = 不折叠（保留全部历史步原文）。窗口折叠每步在 finally 执行：
+    // 保留最近 N 个"有内容步"的原文，更早的删除并替换为一条确定性整体描述（0 额外 LLM 轮次）。
+    const contextCfgRaw = flags['context-steps'] ?? caseObj.context ?? 3;
+    const contextAll = /^(all|全部)$/i.test(String(contextCfgRaw).trim());
+    const contextKeep = contextAll ? Infinity : Math.max(1, Number(contextCfgRaw) || 3);
+    ctx.stepMsgCounts = []; // 每步产生的消息数（delta），供 pruneStepHistory 分段（delta 跨多轮剪枝稳定）
+    const pushStepMsgDelta = () => {
+      ctx.stepMsgCounts.push(Math.max(0, (session.agent?.state?.messages?.length ?? 0) - (ctx._msgStart ?? 0)));
+    };
+
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       ctx.currentStepIndex = i;
       // 坐标缓存键（§2.1）：步骤身份 + 该步骤内定位序号；每步重置 ordinal
       ctx.currentStepKey = { caseId: caseObj.source || caseObj.name || 'case', stepIndex: i };
       ctx.locateOrdinal = 0;
+      ctx._msgStart = session.agent?.state?.messages?.length ?? 0; // 本步开始时的消息数（上下文窗口分段用）
       try {
         if (step.type === 'sleep') {
           const handle = recorder.startStep('sleep', `${step.seconds}s`);
           await new Promise((r) => setTimeout(r, (step.seconds || 0) * 1000));
           handle.end({ result: 'ok' });
+          pushStepMsgDelta();
           continue;
         }
         if (step.type === 'net') {
@@ -510,6 +525,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           const nr = await device.netSetProfile(step.profile);
           recorder.addNetworkEvent({ at: Date.now() - ctx.runStartMs, profile: step.profile });
           handle.end({ result: nr.ok ? 'ok' : 'failed', error: nr.ok ? null : (nr.error || 'net 命令失败') });
+          pushStepMsgDelta();
           continue;
         }
         // 引擎直执行步骤（§2.4 混合执行）：aiTap/aiInput/aiLongPress/aiKeyboardPress/aiScroll/launch/terminate
@@ -566,6 +582,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                 );
                 ctx.engineLog.push({ step: i, type: `${step.type}+visual-fallback`, tool: 'agent', ok: true, error: null });
               }
+              pushStepMsgDelta(); // 降级轮的 prompt/回答也占消息，计入本步 delta
               continue;
             }
             console.warn(`[warn] 引擎步骤 ${step.type} 找不到工具 ${call.tool}`);
@@ -631,6 +648,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             r = await device.waitIdle({ quiet, timeoutMs: timeout });
             handle.end({ result: 'ok' });
           }
+          pushStepMsgDelta(); // 视觉确认轮的消息计入本步 delta
           continue;
         }
 
@@ -772,6 +790,24 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         status = 'error';
         break;
       } finally {
+        pushStepMsgDelta();
+        // 步骤上下文窗口（第四道治理，调研 docs/CONTEXT-COMPRESSION-RESEARCH.md）：
+        // 超过 keepSteps 个"有内容步"时，把最旧步骤的原文整体删除，替换为一条确定性
+        // 整体描述（进度/最近步骤行/断言计数/变量），只保留最近 N 步原文。0 额外 LLM 轮次。
+        try {
+          if (Number.isFinite(contextKeep) && ctx.stepMsgCounts.length > contextKeep) {
+            const { pruneStepHistory, buildStepDigest } = await import('../src/session/context-window.js');
+            const digest = buildStepDigest({
+              caseName: caseObj.name,
+              caseTotal: steps.length,
+              steps: recorder.stepsSince(0),
+              assertions: ctx.assertions,
+              vars: ctx.vars,
+            });
+            const pr = pruneStepHistory(session.agent.state.messages, ctx.stepMsgCounts, { keepSteps: contextKeep, digest });
+            if (pr.changed && !flags.quiet) console.warn(`[context] 窗口折叠：移除最旧 ${pr.removed} 条消息，保留最近 ${contextKeep} 步原文 + 整体描述`);
+          }
+        } catch { /* 窗口治理失败不阻断 */ }
         // 会话历史截图治理（§16）：保留最近 N 张图（--keep-images，默认 3），更早的替换为
         // 文字占位符，避免 prompt tokens 随历史线性膨胀（实测 20 张图 → 67k tokens / 单轮 26s）。
         try {

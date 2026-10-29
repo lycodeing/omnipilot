@@ -105,6 +105,15 @@ export function parseCaseText(text, { source = 'text' } = {}) {
       caseObj.name = unquote(trimmed.replace(/^name\s*[:：]/, ''));
       continue;
     }
+    // 顶层 context 键：步骤上下文窗口（正整数=保留最近 N 步原文；all=保留全部；缺省 3）。
+    // CLI --context-steps 优先于本值（设计依据 docs/CONTEXT-COMPRESSION-RESEARCH.md）。
+    if (!inSteps && /^context\s*[:：]/.test(trimmed)) {
+      const v = unquote(trimmed.replace(/^context\s*[:：]/, '')).trim();
+      if (/^(all|全部)$/i.test(v)) caseObj.context = 'all';
+      else if (Number(v) >= 1) caseObj.context = Number(v);
+      else caseObj.warnings.push(`${source}:${i + 1} context 值 "${v}" 无法解析（应为正整数或 all），忽略`);
+      continue;
+    }
     // 步骤区起始：steps: 或 flow:（外部框架别名，兼容健康自测类用例）
     if (/^(?:steps|flow)\s*[:：]?\s*$/.test(trimmed)) { inSteps = true; continue; }
     if (!inSteps) continue;
