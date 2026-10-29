@@ -31,8 +31,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     }
   }
 
-  // waitFor* 专用：matchSelector + 在屏过滤。uni-app/WebView 壳会把未打开的页面预渲染进
-  // accessibility 树（bounds 在屏外或零面积），不过滤会让 aiWaitFor 对"尚未到达的页面"误报 appeared。
+  // waitFor* 专用：matchSelector + 在屏过滤 + WebView 标记。
+  // uni-app/WebView 壳会把未打开的页面预渲染进 accessibility 树（bounds 在屏内但不可见），
+  // 不过滤会让 aiWaitFor 对"尚未到达的页面"误报 appeared；但**可见元素也可能报零面积
+  // bounds**（实测首页导航栏 [0,0][0,0]），一律按 inScreen 过滤会永远匹配不到。
+  // 故：零面积 = 几何未知 → 放行并标记 inWebView 交视觉确认；非零面积才做在屏过滤。
   async function matchOnScreen(flat, sel) {
     const m = matchSelector(flat, sel);
     if (!m?.node) return null;
@@ -40,13 +43,14 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     if (!size) {
       try { size = await getSize(); } catch { return { ...m, inWebView: false }; }
     }
-    if (!inScreen(m.node.bounds, size)) return null;
-    // WebView 壳 App（uni-app 等）会把未打开的页面预渲染进 accessibility 树（bounds 在屏内但不可见），
-    // 树等待会误报 appeared。标记 inWebView 交给调用方做视觉确认（设备层不依赖模型，契约安全）。
+    const b = m.node.bounds;
+    const zeroArea = !Array.isArray(b) || b[2] <= b[0] || b[3] <= b[1];
+    if (!zeroArea && !inScreen(b, size)) return null;
     const wv = flat.find((x) => /WebView/i.test(x.cls || ''));
-    const inWebView = !!(wv && Array.isArray(wv.bounds) && Array.isArray(m.node.bounds)
-      && m.node.bounds[0] >= wv.bounds[0] && m.node.bounds[1] >= wv.bounds[1]
-      && m.node.bounds[2] <= wv.bounds[2] && m.node.bounds[3] <= wv.bounds[3]);
+    const inWebView = !!(wv && Array.isArray(wv.bounds)
+      && (zeroArea || (Array.isArray(b)
+        && b[0] >= wv.bounds[0] && b[1] >= wv.bounds[1]
+        && b[2] <= wv.bounds[2] && b[3] <= wv.bounds[3])));
     return { ...m, inWebView };
   }
 
