@@ -662,7 +662,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         if ((step.type === 'ai' || step.type === 'aiAct') && marathon) {
           for (let resume = 0; resume < 10; resume++) {
             if (answer && doneRe.test(answer)) break; // 模型自报完成/受阻 → 结束
-            if (!flags.quiet) console.warn(`[warn] 马拉松步未完成（无完成标记），催促继续 ${resume + 1}/6`);
+            if (!flags.quiet) console.warn(`[warn] 马拉松步未完成（无完成标记），催促继续 ${resume + 1}/10`);
             // 每轮取新截图：题目推进后屏幕已变，步首旧图会误导模型
             let freshImgs = [];
             try {
