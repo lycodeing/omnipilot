@@ -133,7 +133,7 @@ describe('tools registry', () => {
     for (const name of EXPECTED_TOOLS) {
       assert.ok(names.has(name), `缺少工具: ${name}`);
     }
-    assert.equal(EXPECTED_TOOLS.length, 23, '感知5+操作8+环境5+数据扩展5');
+    assert.equal(EXPECTED_TOOLS.length, 24, '感知5+操作8+环境6+数据扩展5');
   });
 
   test('每个工具都有 name/label/description/parameters/execute', () => {
@@ -273,7 +273,21 @@ describe('data tools', () => {
 
 // —— 主链路 3：wait_idle / env ——
 describe('env tools', () => {
-  test('wait_idle 用树 hash 静默判定（参数透传门面）', async () => {
+    test('wait_element：透传 waitForElement，appeared 映射 ok', async () => {
+    let gotSel = null;
+    const device = makeFakeDevice();
+    device.waitForElement = async (sel, o) => { gotSel = sel; return { appeared: true, dumps: 2, matched: sel }; };
+    const ctx = makeCtx({ device });
+    const tool = buildTools(ctx).find((t) => t.name === 'wait_element');
+    assert.ok(tool, 'wait_element 已注册');
+    const r = await tool.execute('id', { selector: 'text=热榜', timeoutMs: 5000 }, undefined, undefined, {});
+    const body = getContent(r);
+    assert.equal(gotSel, 'text=热榜');
+    assert.equal(body.ok, true);
+    assert.equal(body.appeared, true);
+    assert.equal(body.dumps, 2);
+  });
+test('wait_idle 用树 hash 静默判定（参数透传门面）', async () => {
     const seen = [];
     const device = makeFakeDevice();
     device.waitIdle = async (o) => { seen.push(o); return { stable: true, dumps: 2 }; };

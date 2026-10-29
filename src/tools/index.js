@@ -27,14 +27,14 @@ export function buildTools(ctx) {
   ].map((t) => withRecording(t, ctx));
 }
 
-// §10 工具清单（22 个内置 + 5 感知 + 8 操作 + 5 环境 + 5 数据扩展 = 23，其中 §10 表计 22 行）
+// §10 工具清单（24 个：感知5 + 操作8 + 环境6 + 数据扩展5；环境含 wait_element 元素条件等待）
 export const EXPECTED_TOOLS = [
   // 感知
   'screen', 'uitree', 'locate', 'screen_diff', 'read',
   // 操作
   'tap', 'long_press', 'input', 'swipe', 'scroll', 'key', 'launch', 'terminate',
   // 环境
-  'net_profile', 'net_status', 'wait_idle', 'assert_no_crash', 'ui_dump',
+  'net_profile', 'net_status', 'wait_idle', 'wait_element', 'assert_no_crash', 'ui_dump',
   // 数据与扩展
   'data_extract', 'data_query', 'data_store', 'secret_get', 'sms_read',
 ];

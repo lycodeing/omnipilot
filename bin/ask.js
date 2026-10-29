@@ -569,7 +569,7 @@ async function cmdAsk({ positional, flags }) {
   const { createSessionManager } = await import('../src/session/persist.js');
   const { buildTools } = await import('../src/tools/index.js');
 
-  const READ_ONLY = new Set(['screen', 'uitree', 'locate', 'screen_diff', 'read', 'wait_idle', 'net_status', 'ui_dump', 'data_query']);
+  const READ_ONLY = new Set(['screen', 'uitree', 'locate', 'screen_diff', 'read', 'wait_idle', 'wait_element', 'net_status', 'ui_dump', 'data_query']);
   const serialList = await resolveSerials(flags);
   if (!serialList.length) fail('未找到在线设备（adb devices），请用 --device <serial> 指定');
   const serial = serialList[0];

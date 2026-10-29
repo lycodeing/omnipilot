@@ -5,7 +5,7 @@
 #         / wait_idle / assert_no_crash / 多Tab导航
 name: M2-多Tab巡检与网络档位探测
 steps:
-  - ai: 启动稀土掘金并等首页稳定，调用 net_status 记录当前网络档位
+  - ai: 启动稀土掘金（com.daimajia.gold）并等首页稳定，调用 net_status 记录当前网络档位
   - ai: 调用 net_profile 尝试切到 4g 档：本模拟器可能不支持 net 命令，返回 ok=false 属预期，把返回的错误信息原样记录即可；随后再查一次 net_status
   - ai: 用 data_store 往数据集 patrol_meta 写一条巡检元数据（字段 tab=feidian, status=start）
   - ai: 点击底部Tab「沸点」，等圈子列表稳定

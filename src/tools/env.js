@@ -65,6 +65,23 @@ export function buildEnvTools(ctx) {
     },
   });
 
+  const waitElement = defineTool({
+    name: 'wait_element',
+    label: 'wait_element',
+    description: '等待指定元素出现（selector 同 read：text=/text*=/resourceId=/class=#index=）。转场后**优先**用它等页面标志元素（出现即返回，2-4s）；只有无标志元素可等时才退回 wait_idle（动画期常等满超时 10-20s）。',
+    parameters: Type.Object({
+      selector: Type.String({ description: '元素 selector，如 text=热榜 / resourceId=com.x:id/tv' }),
+      timeoutMs: Type.Optional(Type.Number({ description: '最长等待，默认 10000' })),
+    }),
+    execute: async (_id, params) => {
+      const r = await device.waitForElement(params.selector, { timeoutMs: params.timeoutMs ?? 10_000 });
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ ok: r.appeared, appeared: r.appeared, matched: r.matched ?? null, dumps: r.dumps }) }],
+        details: { ok: r.appeared, appeared: r.appeared },
+      };
+    },
+  });
+
   const assertNoCrash = defineTool({
     name: 'assert_no_crash',
     label: 'assert_no_crash',
@@ -104,5 +121,5 @@ export function buildEnvTools(ctx) {
     },
   });
 
-  return [netProfile, netStatus, waitIdle, assertNoCrash, uiDump];
+  return [netProfile, netStatus, waitIdle, waitElement, assertNoCrash, uiDump];
 }
