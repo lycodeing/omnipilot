@@ -525,12 +525,20 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                 shot = [{ type: 'image', data: cc.buffer.toString('base64'), mimeType: cc.mimeType }];
               } catch { confirmed = true; break; /* 取图失败按命中处理，不卡流程 */ }
               await session.prompt(
-                `视觉确认（不要调用任何工具）：随附截屏中，目标元素「${sel}」当前是否**真实可见**（不是隐藏/未打开的预渲染层）？只输出一行 JSON：{"visible": true/false}`,
+                `视觉确认（不要调用任何工具）：随附截屏中，目标元素「${sel}」当前是否真实可见？若可见回复 VISIBLE；若不可见（隐藏层/未打开的页面/不在屏上）回复 NOT_VISIBLE。只回复这一个词。`,
                 { images: shot },
               );
-              const ans = lastAssistantText(session);
-              // 否定优先：'不可见/否/false' 先判负，避免"不可见"中的"可见"被正向误匹配
-              if (ans && !/不可见|否|false/i.test(ans) && /"?visible"?\s*[:：]\s*"?(true|是|可见)"?/i.test(ans)) { confirmed = true; break; }
+              let ans = lastAssistantText(session);
+              if (!ans) {
+                // 空响应（网关偶发）：重问一次再判，降低"隐藏层+空响应"漏检概率
+                await session.prompt('只回复一个词：VISIBLE 或 NOT_VISIBLE。', { images: shot });
+                ans = lastAssistantText(session);
+              }
+              // 否定优先：仅当模型**明确**答 NOT_VISIBLE/不可见 才判未确认；空响应或肯定一律放行。
+              // 全 WebView 壳 App 的每次树命中都要过确认，若把网关空响应当"不可见"，
+              // 会把在屏元素误判为隐藏层（真机事故：导航栏在屏却等满 91s）。
+              const explicitNo = ans && /(NOT_VISIBLE|不可见|未见|未出现|不存在|隐藏|预渲染)/i.test(ans);
+              if (!explicitNo) { confirmed = true; break; }
               if (Date.now() - t0 >= timeout) break;
               await new Promise((res2) => setTimeout(res2, 5000)); // WebView 壳 App 页面加载慢，确认间隔放宽到 5s
             }
