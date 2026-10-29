@@ -96,13 +96,16 @@ export function pruneToolHistory(messages, { keepRecent = 1 } = {}) {
   }
   // 保留最近 keepRecent 轮：一轮 = 一个 assistant toolCall 消息 + 其后跟随的 toolResult 消息。
   // 简化：按 assistant-toolCall 消息计数保留 keepRecent 个，其后的 toolResult 一并保留。
+  // keepRecent=0 → 全折叠（步间治理用法：每步首轮以纯文本历史发送）。
   const assistantToolIdx = toolMsgIdx.filter((i) => messages[i].role === 'assistant').reverse(); // 旧→新
-  const keepFrom = assistantToolIdx.length > keepRecent
-    ? assistantToolIdx[assistantToolIdx.length - keepRecent]
-    : -1; // keepFrom 及之后的工具轮保留原形态
+  const keepFrom = keepRecent === 0
+    ? Infinity
+    : (assistantToolIdx.length > keepRecent
+      ? assistantToolIdx[assistantToolIdx.length - keepRecent]
+      : -1); // keepFrom 及之后的工具轮保留原形态
   let folded = 0;
   for (let i = 0; i < messages.length; i++) {
-    if (keepFrom !== -1 && i >= keepFrom) break; // 之后的保留
+    if (i >= keepFrom) break; // 之后的保留
     const m = messages[i];
     if (m?.role === 'assistant' && Array.isArray(m.content) && m.content.some((b) => b?.type === 'toolCall')) {
       const calls = m.content.filter((b) => b?.type === 'toolCall')

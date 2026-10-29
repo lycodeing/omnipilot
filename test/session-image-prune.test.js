@@ -146,3 +146,16 @@ test('pruneToolHistory：旧工具轮折叠为纯文本，最近 1 轮保留原�
   assert.equal(msgs[4].content[0].type, 'toolCall', '最近一轮 assistant 保持原形态');
   assert.equal(msgs[5].role, 'toolResult', '最近一轮 toolResult 保持原形态');
 });
+
+test('pruneToolHistory：keepRecent=0 全折叠', () => {
+  const tc = { type: 'toolCall', name: 'tap', arguments: { target: 'x' } };
+  const msgs = [
+    { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+    { role: 'assistant', content: [tc] },
+    { role: 'toolResult', content: [{ type: 'text', text: '{"ok":true}' }] },
+  ];
+  const r = pruneToolHistory(msgs, { keepRecent: 0 });
+  assert.equal(r.folded, 2);
+  assert.equal(msgs[1].content[0].type, 'text');
+  assert.equal(msgs[2].role, 'user');
+});
