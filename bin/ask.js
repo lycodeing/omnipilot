@@ -452,14 +452,32 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         const { repairJson } = await import('../src/tools/ai.js');
         arr = repairJson(raw);
       } catch { arr = null; }
-      if (!Array.isArray(arr)) return 0;
+      // 宽容解析：模型可能包一层对象（{results:[...]}）或回编号行列表
+      if (arr && !Array.isArray(arr) && typeof arr === 'object') {
+        arr = arr.results ?? arr.list ?? arr.items ?? arr.bboxes ?? null;
+      }
+      if (!Array.isArray(arr) && typeof raw === 'string' && /\d/.test(raw)) {
+        // 编号行回退：每行 "N. x1 y1 x2 y2" 或 "N: [x1,y1,x2,y2]"
+        const lineArr = [];
+        for (const line of raw.split(/\r?\n/)) {
+          const m = /^\s*(\d+)[.):、]\s*(.+)$/.exec(line);
+          if (m) lineArr.push({ i: Number(m[1]), bbox: m[2] });
+        }
+        if (lineArr.length) arr = lineArr;
+      }
+      if (!Array.isArray(arr)) {
+        if (!flags.quiet && raw) console.warn('[engine] 批量接地回复无法解析：' + String(raw).slice(0, 80));
+        return 0;
+      }
       let seeded = 0;
       for (const item of arr) {
         const idx = Number(item?.i) - 1;
-        const bbox = item?.bbox;
-        if (idx < 0 || idx >= targets.length || !Array.isArray(bbox) || bbox.length < 4) continue;
-        if (bbox.every((v) => v == null)) continue; // NOT_FOUND
-        const conv = cs?.toPixels?.(bbox.join(' '), size);
+        const bboxRaw = item?.bbox;
+        // bbox 可为数组（JSON 形态）或字符串（编号行回退形态）；toPixels/toNumbers 两者都吃
+        const bboxStr = Array.isArray(bboxRaw) ? bboxRaw.join(' ') : (typeof bboxRaw === 'string' ? bboxRaw : null);
+        if (idx < 0 || idx >= targets.length || bboxStr == null) continue;
+        if (!/\d/.test(bboxStr)) continue; // NOT_FOUND / 无坐标
+        const conv = cs?.toPixels?.(bboxStr, size);
         if (!conv?.bounds || !conv.inScreen) continue;
         const identity = { text: '', contentDesc: targets[idx], resourceId: '', cls: '', clickable: null };
         device.vlmCache.set(`${tree.hash}::${targets[idx]}`, { bounds: conv.bounds, center: conv.center, identity });
