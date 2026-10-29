@@ -1,7 +1,7 @@
 // 会话历史截图治理（§16）单测：旧图替换为占位符、最近 N 张保留
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pruneImages, replaceImagesWithPlaceholder, countImages, PLACEHOLDER_PREFIX } from '../src/session/image-prune.js';
+import { pruneImages, replaceImagesWithPlaceholder, countImages, PLACEHOLDER_PREFIX , pruneToolResults, TOOLRESULT_PLACEHOLDER } from '../src/session/image-prune.js';
 
 const img = (kb = 100) => ({ type: 'image', mimeType: 'image/png', data: 'A'.repeat(Math.round(kb * 1024 * 4 / 3)) });
 
@@ -101,4 +101,28 @@ test('pruneImages：token 收益——替换后 content 明显变小', () => {
   pruneImages(msgs, { keepRecent: 2 });
   const after = JSON.stringify(msgs).length;
   assert.ok(after < before * 0.5, `替换后应显著变小（${after} vs ${before}）`);
+});
+
+test('pruneToolResults：保留最近 N 条完整，更早截断为摘要', () => {
+  const big = 'x'.repeat(5000);
+  const msgs = [
+    { role: 'toolResult', content: [{ type: 'text', text: big }] },
+    { role: 'toolResult', content: [{ type: 'text', text: big }] },
+    { role: 'toolResult', content: [{ type: 'text', text: 'short' }] },
+  ];
+  const r = pruneToolResults(msgs, { keepRecent: 1, keepChars: 100 });
+  assert.equal(r.replaced, 2, 'keepRecent=1 保留最新一条，其余两条大结果被截断');
+  assert.ok(msgs[0].content[0].text.startsWith(TOOLRESULT_PLACEHOLDER));
+  assert.ok(msgs[1].content[0].text.startsWith(TOOLRESULT_PLACEHOLDER));
+  assert.ok(msgs[0].content[0].text.length < 500);
+  assert.equal(msgs[2].content[0].text, 'short', '最近一条保持完整');
+});
+
+test('pruneToolResults：字符串 content 形态同样截断且幂等', () => {
+  const big = 'y'.repeat(2000);
+  const msgs = [{ role: 'toolResult', content: big }, { role: 'toolResult', content: big }];
+  pruneToolResults(msgs, { keepRecent: 1, keepChars: 50 });
+  const before = msgs[0].content;
+  pruneToolResults(msgs, { keepRecent: 1, keepChars: 50 });
+  assert.equal(msgs[0].content, before, '已截断的不再二次截断');
 });
