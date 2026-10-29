@@ -4,7 +4,7 @@ import { Adb } from './adb.js';
 import * as screen from './screen.js';
 import { truncateAtHierarchyEnd, parseXmlDump, flattenNodes, treeHash } from './uitree.js';
 import { TreeCache } from './cache.js';
-import { createLocator, matchSelector } from './locate.js';
+import { createLocator, matchSelector, inScreen } from './locate.js';
 import * as action from './action.js';
 import { Yadb, readTextAt } from './input.js';
 import { withLocateRetry, StepRollout } from './rollout.js';
@@ -29,6 +29,25 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     } catch (e) {
       console.warn(`[warn] 等待设备就绪失败：${e?.message ?? e}`);
     }
+  }
+
+  // waitFor* 专用：matchSelector + 在屏过滤。uni-app/WebView 壳会把未打开的页面预渲染进
+  // accessibility 树（bounds 在屏外或零面积），不过滤会让 aiWaitFor 对"尚未到达的页面"误报 appeared。
+  async function matchOnScreen(flat, sel) {
+    const m = matchSelector(flat, sel);
+    if (!m?.node) return null;
+    let size = sizeCache;
+    if (!size) {
+      try { size = await getSize(); } catch { return { ...m, inWebView: false }; }
+    }
+    if (!inScreen(m.node.bounds, size)) return null;
+    // WebView 壳 App（uni-app 等）会把未打开的页面预渲染进 accessibility 树（bounds 在屏内但不可见），
+    // 树等待会误报 appeared。标记 inWebView 交给调用方做视觉确认（设备层不依赖模型，契约安全）。
+    const wv = flat.find((x) => /WebView/i.test(x.cls || ''));
+    const inWebView = !!(wv && Array.isArray(wv.bounds) && Array.isArray(m.node.bounds)
+      && m.node.bounds[0] >= wv.bounds[0] && m.node.bounds[1] >= wv.bounds[1]
+      && m.node.bounds[2] <= wv.bounds[2] && m.node.bounds[3] <= wv.bounds[3]);
+    return { ...m, inWebView };
   }
 
   const cache = new TreeCache();
@@ -349,8 +368,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       try {
         const cachedTree = await dumpTree(); // cacheable
         dumps++;
-        const m = matchSelector(flattenNodes(cachedTree.nodes), sel);
-        if (m?.node) return { appeared: true, dumps, matched: m.value || sel };
+        const m = await matchOnScreen(flattenNodes(cachedTree.nodes), sel);
+        if (m?.node) return { appeared: true, dumps, matched: m.value || sel, inWebView: !!m.inWebView };
       } catch { /* 缓存不可用 → 进入 fresh 循环 */ }
       let failStreak = 0;
       while (Date.now() - t0 < timeoutMs) {
@@ -362,8 +381,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         } catch { failStreak++; /* dump 失败（转场中）→ 继续等 */ }
         dumps++;
         if (flat.length) {
-          const m = matchSelector(flat, sel);   // 返回 { node, value } | null
-          if (m?.node) return { appeared: true, dumps, matched: m.value || sel };
+          const m = await matchOnScreen(flat, sel);   // 返回 { node, value } | null
+          if (m?.node) return { appeared: true, dumps, matched: m.value || sel, inWebView: !!m.inWebView };
         }
         const sleepMs = failStreak > 0 ? Math.min(500, 200 * failStreak) : intervalMs;
         await new Promise((r) => setTimeout(r, sleepMs));
@@ -382,8 +401,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         dumps++;
         const flat = flattenNodes(cachedTree.nodes);
         for (const sel of sels) {
-          const m = matchSelector(flat, sel);
-          if (m?.node) return { appeared: true, dumps, matched: `${sel} → ${m.value || ''}` };
+          const m = await matchOnScreen(flat, sel);
+          if (m?.node) return { appeared: true, dumps, matched: `${sel} → ${m.value || ''}`, inWebView: !!m.inWebView };
         }
       } catch { /* 缓存不可用 → fresh 循环 */ }
       let failStreak = 0;
@@ -397,8 +416,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         dumps++;
         if (flat.length) {
           for (const sel of sels) {
-            const m = matchSelector(flat, sel);   // { node, value } | null
-            if (m?.node) return { appeared: true, dumps, matched: `${sel} → ${m.value || ''}` };
+            const m = await matchOnScreen(flat, sel);   // { node, value } | null
+            if (m?.node) return { appeared: true, dumps, matched: `${sel} → ${m.value || ''}`, inWebView: !!m.inWebView };
           }
         }
         const sleepMs = failStreak > 0 ? Math.min(500, 200 * failStreak) : intervalMs;

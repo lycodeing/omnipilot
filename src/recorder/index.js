@@ -119,6 +119,11 @@ export class RunRecorder {
     return this._dir;
   }
 
+  // 已记账的步骤数（run 循环用于检测"空轮"：prompt 后无工具调用且无文本）
+  get stepCount() {
+    return this._steps.length;
+  }
+
   get jsonPath() {
     return this._jsonPath;
   }

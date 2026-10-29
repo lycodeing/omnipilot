@@ -352,7 +352,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       ctx.chat = createChatClient({ url: modelCfg.url, key: modelCfg.key, model: modelCfg.name });
       // --vlm-locate：把 chat 客户端包装成视觉定位函数注入 locate 策略链第 5 环（§5.1）。
       // 旧实现该 flag 只被读去做统计、vlm 从未接线（定位失败无视觉兜底）。
-      if (opts.vlmLocate) ctx.vlm = await buildVlmLocate(ctx, modelCfg);
+      // 视觉定位默认启用：引擎定位 MISS 时做确定性视觉接地（截图→坐标→tap），不耗 agent 轮
+      ctx.vlm = await buildVlmLocate(ctx, modelCfg);
     } else {
       console.warn('未配置 ASK_MODEL_*，将以无模型模式执行（仅日志回放/干跑）');
     }
@@ -449,6 +450,20 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               const missText = `${d.code ?? ''} ${d.error ?? ''}`;
               const isLocateMiss = d.ok === false && /LOCATE_MISS|未找到目标/i.test(missText);
               const isTapFamily = call.tool === 'tap' || call.tool === 'long_press';
+              if (isLocateMiss && isTapFamily && ctx.vlm) {
+                // 一级降级：VLM 视觉接地（确定性：截图→坐标→family 策略转像素→tap）
+                try {
+                  const vres = await device.locate(step.text, { vlm: ctx.vlm });
+                  if (vres?.ok && vres.bounds) {
+                    const tr = call.tool === 'long_press'
+                      ? await device.longPress(vres.bounds, Number(step.durationMs) || 800)
+                      : await device.tap(vres.bounds);
+                    ctx.engineLog.push({ step: i, type: step.type + '+vlm-fallback', tool: call.tool, ok: tr?.ok !== false, error: tr?.error ?? null });
+                    if (!flags.quiet) console.warn('[engine] ' + step.type + ' 引擎 MISS → VLM 接地 ' + (tr?.ok !== false ? '成功' : '失败'));
+                    continue;
+                  }
+                } catch { /* VLM 失败 → 落 agent 轮降级 */ }
+              }
               if (isLocateMiss && isTapFamily) {
                 const verb = call.tool === 'long_press' ? '长按' : '点击';
                 if (!flags.quiet) console.warn(`[engine] ${step.type} 定位失败，降级一轮视觉接地`);
@@ -461,7 +476,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                   fbImages = [{ type: 'image', data: cc.buffer.toString('base64'), mimeType: cc.mimeType }];
                 } catch { /* 取图失败则模型自行 screen */ }
                 await session.prompt(
-                  `引擎定位失败，改用视觉接地：请在随附截屏对应的当前屏幕上找到并${verb}以下目标（只这一次操作，做完即止，不要滚动/返回/做其它事）：${step.text}\n若确实找不到，回复"未找到"并说明原因。`,
+                  `引擎定位失败，改用视觉接地：请在随附截屏对应的当前屏幕上找到并${verb}以下目标。**必须调用 ${call.tool} 工具完成${verb}**——只调 locate/uitree 查看不算完成本步。只这一次操作，做完即止，不要滚动/返回/做其它事：${step.text}\n若确实找不到，回复"未找到"并说明原因。`,
                   { images: fbImages },
                 );
                 ctx.engineLog.push({ step: i, type: `${step.type}+visual-fallback`, tool: 'agent', ok: true, error: null });
@@ -486,10 +501,38 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           const sel = waitSelectorFromText(stepText);
           let r;
           if (sel) {
-            // 有具体元素 → 等它出现（比等树不变更语义、通常更快）
-            r = await device.waitForElement(sel, { timeoutMs: timeout });
-            handle.end({ result: 'ok' });
-            if (!r.appeared && !flags.quiet) console.warn(`[warn] aiWaitFor「${stepText}」超时未见元素（${sel}，dump ${r.dumps} 次）`);
+            // 有具体元素 → 等它出现（比等树不变更语义、通常更快）。
+            // WebView 壳 App（uni-app 等）会把未打开的页面预渲染进 accessibility 树
+            // （bounds 在屏内但不可见）→ 树等待误报 appeared。命中节点在 WebView 容器内时
+            // 加一轮视觉确认（附截图问模型目标是否真可见），最多 3 轮、轮间睡 3s。
+            const t0 = Date.now();
+            let confirmed = false;
+            let confirms = 0;
+            while (Date.now() - t0 < timeout) {
+              r = await device.waitForElement(sel, { timeoutMs: Math.max(1500, timeout - (Date.now() - t0)) });
+              if (!r?.appeared) break;
+              if (!r.inWebView) { confirmed = true; break; }
+              if (confirms >= 3) break;
+              confirms++;
+              let shot = [];
+              try {
+                const { compressForContext } = await import('../src/image/png.js');
+                const s2 = await device.screencap();
+                const cc = await compressForContext(s2.buffer, { maxWidth: 540, quality: 70 });
+                shot = [{ type: 'image', data: cc.buffer.toString('base64'), mimeType: cc.mimeType }];
+              } catch { confirmed = true; break; /* 取图失败按命中处理，不卡流程 */ }
+              await session.prompt(
+                `视觉确认（不要调用任何工具）：随附截屏中，目标元素「${sel}」当前是否**真实可见**（不是隐藏/未打开的预渲染层）？只输出一行 JSON：{"visible": true/false}`,
+                { images: shot },
+              );
+              const ans = lastAssistantText(session);
+              if (ans && /"visible"\s*:\s*true/.test(ans)) { confirmed = true; break; }
+              if (Date.now() - t0 >= timeout) break;
+              await new Promise((res2) => setTimeout(res2, 5000)); // WebView 壳 App 页面加载慢，确认间隔放宽到 5s
+            }
+            r = { ...(r ?? {}), appeared: confirmed };
+            handle.end({ result: confirmed ? 'ok' : 'failed' });
+            if (!confirmed && !flags.quiet) console.warn(`[warn] aiWaitFor「${stepText}」未见真实可见元素（${sel}，视觉确认 ${confirms} 轮）`);
           } else {
             r = await device.waitIdle({ quiet, timeoutMs: timeout });
             handle.end({ result: 'ok' });
@@ -521,8 +564,38 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           : (step.type === 'aiQuery' && step.name)
             ? `${stepText}\n（把结果用 data_extract 或 data_store 落到数据集「${step.name}」）`
             : stepText;
-        await session.prompt(text, { images: promptImages });
-        const answer = lastAssistantText(session);
+        // ai/aiQuery 步附当前屏压缩图：模型无需先调 screen 就能看到画面（省一轮往返），
+        // 且避免"历史有图、本轮无图"诱发网关空响应（实测 ai 步曾返回全空 assistant 消息）。
+        let aiImages = [];
+        if (step.type !== 'aiAssert') {
+          try {
+            const { compressForContext } = await import('../src/image/png.js');
+            const s0 = await device.screencap();
+            const c0 = await compressForContext(s0.buffer, { maxWidth: 540, quality: 70 });
+            aiImages = [{ type: 'image', data: c0.buffer.toString('base64'), mimeType: c0.mimeType }];
+          } catch { /* 取图失败不阻断 */ }
+        }
+        const stepsBefore = recorder.stepCount;
+        await session.prompt(text, { images: step.type === 'aiAssert' ? promptImages : aiImages });
+        let answer = lastAssistantText(session);
+        // 空轮检测：无文本且无工具调用 = 模型空转（网关/模型偶发空响应）→ 附屏重试一轮
+        if (!answer && recorder.stepCount === stepsBefore && step.type !== 'aiAssert') {
+          if (!flags.quiet) console.warn('[warn] 模型空轮（无文本无工具），附屏重试一次');
+          await session.prompt(`${text}\n（随附当前屏幕截图；直接调用工具执行，不要只描述意图）`, { images: aiImages });
+          answer = lastAssistantText(session);
+        }
+        if (!answer && step.type === 'aiAssert') {
+          // 断言步：模型以纯 toolCall 或空消息收尾（网关/模型偶发空响应）→ 最多催答 3 轮
+          for (let nudge = 0; nudge < 3 && !answer; nudge++) {
+            await session.prompt('不要再调用工具。直接输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}', { images: [] });
+            answer = lastAssistantText(session);
+          }
+        } else if (!answer && step.type === 'aiQuery' && recorder.stepCount > stepsBefore) {
+          // 查询步已执行工具但无收尾文本：催一句结果汇报（1 轮）
+          await session.prompt('不要再调用工具。用一句话报告你刚才查询/提取到的结果。', { images: [] });
+          answer = lastAssistantText(session);
+        }
+        // ai 步无文本属正常（工具调用即交付），不催答
         ctx.lastThought = answer;
         if (step.type === 'aiAssert') {
           const { parseVerdict } = await import('../src/tools/ai.js');
@@ -645,7 +718,12 @@ async function cmdAsk({ positional, flags }) {
     });
     await session.prompt(question);
     // 回显回答：复用 lastAssistantText（否则命令静默退出，用户看不到答案）
-    const answer = lastAssistantText(session) ?? '';
+    let answer = lastAssistantText(session) ?? '';
+    for (let nudge = 0; nudge < 2 && !answer; nudge++) {
+      // 模型以纯 toolCall 或空消息收尾：催答重试拿最终文本
+      await session.prompt('不要再调用工具。直接用一段文本回答上面的问题。', { images: [] });
+      answer = lastAssistantText(session) ?? '';
+    }
     const messageCount = (session?.agent?.state?.messages ?? session?.messages ?? []).length;
     session.dispose?.();
     if (flags.json) out(flags, { answer, messageCount });
