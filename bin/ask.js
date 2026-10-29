@@ -776,8 +776,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             const pr2 = pruneToolResults(msgs, { keepRecent: 1, keepChars: 300 });
             if (pr2.replaced > 0) ctx.toolResultsPruned = (ctx.toolResultsPruned || 0) + pr2.replaced;
             // 旧工具轮折叠为纯文本：网关对 role:tool 历史返回 400（对照实验实证），
-            // 只保留最近 1 轮原始工具形态，更早折叠为文本描述（语义保留、网关接受）
-            const pr3 = pruneToolHistory(msgs, { keepRecent: 1 });
+            // 步间全折叠为纯文本（keepRecent=0）：网关对 role:tool 历史偶发 400/空响应；
+            const pr3 = pruneToolHistory(msgs, { keepRecent: 0 });
             if (pr3.folded > 0) ctx.toolHistoryFolded = (ctx.toolHistoryFolded || 0) + pr3.folded;
           }
         } catch { /* 剪枝失败不阻断 */ }
