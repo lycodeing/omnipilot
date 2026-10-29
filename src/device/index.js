@@ -170,6 +170,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     },
     dumpTree,
     locate,
+    vlmCache, // 暴露 VLM 接地缓存：批量预取接地写入此 Map（键 tree.hash::target）
     async readText(selector) {
       try {
         const tree = await dumpTree();

@@ -408,6 +408,66 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     // 不做整体预插值——那样运行期变量永远取不到（C2 验证暴露）。
     const steps = caseObj.steps;
     let status = 'pass';
+
+    // —— 同屏批量视觉接地（性能）——
+    // 一次看图为"当前步 + 后续连续引擎 tap 步"预取多个目标坐标，写入 device.vlmCache
+    // （键 tree.hash::target）。屏幕一变 hash 即变，预取坐标自动失效——跨转场无风险。
+    // 触发时机：某 aiTap 引擎 MISS 进入 VLM 降级时，顺带把后续 tap 目标一起接地，
+    // 后续步骤直接 vlmCacheHit，省掉每个目标一轮模型往返。
+    async function batchGround(fromIdx) {
+      if (!ctx.vlm || !ctx.chat || !device?.vlmCache) return 0;
+      const targets = [];
+      for (let k = fromIdx; k < steps.length && targets.length < 6; k++) {
+        const s = steps[k];
+        if (s.type !== 'aiTap' && s.type !== 'aiLongPress') break; // 只批量连续 tap 族
+        const txt = interpolate(s.text, ctx.vars);
+        if (txt && !targets.includes(txt)) targets.push(txt);
+      }
+      if (targets.length < 2) return 0; // 单目标无需批量
+      let tree;
+      try { tree = await device.dumpTree(); } catch { return 0; }
+      const size = await device.screenSize().catch(() => null);
+      if (!size) return 0;
+      let shot;
+      try {
+        const { compressForContext } = await import('../src/image/png.js');
+        const raw = await device.screencap();
+        const c = await compressForContext(raw.buffer, { maxWidth: 720, quality: 70 });
+        shot = { data: c.buffer.toString('base64'), mimeType: c.mimeType };
+      } catch { return 0; }
+      const { resolveStrategy } = await import('../src/device/coord/registry.js');
+      const cs = resolveStrategy(modelCfg.family);
+      const fmt = cs?.describeForPrompt?.() || 'Return coordinates normalized to 0-1000.';
+      const list = targets.map((t, i) => `${i + 1}. ${t}`).join('\n');
+      let raw;
+      try {
+        raw = await ctx.chat(
+          `Locate EACH of the following UI elements on this screenshot. For each, reply one JSON object {"i": <number>, "bbox": [x1,y1,x2,y2]} using this convention: ${fmt} If an element is NOT visible, use {"i": <number>, "bbox": null}. Reply with ONLY a JSON array of ${targets.length} objects. Targets:\n${list}`,
+          { images: [shot] },
+        );
+      } catch { return 0; }
+      let arr = null;
+      try {
+        const { repairJson } = await import('../src/tools/ai.js');
+        arr = repairJson(raw);
+      } catch { arr = null; }
+      if (!Array.isArray(arr)) return 0;
+      let seeded = 0;
+      for (const item of arr) {
+        const idx = Number(item?.i) - 1;
+        const bbox = item?.bbox;
+        if (idx < 0 || idx >= targets.length || !Array.isArray(bbox) || bbox.length < 4) continue;
+        if (bbox.every((v) => v == null)) continue; // NOT_FOUND
+        const conv = cs?.toPixels?.(bbox.join(' '), size);
+        if (!conv?.bounds || !conv.inScreen) continue;
+        const identity = { text: '', contentDesc: targets[idx], resourceId: '', cls: '', clickable: null };
+        device.vlmCache.set(`${tree.hash}::${targets[idx]}`, { bounds: conv.bounds, center: conv.center, identity });
+        seeded++;
+      }
+      if (seeded && !flags.quiet) console.warn(`[engine] 批量视觉接地：一次看图预取 ${seeded}/${targets.length} 个目标坐标`);
+      return seeded;
+    }
+
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       ctx.currentStepIndex = i;
@@ -454,6 +514,9 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               const isLocateMiss = d.ok === false && /LOCATE_MISS|未找到目标/i.test(missText);
               const isTapFamily = call.tool === 'tap' || call.tool === 'long_press';
               if (isLocateMiss && isTapFamily && ctx.vlm) {
+                // 先批量接地：一次看图为当前步+后续连续 tap 步预取坐标（写 vlmCache，
+                // 键 tree.hash::target，屏幕一变自动失效）。随后单目标 locate 直接命中缓存。
+                try { await batchGround(i); } catch { /* 批量失败不阻断单目标降级 */ }
                 // 一级降级：VLM 视觉接地（确定性：截图→坐标→family 策略转像素→tap）
                 try {
                   const vres = await device.locate(step.text, { vlm: ctx.vlm });
