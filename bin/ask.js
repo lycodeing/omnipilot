@@ -677,9 +677,18 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         // 马拉松步续作循环：步骤文本含终止条件（直到/重复/逐题/每一题）时，模型每轮只做部分
         // 动作就收尾（如 27 题只答 1 题）。每轮结束后若未自报完成/受阻，就催它继续，最多 6 轮。
         const marathon = /直到|重复|逐题|每一题|依次/.test(stepText);
+        // 终止标记：步骤文本"直到…"后的引号文本（确定性验证，不依赖模型自报）
+        const marathonMarker = marathon ? waitSelectorFromText((/直到[^，。；]*?[「“"']([^」”"']{1,20})[」”"']/.exec(stepText) || [null, null])[1] || '') : null;
         if ((step.type === 'ai' || step.type === 'aiAct') && marathon) {
           for (let resume = 0; resume < 10; resume++) {
-            if (answer && doneRe.test(answer)) break; // 模型自报完成/受阻 → 结束
+            if (answer && /BLOCKED/i.test(answer)) break; // 模型显式受阻 → 结束
+            // 确定性终止检测：终止标记元素已可见 → 任务完成，结束循环
+            if (marathonMarker) {
+              try {
+                const done = await device.waitForElement(marathonMarker, { timeoutMs: 3000 });
+                if (done?.appeared) break;
+              } catch { /* 检测失败继续催 */ }
+            }
             if (!flags.quiet) console.warn(`[warn] 马拉松步未完成（无完成标记），催促继续 ${resume + 1}/10`);
             // 每轮取新截图：题目推进后屏幕已变，步首旧图会误导模型
             let freshImgs = [];
