@@ -774,8 +774,16 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             } catch { /* 兜底失败维持无输出 */ }
           }
         } else if (!answer && step.type === 'aiQuery' && recorder.stepCount > stepsBefore) {
-          // 查询步已执行工具但无收尾文本：催一句结果汇报（1 轮）
-          await session.prompt('不要再调用工具。用一句话报告你刚才查询/提取到的结果。', { images: [] });
+          // 查询步已执行工具但无收尾文本：催一句结果汇报（1 轮）。
+          // 带 name 的落库形态若还没调 data_extract/data_store，先放行落库再汇报——
+          // 一刀切"不要再调用工具"会把落库也掐死（实测 c3_summary 数据集 0 条即此因）。
+          const needStore = step.name && !recorder.stepsSince(stepsBefore).some((s) => /data_extract|data_store/.test(s.tool || s.type || ''));
+          await session.prompt(
+            needStore
+              ? `还没把结果落到数据集「${step.name}」。现在就调用一次 data_extract（或 data_store）完成落库，然后用一句话报告结果。`
+              : '不要再调用工具。用一句话报告你刚才查询/提取到的结果。',
+            { images: [] },
+          );
           answer = lastAssistantText(session);
         }
         // ai 步无文本属正常（工具调用即交付），不催答
