@@ -101,7 +101,8 @@ const usage = `ask — 安卓场景测试 agent
   --keep-images <n>   会话历史保留最近 n 张截图（默认 3；断言密集用例可设 2 省 token）
   --context-steps <n|all> 步骤上下文窗口：保留最近 n 步原文 + 整体描述（默认 3；all=全部保留；
                       优先级高于用例 YAML 顶层 context: 键）
-  会话保留: --keep(默认) --fresh --continue --session <file> --keep-data
+  --rollback <on|off> 网络档位改动收尾自动还原（默认 on）
+  会话保留: --keep(默认) --fresh --continue --session <file> --keep-data（历史 flag，当前 no-op）
 `;
 
 // —— 输出辅助 ——
@@ -494,10 +495,27 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     // 保留最近 N 个"有内容步"的原文，更早的删除并替换为一条确定性整体描述（0 额外 LLM 轮次）。
     const contextCfgRaw = flags['context-steps'] ?? caseObj.context ?? 3;
     const contextAll = /^(all|全部)$/i.test(String(contextCfgRaw).trim());
-    const contextKeep = contextAll ? Infinity : Math.max(1, Number(contextCfgRaw) || 3);
+    const ctxNum = Number(contextCfgRaw);
+    const contextKeep = contextAll ? Infinity : (Number.isFinite(ctxNum) ? Math.max(1, Math.trunc(ctxNum)) : 3);
+    // SDK 消息数组双路径兼容（旧版 SDK 挂 session.messages）：取不到时治理整体 no-op，须有告警
+    let _msgsWarned = false;
+    const getMsgs = () => {
+      const m = session?.agent?.state?.messages ?? session?.messages ?? null;
+      if (!Array.isArray(m) && !_msgsWarned) { _msgsWarned = true; console.warn('[warn] 未取到会话消息数组（SDK 路径变更？），上下文治理本轮全部跳过'); }
+      return Array.isArray(m) ? m : null;
+    };
     ctx.stepMsgCounts = []; // 每步产生的消息数（delta），供 pruneStepHistory 分段（delta 跨多轮剪枝稳定）
     const pushStepMsgDelta = () => {
-      ctx.stepMsgCounts.push(Math.max(0, (session.agent?.state?.messages?.length ?? 0) - (ctx._msgStart ?? 0)));
+      ctx.stepMsgCounts.push(Math.max(0, (getMsgs()?.length ?? 0) - (ctx._msgStart ?? 0)));
+    };
+    const { pruneToolHistory } = await import('../src/session/image-prune.js');
+    // 步内第 2 轮起的 prompt（催答/续作/视觉确认）自带本轮原始 role:'toolResult' 历史，
+    // 网关对 role:tool 历史返回 400（对照实验实证）→ 每次追加 prompt 前先同步全折叠为纯文本。
+    const foldForGateway = () => {
+      try {
+        const msgs = getMsgs();
+        if (msgs) pruneToolHistory(msgs, { keepRecent: 0 });
+      } catch { /* 折叠失败不阻断 */ }
     };
 
     for (let i = 0; i < steps.length; i++) {
@@ -506,13 +524,12 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       // 坐标缓存键（§2.1）：步骤身份 + 该步骤内定位序号；每步重置 ordinal
       ctx.currentStepKey = { caseId: caseObj.source || caseObj.name || 'case', stepIndex: i };
       ctx.locateOrdinal = 0;
-      ctx._msgStart = session.agent?.state?.messages?.length ?? 0; // 本步开始时的消息数（上下文窗口分段用）
+      ctx._msgStart = getMsgs()?.length ?? 0; // 本步开始时的消息数（上下文窗口分段用）
       try {
         if (step.type === 'sleep') {
           const handle = recorder.startStep('sleep', `${step.seconds}s`);
           await new Promise((r) => setTimeout(r, (step.seconds || 0) * 1000));
           handle.end({ result: 'ok' });
-          pushStepMsgDelta();
           continue;
         }
         if (step.type === 'net') {
@@ -525,7 +542,6 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           const nr = await device.netSetProfile(step.profile);
           recorder.addNetworkEvent({ at: Date.now() - ctx.runStartMs, profile: step.profile });
           handle.end({ result: nr.ok ? 'ok' : 'failed', error: nr.ok ? null : (nr.error || 'net 命令失败') });
-          pushStepMsgDelta();
           continue;
         }
         // 引擎直执行步骤（§2.4 混合执行）：aiTap/aiInput/aiLongPress/aiKeyboardPress/aiScroll/launch/terminate
@@ -576,13 +592,13 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                   const cc = await compressForContext(shot.buffer, { maxWidth: 540, quality: 70 });
                   fbImages = [{ type: 'image', data: cc.buffer.toString('base64'), mimeType: cc.mimeType }];
                 } catch { /* 取图失败则模型自行 screen */ }
+                foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
                 await session.prompt(
                   `引擎定位失败，改用视觉接地：请在随附截屏对应的当前屏幕上找到并${verb}以下目标。**必须调用 ${call.tool} 工具完成${verb}**——只调 locate/uitree 查看不算完成本步。只这一次操作，做完即止，不要滚动/返回/做其它事：${step.text}\n若确实找不到，回复"未找到"并说明原因。`,
                   { images: fbImages },
                 );
                 ctx.engineLog.push({ step: i, type: `${step.type}+visual-fallback`, tool: 'agent', ok: true, error: null });
               }
-              pushStepMsgDelta(); // 降级轮的 prompt/回答也占消息，计入本步 delta
               continue;
             }
             console.warn(`[warn] 引擎步骤 ${step.type} 找不到工具 ${call.tool}`);
@@ -623,6 +639,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                 const cc = await compressForContext(s2.buffer, { maxWidth: 540, quality: 70 });
                 shot = [{ type: 'image', data: cc.buffer.toString('base64'), mimeType: cc.mimeType }];
               } catch { confirmed = true; break; /* 取图失败按命中处理，不卡流程 */ }
+              foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
               await session.prompt(
                 `视觉确认（不要调用任何工具）：随附截屏中，目标元素「${sel}」当前是否真实可见？若可见回复 VISIBLE；若不可见（隐藏层/未打开的页面/不在屏上）回复 NOT_VISIBLE。只回复这一个词。`,
                 { images: shot },
@@ -630,6 +647,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               let ans = lastAssistantText(session);
               if (!ans) {
                 // 空响应（网关偶发）：重问一次再判，降低"隐藏层+空响应"漏检概率
+                foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
                 await session.prompt('只回复一个词：VISIBLE 或 NOT_VISIBLE。', { images: shot });
                 ans = lastAssistantText(session);
               }
@@ -648,7 +666,6 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             r = await device.waitIdle({ quiet, timeoutMs: timeout });
             handle.end({ result: 'ok' });
           }
-          pushStepMsgDelta(); // 视觉确认轮的消息计入本步 delta
           continue;
         }
 
@@ -716,6 +733,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               const c5 = await compressForContext(s5.buffer, { maxWidth: 540, quality: 70 });
               freshImgs = [{ type: 'image', data: c5.buffer.toString('base64'), mimeType: c5.mimeType }];
             } catch { /* 取图失败不阻断 */ }
+            foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
             await session.prompt(
               `任务尚未完成（终止条件未满足）。继续执行：${text}\n（高效做法：一次 uitree 看清当前屏全部待处理项，然后**一轮并行 tap** 处理完本屏所有项，再滚动看下一屏；若终止条件已满足回复"完成"，无法继续回复"BLOCKED: 原因"）`,
               { images: freshImgs },
@@ -736,6 +754,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               : retry === 1
               ? '（第二次重试。你必须现在调用至少一个工具执行上述任务；若确实无法执行，回复一行：BLOCKED: <原因>）'
               : '（第三次重试，换一种说法）请执行：' + text + '。直接调用工具；无法执行则回复 BLOCKED: 原因';
+            foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
             await session.prompt(`${text}\n${extra}`, { images: imgs });
             answer = lastAssistantText(session);
           }
@@ -753,6 +772,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                 imgs = [{ type: 'image', data: c3.buffer.toString('base64'), mimeType: c3.mimeType }];
               } catch { /* 取图失败不阻断 */ }
             }
+            foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
             await session.prompt('不要再调用工具。直接输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}', { images: imgs });
             answer = lastAssistantText(session);
           }
@@ -777,7 +797,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           // 查询步已执行工具但无收尾文本：催一句结果汇报（1 轮）。
           // 带 name 的落库形态若还没调 data_extract/data_store，先放行落库再汇报——
           // 一刀切"不要再调用工具"会把落库也掐死（实测 c3_summary 数据集 0 条即此因）。
-          const needStore = step.name && !recorder.stepsSince(stepsBefore).some((s) => /data_extract|data_store/.test(s.tool || s.type || ''));
+          const needStore = step.name && !recorder.stepsSince(stepsBefore).some((s) => /data_extract|data_store/.test(s.type || ''));
+          foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
           await session.prompt(
             needStore
               ? `还没把结果落到数据集「${step.name}」。现在就调用一次 data_extract（或 data_store）完成落库，然后用一句话报告结果。`
@@ -795,34 +816,20 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           ctx.assertions.push({ text: step.text, passed: verdict.passed, reason: verdict.reason });
         }
       } catch (e) {
+        // 步骤级异常不能静默吞掉（曾致 run 静默判 error 无任何线索）
+        console.error(`[step ${i}] ${step?.type ?? '?'} 异常: ${e?.stack || e?.message || e}`);
         status = 'error';
         break;
       } finally {
         pushStepMsgDelta();
-        // 步骤上下文窗口（第四道治理，调研 docs/CONTEXT-COMPRESSION-RESEARCH.md）：
-        // 超过 keepSteps 个"有内容步"时，把最旧步骤的原文整体删除，替换为一条确定性
-        // 整体描述（进度/最近步骤行/断言计数/变量），只保留最近 N 步原文。0 额外 LLM 轮次。
-        try {
-          if (Number.isFinite(contextKeep) && ctx.stepMsgCounts.length > contextKeep) {
-            const { pruneStepHistory, buildStepDigest } = await import('../src/session/context-window.js');
-            const digest = buildStepDigest({
-              caseName: caseObj.name,
-              caseTotal: steps.length,
-              steps: recorder.stepsSince(0),
-              assertions: ctx.assertions,
-              vars: ctx.vars,
-              datasets: ctx.datasetWrites ?? null,
-            });
-            const pr = pruneStepHistory(session.agent.state.messages, ctx.stepMsgCounts, { keepSteps: contextKeep, digest });
-            if (pr.changed && !flags.quiet) console.warn(`[context] 窗口折叠：移除最旧 ${pr.removed} 条消息，保留最近 ${contextKeep} 步原文 + 整体描述`);
-          }
-        } catch { /* 窗口治理失败不阻断 */ }
         // 会话历史截图治理（§16）：保留最近 N 张图（--keep-images，默认 3），更早的替换为
         // 文字占位符，避免 prompt tokens 随历史线性膨胀（实测 20 张图 → 67k tokens / 单轮 26s）。
+        // 三层剪枝**必须先于窗口折叠**执行：折叠删除消息段时，被删段与保留段都已是纯文本，
+        // 不依赖"两段在同一同步 finally 内执行"的顺序巧合（role:'tool' 残留会触发网关 400）。
         try {
-          const msgs = session.agent?.state?.messages;
-          if (Array.isArray(msgs)) {
-            const { pruneImages, pruneToolResults, pruneToolHistory } = await import('../src/session/image-prune.js');
+          const msgs = getMsgs();
+          if (msgs) {
+            const { pruneImages, pruneToolResults } = await import('../src/session/image-prune.js');
             const keepN = Number(flags['keep-images']); const pr = pruneImages(msgs, { keepRecent: Number.isFinite(keepN) && keepN >= 1 ? keepN : 3 });
             if (pr.replaced > 0) ctx.imagesPruned = (ctx.imagesPruned || 0) + pr.replaced;
             // 旧工具结果截断：uitree/screen_diff 单条 20-40KB，长 run 累积数 MB 进上下文，
@@ -835,6 +842,25 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             if (pr3.folded > 0) ctx.toolHistoryFolded = (ctx.toolHistoryFolded || 0) + pr3.folded;
           }
         } catch { /* 剪枝失败不阻断 */ }
+        // 步骤上下文窗口（第四道治理，调研 docs/CONTEXT-COMPRESSION-RESEARCH.md）：
+        // 超过 keepSteps 个"有内容步"时，把最旧步骤的原文整体删除，替换为一条确定性
+        // 整体描述（进度/最近步骤行/断言计数/数据集/变量），只保留最近 N 步原文。0 额外 LLM 轮次。
+        try {
+          if (Number.isFinite(contextKeep) && ctx.stepMsgCounts.length > contextKeep) {
+            const { pruneStepHistory, buildStepDigest } = await import('../src/session/context-window.js');
+            const digest = buildStepDigest({
+              caseName: caseObj.name,
+              caseTotal: steps.length,
+              steps: recorder.stepsSince(0),
+              assertions: ctx.assertions,
+              vars: ctx.vars,
+              datasets: ctx.datasetWrites ?? null,
+            });
+            const msgs = getMsgs();
+            const pr = msgs ? pruneStepHistory(msgs, ctx.stepMsgCounts, { keepSteps: contextKeep, digest }) : { changed: false };
+            if (pr.changed && !flags.quiet) console.warn(`[context] 窗口折叠：移除最旧 ${pr.removed} 条消息，保留最近 ${contextKeep} 步原文 + 整体描述`);
+          }
+        } catch { /* 窗口治理失败不阻断 */ }
       }
     }
 
