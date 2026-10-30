@@ -8,11 +8,13 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 export class ModelConfigError extends Error {}
 
 export function resolveModelConfig(cliOverrides = {}, env = process.env) {
+  // parseArgv 保留连字符（flags['model-url']），usage 文本也用连字符形态——两种键名都要认
+  const pick = (camel, kebab) => cliOverrides[camel] ?? cliOverrides[kebab];
   const cfg = {
-    url: cliOverrides.modelUrl || env.ASK_MODEL_URL || '',
-    key: cliOverrides.modelKey || env.ASK_MODEL_KEY || '',
-    name: cliOverrides.modelName || env.ASK_MODEL_NAME || '',
-    family: cliOverrides.modelFamily || env.ASK_MODEL_FAMILY || '',
+    url: pick('modelUrl', 'model-url') || env.ASK_MODEL_URL || '',
+    key: pick('modelKey', 'model-key') || env.ASK_MODEL_KEY || '',
+    name: pick('modelName', 'model-name') || env.ASK_MODEL_NAME || '',
+    family: pick('modelFamily', 'model-family') || env.ASK_MODEL_FAMILY || '',
   };
   return cfg;
 }

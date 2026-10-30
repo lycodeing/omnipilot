@@ -159,8 +159,9 @@ export function buildDataTools(ctx) {
         ctx.vars.set(params.name, rows);
         // 数据集写入计数留痕（Manus"结果留进上下文"教训）：整体描述（buildStepDigest）
         // 引用此表，让窗口折叠后远处的书断言仍能看到"数据集 X=N 条"的证据。
+        // 口径 = 回读数据集现状（append 去重/upsert 合并后的真实行数），不是本次抽取数
         ctx.datasetWrites = ctx.datasetWrites ?? new Map();
-        ctx.datasetWrites.set(params.name, rows.length);
+        ctx.datasetWrites.set(params.name, store ? (await store.read(params.name)).length : rows.length);
       }
       const last = rows[rows.length - 1];
       return textResult({
@@ -213,6 +214,9 @@ export function buildDataTools(ctx) {
       const action = params.action || 'append';
       if (action === 'clear') {
         await store.clear(params.name);
+        // clear 也要更新留痕：否则整体描述继续宣称旧计数（"以此为准"口径下的陈旧权威证据）
+        ctx.datasetWrites = ctx.datasetWrites ?? new Map();
+        ctx.datasetWrites.set(params.name, 0);
         return textResult({ ok: true, action, name: params.name });
       }
       const rows = params.rows || [];
@@ -223,9 +227,10 @@ export function buildDataTools(ctx) {
       } else {
         res = await store.append(params.name, rows, { run: recorder?.runId ?? null, step: ctx.currentStepIndex ?? null });
       }
-      // 数据集写入计数留痕（供整体描述引用，见 data_extract 同款注释）
+      // 数据集写入计数留痕（供整体描述引用，见 data_extract 同款注释）；
+      // 口径 = 回读数据集现状（upsert 全量合并时 written=0，按 written 记会"回退"成 0 条）
       ctx.datasetWrites = ctx.datasetWrites ?? new Map();
-      ctx.datasetWrites.set(params.name, res.written ?? rows.length);
+      ctx.datasetWrites.set(params.name, (await store.read(params.name)).length);
       return textResult({ ok: true, action, name: params.name, ...sampleForContext(rows, res.written) });
     },
   });

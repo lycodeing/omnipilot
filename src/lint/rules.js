@@ -62,7 +62,9 @@ const RULES = [
     test: (line, allLines, idx) => {
       const isAssert = /(assert|aiAssert|断言)/.test(line);
       if (!isAssert || idx === 0) return false;
-      const prev = allLines[idx - 1];
+      // 剥掉否定语境（"不要点击/勿启动"等）再判定，否则"不要点击任何内容"这类
+      // 防护性叮嘱会误报为点击动作（实测 m1-search.yaml 误报）
+      const prev = (allLines[idx - 1] || '').replace(/(不要|勿|禁止|别|不能|不得)[\u4e00-\u9fa5]{0,6}?(点击|跳转|启动|navigate|launch|tap)/g, '');
       // 点击/跳转类动作：旧名（tap/click/点击）+ 新引擎名（aiTap/aiInput/launch/…）
       if (!/(tap|click|点击|跳转|navigate|launch|启动|aiTap|aiInput|aiLongPress|aiKeyboardPress)/.test(prev)) return false;
       // 前一行是点击且之间没有 wait_idle/sleep/aiWaitFor，且当前行之前也没有

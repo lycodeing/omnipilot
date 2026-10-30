@@ -28,7 +28,9 @@ export function pruneStepHistory(messages, stepCounts, { keepSteps = 3, digest =
   }
   const keepFrom = messages.length - tail;
   const start = messages[0]?.role === 'system' ? 1 : 0; // system 永远首位（前缀稳定）
-  if (keepFrom <= start) return { removed: 0, changed: false };
+  // keepFrom>=messages.length（保留窗内全是 0 delta 步）→ 没有任何原文可保留，
+  // 执行删除会把除 system 外全部历史折成一条 digest，破坏性过大 → 保守不动
+  if (keepFrom >= messages.length || keepFrom <= start) return { removed: 0, changed: false };
   const removed = keepFrom - start;
   const text = String(digest || '').trim() || `${STEP_DIGEST_PREFIX}更早步骤的原文已按上下文窗口策略省略。`;
   messages.splice(start, removed, { role: 'user', content: [{ type: 'text', text }] });
@@ -45,7 +47,10 @@ export function buildStepDigest({ caseName, caseTotal, steps = [], assertions = 
   });
   const passed = assertions.filter((a) => a.passed).length;
   const failedList = assertions.filter((a) => !a.passed).map((a) => `「${String(a.text).slice(0, 24)}」`);
-  const varLines = Object.entries(vars).filter(([, v]) => v != null && v !== '').map(([k2, v]) => `${k2}=${String(v).slice(0, 30)}`);
+  // vars 实际是 Map（ctx.vars），Object.entries 对 Map 恒返回 []（曾致变量行静默失效）；
+  // 对象/数组值 JSON 序列化避免 "[object Object]"
+  const varEntries = vars instanceof Map ? [...vars.entries()] : Object.entries(vars ?? {});
+  const varLines = varEntries.filter(([, v]) => v != null && v !== '').map(([k2, v]) => `${k2}=${(typeof v === 'object' ? JSON.stringify(v) : String(v)).slice(0, 30)}`);
   // 数据集写入计数（ctx.datasetWrites）：书断言（"数据集 X 至少3条"）的证据必须能越过窗口折叠
   const dsLines = datasets instanceof Map ? [...datasets.entries()].map(([k2, n]) => `${k2}=${n}条`) : [];
   const parts = [

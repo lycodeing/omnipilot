@@ -31,7 +31,7 @@ const ALL_TYPES = new Set([...AGENT_TYPES, ...ASSERT_TYPES, ...QUERY_TYPES, ...W
 // 步骤字段收哪些"参数行"（缩进续行）；不在表内且非命令名的续行仍按旧行为拼进 text
 const PARAM_KEYS = new Set([
   'value', 'direction', 'distancePct', 'until', 'keyName', 'name', 'timeout',
-  'max', 'maxScrolls', 'durationMs', 'appId', 'package', 'packageName', 'selector', 'mode', 'path',
+  'max', 'maxScrolls', 'durationMs', 'appId', 'package', 'packageName', 'mode', 'path', 'quiet',
   'rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor',
 ]);
 const NUMBER_KEYS = new Set(['seconds', 'max', 'timeout', 'maxScrolls', 'durationMs', 'distancePct']);
@@ -217,7 +217,9 @@ export function interpolate(text, vars) {
   return text.replace(/\$\{\s*([A-Za-z_][\w]*)\s*\}/g, (orig, name) => {
     if (vars && typeof vars.has === 'function' && vars.has(name)) {
       const v = vars.get(name);
-      return v === null || v === undefined ? '' : String(v);
+      if (v === null || v === undefined) return '';
+      // 数组/对象（data_extract 存的 rows）JSON 序列化，避免 "[object Object]"
+      return typeof v === 'object' ? JSON.stringify(v) : String(v);
     }
     return orig;
   });
