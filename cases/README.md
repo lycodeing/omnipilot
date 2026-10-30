@@ -73,23 +73,39 @@ steps:
 | c3-all-commands.yaml | 复杂 | 16-18 | 全部 14 种步骤命令各至少一次；launch 文本/appId 双形态、terminate、screen(前台取证)、home/enter/back 键、read(re: 匹配)、uiDump、aiAct、secret/sms 不可用路径 |
 | c4-collection-pipeline.yaml | 复杂 | 10-14 | collection(key 主键去重+max 上限+容器粒度退化补采)、data_query 倒序/精确 where、跨数据集 extract→query→upsert→复查流水线、terminate(packageName 参数形态) |
 
-## P 系列验证矩阵（2026-10-28）
+## P 系列验证矩阵（2026-10-30 全量回归，deepseek-v4.1-flash，步骤上下文窗口默认开启）
+
+| Case | 结果 | 耗时 | 断言 |
+|---|---|---|---|
+| s1-hotlist | **pass** | 287s | 3/3 |
+| s2-profile | **pass** | 142s | 2/2 |
+| s3-engine-params | **pass** | 117s | 2/2 |
+| s4-perception-params | **pass** | 126s | 2/2 |
+| m1-search | **pass** | 272s | 2/2 |
+| m2-tabs-net | **pass** | 299s | 5/5 |
+| m3-input-action | **pass** | 229s | 2/2 |
+| m4-data-net | **pass** | 179s | 2/2 |
+| c1-grand-tour | **pass** | 930s | 4/4 |
+| c2-data-pipeline | **pass** | 676s | 1/1 |
+| c3-all-commands | **pass** | 657s | 4/4 |
+| c4-collection-pipeline | **pass** | 455s | 3/3 |
+| 健康自测（compat，emulator-5556） | **pass** | 457s | 8/8 |
+
+> 详细报告：C:/opt/scene-kit/2026-10-30/health-verify/RUNLOG.md
+> 注：掘金在 x86_64 靠转译层运行，随机 native 崩溃属环境硬限制；按 pm clear 重置稳定窗口分轮重试后全绿。
+
+## NL 形态验证矩阵（2026-10-28，历史轮次）
 
 | Case | 模型 | 结果 | 耗时 |
 |---|---|---|---|
-| s3-engine-params | qwen3.8-flash | **pass** | 99s |
-| s4-perception-params | glm-5.3-flash | **pass** | 1547s |
-| m3-input-action | qwen3.7-plus | **pass** | 2692s |
-| m4-data-net | minimax-m3.1-flash | **pass** | 467s |
-| c3-all-commands | deepseek-v4.1-flash | **pass** | 598s |
-| c4-collection-pipeline | deepseek-v4.1-flash | **pass** | 426s |
 | NLP-1（简单） | deepseek-v4.1-flash | **pass** | 366s |
 | NLP-4（中等） | glm-5.3-flash | **pass** | 1200s |
 | NLP-5（复杂） | qwen3.8-flash | fail（环境崩溃） | 1288s |
 | NLP-7（ask 只读） | qwen3.7-plus | **pass** | 17s |
 
-> 详细报告：[docs/PARAM-VERIFICATION-2026-10-28.md](../docs/PARAM-VERIFICATION-2026-10-28.md)
-> 注：s4/m3 耗时偏长是掘金 App 在 x86_64 上的 native 崩溃（转译层硬限制）导致，agent 靠自愈完成。
+> **覆盖边界**：NLP-2/NLP-3/NLP-6 的 NL 形态未单独跑过——其功能面由对应 YAML 等价形态
+> （s4/m3/c4，上表 10-30 全绿）覆盖（见 nl-p-cases.md 说明：两种形态验证同一功能面）。
+> NLP-5 的 fail 为环境崩溃（10-28 已归因），其 YAML 等价形态 c3 于 10-30 pass。
 
 
 ## 外部框架语法兼容（2026-10-29）

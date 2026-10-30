@@ -547,7 +547,13 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         // 引擎直执行步骤（§2.4 混合执行）：aiTap/aiInput/aiLongPress/aiKeyboardPress/aiScroll/launch/terminate
         // 直接调对应工具（复用工具层记账），不经 agent 选工具；执行后把结果注入上下文，保持 agent 不失忆。
         if (ENGINE_TYPES.has(step.type)) {
-          const call = buildToolCall({ ...step, text: interpolate(step.text, ctx.vars), value: interpolate(step.value, ctx.vars) });
+          // 引擎步全部字符串参数做 ${var} 插值（此前仅 text/value，rows/tap/until 里的
+          // 变量引用会原样进 selector 静默 MISS）
+          const interpStep = { ...step };
+          for (const k of Object.keys(interpStep)) {
+            if (typeof interpStep[k] === 'string') interpStep[k] = interpolate(interpStep[k], ctx.vars);
+          }
+          const call = buildToolCall(interpStep);
           if (call) {
             const tool = toolMap.get(call.tool);
             if (tool) {

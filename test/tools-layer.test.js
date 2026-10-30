@@ -453,9 +453,12 @@ describe('contract shapes', () => {
     };
     const ctx = makeCtx({ recorder });
     const tool = buildTools(ctx).find((t) => t.name === 'terminate');
-    await tool.execute('id1', { packageName: 'com.x' }, undefined, undefined, {});
-    assert.equal(recorder.runId.startsWith('run-'), true);
-    assert.equal(path.isAbsolute(ctx.device === null ? '' : '/x'), true);
+    const r = await tool.execute('id1', { packageName: 'com.x' }, undefined, undefined, {});
+    // 断言被测对象本身：terminate 结果形状 + 记账链路（旧版两条恒真断言已删）
+    const body = JSON.parse(r.content[0].text);
+    assert.equal(body.ok, true);
+    assert.deepEqual(ended.map((e) => e.type), ['terminate']);
+    assert.equal(ended[0].result, 'ok');
   });
 });
 

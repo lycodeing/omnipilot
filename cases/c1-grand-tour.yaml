@@ -7,6 +7,9 @@
 # 仅 aiAssert / aiQuery / ai: 需要模型判断的步骤才调 LLM。
 # 对比改造前（1 个 ai: 里塞 6 次点击 → 104 轮往返、50 分钟）：预计降到 3-5 分钟。
 name: C1-全站大巡检
+# 注：本用例不重复 terminate/launch 前奏（c3 有）——首步 aiTap 依赖上一用例无残留弹窗；
+# 跑批顺序上 c1 前是 m2（以 back/scroll 收尾，无模态残留）。若单独跑 c1 且 App 有弹窗，
+# 先手工关弹窗或改在首步前加 terminate+launch。
 steps:
   - launch: com.daimajia.gold
   - aiWaitFor: 等「搜索稀土掘金」出现   # 首页的标志性元素
