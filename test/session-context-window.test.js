@@ -114,3 +114,28 @@ test('parseCaseText：顶层 context 键解析（数字/all/非法）', () => {
   const c4 = parseCaseText('name: T\ncontext: 全部\nsteps:\n  - aiTap: X\n');
   assert.equal(c4.context, 'all');
 });
+
+test('pruneStepHistory：keepFrom==start（全历史恰为窗口）→ 不动', () => {
+  const msgs = [sys, u('s1'), a('r1'), u('s2'), a('r2')];
+  const r = pruneStepHistory(msgs, [2, 2, 2, 2], { keepSteps: 2, digest: 'D' });
+  assert.equal(r.changed, false);
+  assert.equal(msgs.length, 5);
+});
+
+test('pruneStepHistory：保留窗内全 0 段（连续引擎步）→ 保守不动，不整库折叠', () => {
+  // 1 个 ai 步(2 条) + 4 个引擎步(0 条)：k=5>3，tail=0 → keepFrom=length → 不得删光
+  const msgs = [sys, u('ai'), a('r'), u('e1'), u('e2'), u('e3'), u('e4')];
+  const r = pruneStepHistory(msgs, [2, 0, 0, 0, 0], { keepSteps: 3, digest: 'D' });
+  assert.equal(r.changed, false);
+  assert.equal(msgs.length, 7);
+});
+
+test('buildStepDigest：datasets Map 渲染"已落库数据集"行；vars Map 渲染变量行', () => {
+  const d = buildStepDigest({
+    caseName: 'C', caseTotal: 5, steps: [], assertions: [],
+    datasets: new Map([['hot', 3], ['meta', 1]]),
+    vars: new Map([['m4_hot', [{ title: 'x' }]]]),
+  });
+  assert.ok(d.includes('已落库数据集：hot=3条、meta=1条'));
+  assert.ok(d.includes('m4_hot=[{"title":"x"}]'));
+});

@@ -573,3 +573,41 @@ test('locate 缓存：screenSize 不一致 → 判 miss（跨设备失效防护�
   await locate.execute('a', { target: '热榜' }, undefined, undefined, {});
   assert.equal(hintsPassed, null, '分辨率不符时不应传 hint（判 miss）');
 });
+
+test('scroll 工具 until=<selector>：透传 scrollUntil，found=false 转 error', async () => {
+  const ctx = makeCtx({});
+  ctx.opts = { yes: true };
+  let captured = null;
+  ctx.device.scrollUntil = async (sel, o) => { captured = { sel, o }; return { scrolls: 3, found: true, changed: true }; };
+  const tool = buildTools(ctx).find((t) => t.name === 'scroll');
+  const r = await tool.execute('id1', { direction: 'down', until: 'text*=搜索', max: 6 }, undefined, undefined, {});
+  const body = JSON.parse(r.content[0].text);
+  assert.equal(captured.sel, 'text*=搜索');
+  assert.equal(captured.o.max, 6);
+  assert.equal(body.ok, true);
+  assert.equal(body.found, true);
+  // found=false → ok:false + error（调用方可区分"到底未见"）
+  ctx.device.scrollUntil = async () => ({ scrolls: 12, found: false, changed: true });
+  const r2 = await tool.execute('id2', { until: 'text*=不存在' }, undefined, undefined, {});
+  const b2 = JSON.parse(r2.content[0].text);
+  assert.equal(b2.ok, false);
+  assert.match(b2.error, /仍不可见/);
+});
+
+test('tap_each_row 工具：参数透传 + 默认 maxRounds 60 + device 抛错转结构化', async () => {
+  const ctx = makeCtx({});
+  ctx.opts = { yes: true };
+  let captured = null;
+  ctx.device.tapEachRow = async (o) => { captured = o; return { rounds: 1, taps: 1, verified: 1, unverified: 0, done: true, bottom: false, error: null, skipped: [] }; };
+  const tool = buildTools(ctx).find((t) => t.name === 'tap_each_row');
+  await tool.execute('id1', { rows: 're:Q', tap: 'text=opt', verifyColor: '#FF0000' }, undefined, undefined, {});
+  assert.equal(captured.maxRounds, 60, '工具层默认与设备层一致');
+  assert.equal(captured.verifyColor, '#FF0000');
+  assert.equal(captured.verify, undefined);
+  // device 抛错（冷启动 getSize 未就绪等）→ ok:false 结构化，不上抛
+  ctx.device.tapEachRow = async () => { throw new Error('屏幕尺寸未就绪'); };
+  const r = await tool.execute('id2', { rows: 're:Q', tap: 'text=opt' }, undefined, undefined, {});
+  const body = JSON.parse(r.content[0].text);
+  assert.equal(body.ok, false);
+  assert.match(body.error, /屏幕尺寸未就绪/);
+});

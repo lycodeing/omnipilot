@@ -348,3 +348,27 @@ test('lint：aiWaitFor 作为点击与断言之间的等待分隔，不误报 as
   const issues = lintCaseText(text);
   assert.equal(issues.filter((x) => x.rule === 'assert-after-click').length, 0);
 });
+
+test('buildToolCall：aiTapEach 全参透传（verify/verifyColor/maxRounds 字符串转数字）', () => {
+  assert.deepEqual(buildToolCall({ type: 'aiTapEach', rows: 're:Q', tap: 'text=a|text=b', stopWhen: 'text=提交', maxRounds: '60', verify: 'false', verifyColor: '#FF0000' }),
+    { tool: 'tap_each_row', params: { rows: 're:Q', tap: 'text=a|text=b', stopWhen: 'text=提交', maxRounds: 60, verify: false, verifyColor: '#FF0000' } });
+  assert.deepEqual(buildToolCall({ type: 'aiTapEach', rows: 're:Q', tap: 'text=a' }),
+    { tool: 'tap_each_row', params: { rows: 're:Q', tap: 'text=a' } });
+});
+
+test('buildToolCall：aiScroll until/max 透传', () => {
+  assert.deepEqual(buildToolCall({ type: 'aiScroll', text: 'down', until: 'text*=搜索', max: 6 }),
+    { tool: 'scroll', params: { direction: 'down', until: 'text*=搜索', max: 6 } });
+});
+
+test('resolveModelConfig：kebab-case CLI flag（parseArgv 保留连字符）', () => {
+  const env = { ASK_MODEL_URL: '', ASK_MODEL_KEY: '', ASK_MODEL_NAME: '', ASK_MODEL_FAMILY: '' };
+  assert.deepEqual(resolveModelConfig({ 'model-url': 'https://c.api/v1', 'model-name': 'm' }, env),
+    { url: 'https://c.api/v1', key: '', name: 'm', family: '' });
+});
+
+test('interpolate：数组/对象值 JSON 序列化（data_extract rows）', () => {
+  const vars = new Map([['rows', [{ title: 'a' }, { title: 'b' }]], ['n', 3]]);
+  assert.equal(interpolate('${rows}', vars), '[{"title":"a"},{"title":"b"}]');
+  assert.equal(interpolate('${n}', vars), '3');
+});

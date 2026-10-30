@@ -18,12 +18,13 @@
 | `aiInput` + `value:` | **引擎直执行** | 定位输入框并输入（等价 input 工具） |
 | `aiLongPress` + `durationMs:` | **引擎直执行** | 长按 |
 | `aiKeyboardPress` + `keyName:` | **引擎直执行** | 按键（enter/back/home/recent） |
-| `aiScroll` + `direction:`/`distancePct:`/`until:` | **引擎直执行** | 滚动（距离/边界，见下；direction 为内容语义：down=前进） |
-| `aiTapEach` + `rows:`/`tap:`/`stopWhen:`/`maxRounds:` | **引擎直执行** | 逐行批量点击（问卷/表单作答；每轮 1 tap + 双信号验证，见 compat 样例） |
+| `aiScroll` + `direction:`/`distancePct:`/`until:` | **引擎直执行** | 滚动（距离/边界/目标 selector，见下；direction 为内容语义：down=前进） |
+| `aiTapEach` + `rows:`/`tap:`/`stopWhen:`/`maxRounds:`/`verify:`/`verifyColor:` | **引擎直执行** | 逐行批量点击（问卷/表单作答；每轮 1 tap + 双信号验证，见 compat 样例） |
+| `uiDump` + `path:` | **引擎直执行** | 落盘 UI 树 XML 取证（c1/c3 在用） |
 | `launch` / `terminate` | **引擎直执行** | 启动/强停 App |
 | `net` / `sleep` | 特殊 | 网络档位 / 等待秒数 |
 
-**步骤上下文窗口**（顶层 `context:` 键）：保留最近 N 步原文 + 一条确定性"整体描述"（进度/最近步骤/断言计数/变量），
+**步骤上下文窗口**（顶层 `context:` 键）：保留最近 N 步原文 + 一条确定性"整体描述"（进度/最近步骤/断言计数/已落库数据集/变量），
 更早步骤原文折叠删除——上下文不随步数线性膨胀。默认 N=3；`context: all` 保留全部；CLI `--context-steps=<n|all>` 优先。
 设计依据见 `docs/CONTEXT-COMPRESSION-RESEARCH.md`（Cline/Claude Code"保近摘要远"共识 + Manus 前缀稳定 + OpenHands 确定性压缩）。
 
@@ -119,7 +120,8 @@ steps:
 ## 覆盖边界（明确不适用/未覆盖的功能点）
 
 - `--parallel N`：本机仅 1 台设备（emulator-5554），并发跑批不适用；设备独占锁 `.ask/locks/` 已在矩阵跑批中实际生效。
-- `--vlm-locate` / VLM 定位：需要独立 VLM 端点，本轮未配置，属未覆盖项。
+- VLM 视觉接地：配置 ASK_MODEL_* 后**默认启用**（aiTap MISS 自动降级，用主模型看图接地，已验证为外部框架兼容点）；
+  `--vlm-locate` 为历史 flag，当前为 no-op（无独立 VLM 端点配置路径）。
 - 会话策略 `--keep/--fresh/--continue/--session`：矩阵用默认 `--keep`；secret 强制不落盘（§9.1）已由 C2 实测触发。
 - MCP 桥：`mcp.json` 交付默认空 servers，`mcp list/check` 已验证命令路径，桥接工具注册/调用路径未验证。
 - minimax 模型：网关（u2a/uni2api）的 minimax-m3.1-flash 在工具结果回传后的续轮返回空响应（多种消息格式均复现），

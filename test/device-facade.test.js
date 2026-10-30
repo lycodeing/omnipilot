@@ -64,6 +64,7 @@ test('契约形状：createDevice 返回对象逐方法齐备', async () => {
     'foreground', 'screenSize', 'processAlive', 'waitIdle', 'assertNoCrash',
     'netSetProfile', 'netStatus', 'markDirty', 'invalidateCache', 'cacheStats',
     'dumpToFile', 'close',
+    'tapEachRow', 'scrollUntil', 'waitForElement', 'waitForAnyElement',
   ];
   for (const m of required) assert.equal(typeof device[m], 'function', `缺少方法 ${m}`);
   await device.close();
@@ -300,5 +301,44 @@ test('waitIdle：quiet=1 单次 dump 即返回（快但有风险）', async () =
   const device = await makeDevice({ dumpScript: [FIXTURE] });
   const r = await device.waitIdle({ quiet: 1, intervalMs: 1, timeoutMs: 2000 });
   assert.deepEqual(r, { stable: true, dumps: 1 }, 'quiet=1 → 1 次 dump 即稳定');
+  await device.close();
+});
+
+test('tapEachRow：verify=true 且 screencap 解码失败 → 放行计数 verified；无 stopWhen 时滚到底 bottom', async () => {
+  const device = await makeDevice(); // 静态树：hash 永不变；screencap 返回假 PNG（解码失败→放行）
+  const r = await device.tapEachRow({ rows: 'text*=相册', tap: 'text=2025-09-16', maxRounds: 9 });
+  assert.equal(r.error, null);
+  assert.equal(r.taps, 1, '每轮至多 1 tap；行答完即不再 tap');
+  assert.equal(r.verified, 1);
+  assert.equal(r.screencapFailed, 1, '假 PNG 解码失败被计数暴露');
+  assert.equal(r.skipped.length, 3, '无匹配选项带的行记 skipped 不重 tap');
+  assert.equal(r.bottom, true, '无在屏可答行且滚动无变化（连续两轮同键）→ bottom');
+  await device.close();
+});
+
+test('tapEachRow：verify=false 且树无响应 → 不记假已答，连续 2 次报 renderer_unresponsive', async () => {
+  const device = await makeDevice(); // 静态树：hash 永不变，verify=false 时 hash 是唯一信号
+  const r = await device.tapEachRow({ rows: 'text*=相册', tap: 'text=2025-09-16', verify: false, maxRounds: 6 });
+  assert.match(r.error, /renderer_unresponsive/);
+  assert.equal(r.unverified, 2);
+  assert.equal(r.verified, 0);
+  await device.close();
+});
+
+test('tapEachRow：无文本行不进集群（入口排除），rows 命中空文本节点时 0 tap 不空转', async () => {
+  const device = await makeDevice();
+  const r = await device.tapEachRow({ rows: 'class=android.widget.ImageView', tap: 'text=查看', maxRounds: 4 });
+  assert.equal(r.taps, 0, '无文本行被排除，不得每轮重 tap');
+  assert.equal(r.error, null);
+  await device.close();
+});
+
+test('scrollUntil：目标在屏 → found=true 且 0 滚动；不存在 → 滚到无变化 found=false', async () => {
+  const device = await makeDevice();
+  const r1 = await device.scrollUntil('text=电子相册', { max: 4 });
+  assert.deepEqual({ found: r1.found, scrolls: r1.scrolls }, { found: true, scrolls: 0 });
+  const r2 = await device.scrollUntil('text=不存在的东西', { max: 4 });
+  assert.equal(r2.found, false);
+  assert.ok(r2.scrolls >= 1);
   await device.close();
 });
