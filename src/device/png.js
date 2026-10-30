@@ -72,7 +72,19 @@ export function pixelAt(png, x, y) {
   return [data[i], data[i + 1], data[i + 2]];
 }
 
-// 选中态判据：蓝色填充（b 明显高于 r，且 b 足够亮）；未选中灰底三通道接近。
+// 选中态判据（'auto' 兜底启发式）：蓝色填充（b 明显高于 r，且 b 足够亮）；未选中灰底三通道接近。
+// 主题色非蓝色的 App 请在 tapEachRow 显式传 verifyColor（hex/RGB），不要依赖本启发式。
 export function isBlueish([r, g, b]) {
   return b > 140 && b - r > 40 && g > r - 20;
+}
+
+// 指定颜色容差匹配：|Δ| 各通道 ≤ tol（默认 48，容忍抗锯齿/渐变）。
+export function isColorish([r, g, b], [tr, tg, tb], tol = 48) {
+  return Math.abs(r - tr) <= tol && Math.abs(g - tg) <= tol && Math.abs(b - tb) <= tol;
+}
+
+// '#RRGGBB' → [r,g,b]；解析失败返回 null
+export function parseHexColor(s) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(s ?? '').trim());
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
 }

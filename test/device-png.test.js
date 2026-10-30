@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { decodePng, pixelAt, isBlueish } from '../src/device/png.js';
+import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor } from '../src/device/png.js';
 
 // 构造最小 PNG：8-bit、色彩类型 2(RGB)、指定每行滤波类型
 function makePng(width, height, pixels, filterType = 0) {
@@ -80,6 +80,21 @@ test('isBlueish：选中蓝 vs 未选中灰', () => {
   assert.equal(isBlueish([245, 246, 248]), false);
   assert.equal(isBlueish([238, 240, 243]), false);
   assert.equal(isBlueish([200, 30, 40]), false);
+});
+
+test('isColorish / parseHexColor：任意主题色容差匹配（通用化）', () => {
+  assert.deepEqual(parseHexColor('#2196F3'), [33, 150, 243]);
+  assert.deepEqual(parseHexColor('2196f3'), [33, 150, 243]);
+  assert.equal(parseHexColor('zzz'), null);
+  assert.equal(parseHexColor(''), null);
+  // 红色主题选中态：isBlueish 判 false，isColorish 按指定色判 true
+  assert.equal(isBlueish([229, 57, 53]), false);
+  assert.equal(isColorish([229, 57, 53], [244, 67, 54]), true);
+  assert.equal(isColorish([245, 246, 248], [244, 67, 54]), false);
+  // 容差边界
+  assert.equal(isColorish([100, 100, 100], [100, 100, 100], 0), true);
+  assert.equal(isColorish([100, 100, 100], [110, 100, 100], 5), false);
+  assert.equal(isColorish([105, 100, 100], [100, 100, 100], 5), true);
 });
 
 test('decodePng：非 PNG 输入抛错', () => {

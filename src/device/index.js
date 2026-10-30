@@ -11,7 +11,7 @@ import { Yadb, readTextAt } from './input.js';
 import { withLocateRetry, StepRollout } from './rollout.js';
 import * as state from './state.js';
 import * as net from '../net/profile.js';
-import { decodePng, pixelAt, isBlueish } from './png.js';
+import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor } from './png.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
@@ -322,17 +322,24 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       }
       return result;
     },
-    // 逐行作用域批量点击（引擎确定性，0 模型往返）：表单/问卷作答场景。
-    // 关键事实（实测）：① WebView 选中态（蓝底）不进 a11y 树，adb tap 无回执；② 选中会触发
+    // 逐行作用域批量点击（引擎确定性，0 模型往返）：表单/问卷作答场景。App 无关：
+    // 行/选项/终止标记全部由 selector 表达；选项带按邻行几何推导；选中色可配。
+    // 关键事实（实测）：① WebView 选中态不进 a11y 树，adb tap 无回执；② 选中会触发
     // scroll-into-view，**tap 后整页滚动**，同轮内后续行的坐标立即失效（也是历史"点错行"根因）。
     // 因此每轮只 tap 一行：dump → 取文档序第一个未答行 → tap 其行内最左在屏选项 → 等渲染 →
-    // 双信号验证（树 hash 变化=页面滚动/响应；或原坐标像素变蓝=未滚动但选中）→ 记 answered；
+    // 双信号验证（树 hash 变化=页面响应；或原坐标像素变为选中色）→ 记 answered；
     // 双信号皆无 = 渲染器挂死计数（连续 2 次报错退出，不再空转记假已答）。
+    // verifyColor：'auto'（蓝色启发式）| '#RRGGBB' | [r,g,b]；verify=false 关闭像素校验。
     // 转向：无在屏可答行时按第一个未答行几何：选项在屏下 → down 前进；行与选项都在屏上 → up 回退。
     // stopWhen 可见**且**全文档无未答行才 done。零面积节点（隐藏预渲染层）一律排除。
-    async tapEachRow({ rows, tap, stopWhen = null, maxRounds = 60 } = {}) {
+    async tapEachRow({ rows, tap, stopWhen = null, maxRounds = 60, verify = true, verifyColor = 'auto' } = {}) {
       const result = { rounds: 0, taps: 0, verified: 0, unverified: 0, done: false, bottom: false, error: null, skipped: [] };
       if (!rows || !tap) { result.error = 'tapEachRow 需要 rows 与 tap 参数'; return result; }
+      const expectedColor = verifyColor === 'auto' || verifyColor == null ? null : (Array.isArray(verifyColor) ? verifyColor : parseHexColor(verifyColor));
+      if (verifyColor !== 'auto' && verifyColor != null && !expectedColor) {
+        result.error = `verifyColor 无法解析: ${verifyColor}（应为 '#RRGGBB' 或 [r,g,b] 或 'auto'）`;
+        return result;
+      }
       const answered = new Set(); // 已作答行文本（跳过重 tap）
       const skipped = new Set(); // 选项集不匹配、无法作答的行（避免转向死循环）
       const tapSels = String(tap).split('|').map((s) => s.trim()).filter(Boolean);
@@ -368,9 +375,20 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
             clusters.push({ cy: n.center[1], nodes: [n], text: String(n.text || '') });
           }
         }
-        const optsFor = (cl) => flat
-          .filter((n) => tapSels.some((s) => matchNode(n, s)) && n.center[1] > cl.cy && n.center[1] <= cl.cy + 400 && areaOk(n))
-          .sort((a, b) => a.center[0] - b.center[0]);
+        // 选项带下界 = 下一行的 cy（下一行的选项必在其行 cy 之下，天然不含邻行选项）；
+        // 末行/无下一行时回退 cy+400。行距随 App 布局变化，不硬编码。
+        const bandEndOf = (i) => {
+          const cl = clusters[i];
+          const next = clusters[i + 1];
+          return next ? Math.max(next.cy - 8, cl.cy + 40) : cl.cy + 400;
+        };
+        const optsFor = (cl) => {
+          const i = clusters.indexOf(cl);
+          const bandEnd = i >= 0 ? bandEndOf(i) : cl.cy + 400;
+          return flat
+            .filter((n) => tapSels.some((s) => matchNode(n, s)) && n.center[1] > cl.cy && n.center[1] <= bandEnd && areaOk(n))
+            .sort((a, b) => a.center[0] - b.center[0]);
+        };
         const pending = clusters.filter((c) => !(c.text && (answered.has(c.text) || skipped.has(c.text))));
         if (stopWhen) {
           const stop = matchSelector(flat, stopWhen);
@@ -408,30 +426,39 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         } catch { /* 单行 tap 失败本轮重来 */ continue; }
         result.taps++;
         await new Promise((r) => setTimeout(r, 700)); // 选中渲染 + scroll-into-view 动画
-        // 双信号验证：树 hash 变化（页面滚动/响应）或原坐标像素变蓝（未滚动但选中）
+        // 双信号验证：树 hash 变化（页面滚动/响应）或原坐标像素变为选中色（未滚动但选中）。
+        // 选中色 verifyColor：'auto'（蓝色启发式，蓝主题问卷兜底）| '#RRGGBB' | [r,g,b]；
+        // verify=false 关闭像素校验（树会响应的 App 用 hash 信号即可，全通用）。
+        // 采样网格按选项节点 bounds 缩放（3×3，30% 内缩），不假设控件尺寸。
         let hash1 = null;
         try { hash1 = (await dumpTree({ fresh: true })).hash; } catch { hash1 = null; }
-        let blue = false;
-        if (hash1 === hash0) {
+        let colorHit = false;
+        if (verify && hash1 === hash0) {
           try {
             const { buffer } = await this.screencap();
             const png = decodePng(buffer);
-            let hits = 0;
-            for (const dx of [-22, 0, 22]) for (const dy of [-22, 0, 22]) {
-              const px = pixelAt(png, target.pick.center[0] + dx, target.pick.center[1] + dy);
-              if (px && isBlueish(px)) hits++;
+            const b = Array.isArray(target.pick.bounds) ? target.pick.bounds : null;
+            const cx = target.pick.center[0]; const cy = target.pick.center[1];
+            const rx = b ? Math.max(4, Math.round((b[2] - b[0]) * 0.2)) : 22;
+            const ry = b ? Math.max(4, Math.round((b[3] - b[1]) * 0.2)) : 22;
+            let hits = 0; let total = 0;
+            for (const fx of [-1, 0, 1]) for (const fy of [-1, 0, 1]) {
+              const px = pixelAt(png, cx + fx * rx, cy + fy * ry);
+              if (!px) continue;
+              total++;
+              if (expectedColor ? isColorish(px, expectedColor) : isBlueish(px)) hits++;
             }
-            blue = hits >= 5;
-          } catch { blue = true; } // 截图/解码失败不阻断，按通过放行
+            colorHit = total > 0 && hits >= Math.min(5, Math.max(3, Math.ceil(total * 0.6)));
+          } catch { colorHit = true; } // 截图/解码失败不阻断，按通过放行
         }
-        if (hash1 !== hash0 || blue) {
+        if (!verify || hash1 !== hash0 || colorHit) {
           result.verified++;
           hangRounds = 0;
           if (target.cl.text) answered.add(target.cl.text);
         } else {
           result.unverified++;
           if (++hangRounds >= 2) {
-            result.error = 'renderer_unresponsive: 连续两次 tap 后页面无响应（树未变且选项未变蓝），WebView 渲染器疑似挂死';
+            result.error = `renderer_unresponsive: 连续两次 tap 后页面无响应（树未变且选项未变为选中色 ${verifyColor ?? 'auto'}），渲染器疑似挂死`;
             break;
           }
         }

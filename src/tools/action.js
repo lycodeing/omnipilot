@@ -200,17 +200,23 @@ export function buildActionTools(ctx) {
   const tapEachRow = defineTool({
     name: 'tap_each_row',
     label: 'tap_each_row',
-    description: '逐行作用域批量点击（引擎确定性，0 模型往返）：rows=行 scope selector、tap=行内目标 selector（取每行最左匹配）、stopWhen=终止标记 selector、maxRounds=滚动轮数上限。用于问卷/表单逐行作答。',
+    description: '逐行作用域批量点击（引擎确定性，0 模型往返）：rows=行 scope selector、tap=行内目标 selector（取每行最左匹配）、stopWhen=终止标记 selector、maxRounds=滚动轮数上限；verify=false 关闭像素校验（树会响应的 App 用 hash 信号即可）、verifyColor="#RRGGBB" 指定选中色（默认 auto=蓝色启发式）。用于问卷/表单逐行作答，App 无关。',
     parameters: Type.Object({
       rows: Type.String(),
       tap: Type.String(),
       stopWhen: Type.Optional(Type.String()),
       maxRounds: Type.Optional(Type.Number()),
+      verify: Type.Optional(Type.Boolean({ description: '默认 true：tap 后树未变时做像素选中色校验' })),
+      verifyColor: Type.Optional(Type.String({ description: "选中色：'auto'（蓝色启发式，默认）| '#RRGGBB'" })),
     }),
     execute: async (_id, params) => {
       const gate = await confirmWrite(ctx, 'tap_each_row', params.rows);
       if (!gate.allowed) return denied('tap_each_row');
-      const r = await device.tapEachRow({ rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null, maxRounds: params.maxRounds ?? 12 });
+      const r = await device.tapEachRow({
+        rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null, maxRounds: params.maxRounds ?? 12,
+        ...(params.verify != null ? { verify: params.verify } : {}),
+        ...(params.verifyColor != null ? { verifyColor: params.verifyColor } : {}),
+      });
       return { content: [{ type: 'text', text: JSON.stringify({ ok: !r.error, ...r }) }], details: { ok: !r.error, ...r } };
     },
   });
