@@ -348,7 +348,18 @@ test('tapEachRow：stopWhen 在屏且无未答行 → done=true（回归锁：fi
   const device = await makeDevice();
   const r = await device.tapEachRow({ rows: 'text=相册', tap: 'text=2025-09-16', stopWhen: 'text=家庭相册', maxRounds: 4 });
   assert.equal(r.done, true, 'stopWhen 可见且行已答完必须 done');
+  assert.equal(r.taps, 1, 'done 前必须真的答了那行（锁 pending 守卫：过早 done 会 taps=0）');
   assert.equal(r.error, null);
+  await device.close();
+});
+
+test('tapEachRow：stopWhen 在屏但仍有未答行 → 答完才 done（pending 守卫半边 + rows | 交替）', async () => {
+  const device = await makeDevice();
+  // 两行（电子相册/家庭相册）+ 各自选项都在树上，stopWhen「新建相册」第 0 轮即在屏：
+  // 若 pending 守卫缺失会第 0 轮 done=true 且 taps=0；正确行为是两行各答一次后才 done
+  const r = await device.tapEachRow({ rows: 'text=电子相册|text=家庭相册', tap: 'text=2025-09-16|text=2026-01-02', stopWhen: 'text=新建相册', maxRounds: 9 });
+  assert.ok(r.taps >= 2, '有未答行时不得因 stopWhen 在屏提前终止（早退则 taps=0）');
+  assert.equal(r.done, true, '两行答完后应正常终止');
   await device.close();
 });
 

@@ -367,8 +367,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         const areaOk = (n) => Array.isArray(n.bounds) && n.bounds.length === 4 && n.bounds[2] - n.bounds[0] > 0 && n.bounds[3] - n.bounds[1] > 0;
         const vis = (n) => areaOk(n) && (!size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= h));
         // 行节点取 bounds 真实且带文本者（含滚出屏幕的行，保持文档序）：无文本行无法记账，
-        // 进了集群会每轮重 tap 直到 maxRounds（漏答且无 error），故在入口排除
-        const rowNodes = flat.filter((n) => matchNode(n, rows) && areaOk(n) && (n.text || n.contentDesc));
+        // 进了集群会每轮重 tap 直到 maxRounds（漏答且无 error），故在入口排除。
+        // rows 支持 | 交替（与 tap 同款方言）：多类行混排的表单一次表达
+        const rowSels = String(rows).split('|').map((x) => x.trim()).filter(Boolean);
+        const rowNodes = flat.filter((n) => rowSels.some((x) => matchNode(n, x)) && areaOk(n) && (n.text || n.contentDesc));
         const clusters = [];
         for (const n of rowNodes.sort((a, b) => a.center[1] - b.center[1])) {
           const last = clusters[clusters.length - 1];
