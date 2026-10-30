@@ -159,9 +159,13 @@ export function matchSelector(flat, selector) {
   }
   const parsed = parseTarget(s);
   const value = (n) => (n ? { node: n, value: n.text || n.contentDesc || '' } : null);
+  // within= 只有完整 locator 链支持（需 getSize/几何判定）；flat 级匹配不支持时返回 null，
+  // 不能坠入 auto 分支拿 parsed.text=undefined 去搜字面量 "undefined"
+  if (parsed.kind === 'within') return null;
   if (parsed.kind === 'exact_text') {
     const hits = findByExactText(flat, parsed.text);
-    return value(hits[parsed.index] ?? hits[0] ?? null);
+    // 严格下标语义（与 locate() 一致）：显式 #index 越界就是未命中，不静默回退首个
+    return value(hits[parsed.index] ?? null);
   }
   if (parsed.kind === 'class_index') {
     const hits = findByClass(flat, parsed.cls);
@@ -255,7 +259,9 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
       tryStrategy(findByResourceId(flat, parsed.id), 'resource_id');
     } else if (parsed.kind === 'class_index') {
       tryStrategy(findByClassIndex(flat, parsed.cls, parsed.index), 'class_index');
-    } else {
+    } else if (parsed.kind !== 'within') {
+      // within= 未命中时不坠 auto 链：parsed.text 是 undefined，会去搜字面量 "undefined" 误配
+      // （ scope/inner 命中情况在 matched=null 时由上层 not-found 路径返回）
       const t = parsed.text;
       tryStrategy(findByExactText(flat, t), 'exact_text');
       if (!matched) tryStrategy(findByContains(flat, t), 'regex');

@@ -183,7 +183,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         // WebView 树的文本节点粒度随版本/渲染波动（"热度"↔"热度榜"），只查等值会假报"未匹配"。
         // 注意不能把 'text*=xx' 再喂回 matchSelector——parseTarget 不认识该前缀，会搜字面量。
         const s0 = String(selector);
-        const mm = /^text=(.+)$/.exec(s0);
+        const mm = /^text=(.+?)(?:#index=d+)?$/.exec(s0);
         if (mm) {
           const needle = mm[1];
           const n = flat.find((x) => String(x.text || '').includes(needle) || String(x.contentDesc || '').includes(needle));
@@ -276,14 +276,16 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       const size = await getSize();
       const useDist = distancePct != null;
       const moves = { down: ['bottom', 'top'], up: ['top', 'bottom'], right: ['right', 'left'], left: ['left', 'right'] };
-      const [fromRegion, toRegion] = moves[String(direction ?? 'up').toLowerCase()] ?? moves.up;
+      // 非法 direction 统一兜底 down（内容语义），两条路径（regionPoint/distancePct）必须一致
+      const dir = moves[String(direction ?? 'down').toLowerCase()] ? String(direction).toLowerCase() : 'down';
+      const [fromRegion, toRegion] = moves[dir];
       let prev = (await dumpTree()).hash;
       let scrolls = 0;
       let changed = false;
       while (scrolls < max) {
         if (useDist) {
           // scrollDistancePoints 吃手指方向：内容语义取反后传入
-          const finger = { down: 'up', up: 'down', left: 'right', right: 'left' }[String(direction ?? 'down').toLowerCase()] ?? 'up';
+          const finger = { down: 'up', up: 'down', left: 'right', right: 'left' }[dir] ?? 'up';
           const [p1, p2] = action.scrollDistancePoints(finger, size, distancePct);
           await action.swipe(adb, p1, p2, 300);
         } else {
@@ -359,12 +361,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           return result;
         }
         const size = await getSize().catch(() => null);
-        const h = size?.h ?? 2400;
+        const h = size?.h ?? 2400; // getSize 失败时的兜底屏高（常见机型统计值；size=null 时 vis 已跳过在屏检查）
         // 零面积（隐藏预渲染层 bounds=[0,0,0,0]）先排除，再看中心点是否在屏
         const areaOk = (n) => Array.isArray(n.bounds) && n.bounds.length === 4 && n.bounds[2] - n.bounds[0] > 0 && n.bounds[3] - n.bounds[1] > 0;
         const vis = (n) => areaOk(n) && (!size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= h));
-        // 行节点取 bounds 真实者（含滚出屏幕的行，保持文档序）
-        const rowNodes = flat.filter((n) => matchNode(n, rows) && areaOk(n));
+        // 行节点取 bounds 真实且带文本者（含滚出屏幕的行，保持文档序）：无文本行无法记账，
+        // 进了集群会每轮重 tap 直到 maxRounds（漏答且无 error），故在入口排除
+        const rowNodes = flat.filter((n) => matchNode(n, rows) && areaOk(n) && (n.text || n.contentDesc));
         const clusters = [];
         for (const n of rowNodes.sort((a, b) => a.center[1] - b.center[1])) {
           const last = clusters[clusters.length - 1];
@@ -372,7 +375,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
             last.nodes.push(n);
             last.cy = last.nodes.reduce((a, x) => a + x.center[1], 0) / last.nodes.length;
           } else {
-            clusters.push({ cy: n.center[1], nodes: [n], text: String(n.text || '') });
+            clusters.push({ cy: n.center[1], nodes: [n], text: String(n.text || n.contentDesc || '') });
           }
         }
         // 选项带下界 = 下一行的 cy（下一行的选项必在其行 cy 之下，天然不含邻行选项）；
@@ -391,7 +394,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         };
         const pending = clusters.filter((c) => !(c.text && (answered.has(c.text) || skipped.has(c.text))));
         if (stopWhen) {
-          const stop = matchSelector(flat, stopWhen);
+          const stop = flat.find((n) => matchNode(n, stopWhen) && vis(n)); // matchNode 与 rows/tap 同方言（支持 text*=）；matchSelector 不认 text*= 会搜字面量
           // 终止标记要求在屏（隐藏预渲染层的提交按钮不算），且全文档无未答行
           if (stop?.node && vis(stop.node) && pending.length === 0) { result.done = true; return result; }
         }
@@ -417,7 +420,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           const key = `${firstUn?.text ?? ''}@${dir}`;
           if (key === prevKey && ++noProgress >= 2) { result.bottom = true; break; }
           prevKey = key;
-          await this.scroll(dir, { max: 1, stopWhenNoChange: true });
+          try { await this.scroll(dir, { max: 1, stopWhenNoChange: true }); } catch { /* 转向滚动失败（如冷启动尺寸未就绪）仅损失一轮，不炸穿工具层 */ }
           continue;
         }
         noProgress = 0; prevKey = null;
@@ -449,9 +452,9 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
               if (expectedColor ? isColorish(px, expectedColor) : isBlueish(px)) hits++;
             }
             colorHit = total > 0 && hits >= Math.min(5, Math.max(3, Math.ceil(total * 0.6)));
-          } catch { colorHit = true; } // 截图/解码失败不阻断，按通过放行
+          } catch { colorHit = true; result.screencapFailed = (result.screencapFailed ?? 0) + 1; } // 放行但计数暴露（screencap 故障可绕过挂死防线的观测口）
         }
-        if (!verify || hash1 !== hash0 || colorHit) {
+        if (hash1 !== hash0 || (verify && colorHit)) {
           result.verified++;
           hangRounds = 0;
           if (target.cl.text) answered.add(target.cl.text);
@@ -463,6 +466,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           }
         }
       }
+      // maxRounds 自然耗尽且未终止：显式标记（done/bottom/error 均为假的第四态，调用方可区分）
+      if (!result.done && !result.bottom && !result.error) result.exhausted = true;
       result.skipped = [...skipped];
       return result;
     },

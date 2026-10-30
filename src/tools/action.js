@@ -155,7 +155,7 @@ export function buildActionTools(ctx) {
     parameters: Type.Object({
       direction: Type.String({ description: 'down（看更多下方内容，内容上移）/ up（回看上方）/ left / right' }),
       distancePct: Type.Optional(Type.Number({ description: '滚动距离（屏高百分比）：整屏=100、0.75屏=75、半屏=50' })),
-      until: Type.Optional(Type.String({ description: "edge（滚到边界即停，用于'翻到最底部'）| top（回到顶部）| selector（小步滚动直到该元素在屏可见，抗 WebView fling 过冲）" })),
+      until: Type.Optional(Type.String({ description: "edge（滚到边界即停，用于'翻到最底部'）| top（回到顶部）| 目标 selector 字符串（小步滚动直到该元素在屏可见，抗 WebView fling 过冲）" })),
       max: Type.Optional(Type.Number({ description: '最大滚动次数，默认 5（until 时默认 20）' })),
       stopWhenNoChange: Type.Optional(Type.Boolean({ description: '默认 true' })),
     }),
@@ -212,11 +212,18 @@ export function buildActionTools(ctx) {
     execute: async (_id, params) => {
       const gate = await confirmWrite(ctx, 'tap_each_row', params.rows);
       if (!gate.allowed) return denied('tap_each_row');
-      const r = await device.tapEachRow({
-        rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null, maxRounds: params.maxRounds ?? 12,
-        ...(params.verify != null ? { verify: params.verify } : {}),
-        ...(params.verifyColor != null ? { verifyColor: params.verifyColor } : {}),
-      });
+      // try/catch 与 scroll 工具同款：冷启动 getSize 未就绪等异常转结构化失败，
+      // 不上抛（上抛会把整个 run 判 error）
+      let r;
+      try {
+        r = await device.tapEachRow({
+          rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null, maxRounds: params.maxRounds ?? 60,
+          ...(params.verify != null ? { verify: params.verify } : {}),
+          ...(params.verifyColor != null ? { verifyColor: params.verifyColor } : {}),
+        });
+      } catch (e) {
+        r = { error: String(e?.message ?? e) };
+      }
       return { content: [{ type: 'text', text: JSON.stringify({ ok: !r.error, ...r }) }], details: { ok: !r.error, ...r } };
     },
   });

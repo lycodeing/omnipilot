@@ -48,8 +48,10 @@ export function scrollDistancePoints(direction, size, distancePct = 60) {
   const hHi = Math.round(w * 0.95);
   const hSpan = hHi - hLo;
   const d = String(direction ?? 'down').toLowerCase();
-  const vDist = Math.round((vSpan * Number(distancePct)) / 100);
-  const hDist = Math.round((hSpan * Number(distancePct)) / 100);
+  // 钳制距离百分比：0/负值会让起止点重合，input swipe 同点 ≈ 一次误触点击
+  const pct = Math.max(1, Math.min(100, Number(distancePct) || 0));
+  const vDist = Math.round((vSpan * pct) / 100);
+  const hDist = Math.round((hSpan * pct) / 100);
   if (d === 'down') return [[cx, vLo], [cx, Math.min(vHi, vLo + vDist)]];
   if (d === 'up') return [[cx, vHi], [cx, Math.max(vLo, vHi - vDist)]];
   if (d === 'right') return [[hLo, cy], [hLo + hDist, cy]];
