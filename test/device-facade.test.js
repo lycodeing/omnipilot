@@ -342,3 +342,21 @@ test('scrollUntil：目标在屏 → found=true 且 0 滚动；不存在 → 滚
   assert.ok(r2.scrolls >= 1);
   await device.close();
 });
+
+test('tapEachRow：stopWhen 在屏且无未答行 → done=true（回归锁：find 返回节点本身，守卫不得用 .node）', async () => {
+  // 静态树：行=「相册」（1 行），选项=「2025-09-16」，终止标记=「家庭相册」在屏
+  const device = await makeDevice();
+  const r = await device.tapEachRow({ rows: 'text=相册', tap: 'text=2025-09-16', stopWhen: 'text=家庭相册', maxRounds: 4 });
+  assert.equal(r.done, true, 'stopWhen 可见且行已答完必须 done');
+  assert.equal(r.error, null);
+  await device.close();
+});
+
+test('readText：text=x#index=N 等值 MISS 后兜底剥 #index 做包含匹配', async () => {
+  const device = await makeDevice();
+  // 等值 MISS（无节点文本恰为 '电子相册#index=0'）→ 兜底剥后缀 → 包含命中
+  const r = await device.readText('text=子相#index=0'); // 等值必 MISS（无节点文本为'子相'），只能走剥 #index 的包含兜底
+  assert.equal(r.ok, true);
+  assert.equal(r.value, '电子相册');
+  await device.close();
+});

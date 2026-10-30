@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgv } from '../src/cli/argv.js';
 import { acquireLock, releaseLock } from '../src/cli/lock.js';
 import { collectDeviceFacts } from '../src/cli/device-facts.js';
+import { pruneToolHistory } from '../src/session/image-prune.js';
 import { resolveWorkspace, ensureWorkspace } from '../src/cli/workspace.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -175,6 +176,18 @@ function lastAssistantText(session) {
     }
   } catch { /* 会话不可读则无 thought */ }
   return null;
+}
+
+// 步内/轮内追加 prompt 前的网关防护（同步）：把历史里的 role:'tool' 轮全折叠为纯文本。
+// 网关对含 role:tool 的历史返回 400（对照实验实证）；每步 finally 的步间折叠覆盖不到
+// "同一步/同一问答内第 2 轮 prompt"，催答/续作/视觉确认轮必须自带本折叠。
+// 必须同步执行（折叠完成前不得发出 prompt），故调用方需已持有 pruneToolHistory。
+export function foldToolHistoryForFollowup(session) {
+  try {
+    const msgs = session?.agent?.state?.messages ?? session?.messages ?? null;
+    if (Array.isArray(msgs)) return pruneToolHistory(msgs, { keepRecent: 0 }).folded;
+  } catch { /* 折叠失败不阻断 */ }
+  return 0;
 }
 
 // —— 设备事实采集见 src/cli/device-facts.js（已抽出以便单测） ——
@@ -508,15 +521,9 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     const pushStepMsgDelta = () => {
       ctx.stepMsgCounts.push(Math.max(0, (getMsgs()?.length ?? 0) - (ctx._msgStart ?? 0)));
     };
-    const { pruneToolHistory } = await import('../src/session/image-prune.js');
     // 步内第 2 轮起的 prompt（催答/续作/视觉确认）自带本轮原始 role:'toolResult' 历史，
     // 网关对 role:tool 历史返回 400（对照实验实证）→ 每次追加 prompt 前先同步全折叠为纯文本。
-    const foldForGateway = () => {
-      try {
-        const msgs = getMsgs();
-        if (msgs) pruneToolHistory(msgs, { keepRecent: 0 });
-      } catch { /* 折叠失败不阻断 */ }
-    };
+    const foldForGateway = () => { foldToolHistoryForFollowup(session); };
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -576,7 +583,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                 try { await batchGround(i); } catch { /* 批量失败不阻断单目标降级 */ }
                 // 一级降级：VLM 视觉接地（确定性：截图→坐标→family 策略转像素→tap）
                 try {
-                  const vres = await device.locate(step.text, { vlm: ctx.vlm });
+                  const vres = await device.locate(interpStep.text ?? step.text, { vlm: ctx.vlm });
                   if (vres?.ok && vres.bounds) {
                     const tr = call.tool === 'long_press'
                       ? await device.longPress(vres.bounds, Number(step.durationMs) || 800)
@@ -970,7 +977,8 @@ async function cmdAsk({ positional, flags }) {
     // 回显回答：复用 lastAssistantText（否则命令静默退出，用户看不到答案）
     let answer = lastAssistantText(session) ?? '';
     for (let nudge = 0; nudge < 2 && !answer; nudge++) {
-      // 模型以纯 toolCall 或空消息收尾：催答重试拿最终文本
+      // 模型以纯 toolCall 或空消息收尾：催答重试拿最终文本；催答前折叠 role:tool 历史（网关 400 防护，与 runOne 同款）
+      foldToolHistoryForFollowup(session);
       await session.prompt('不要再调用工具。直接用一段文本回答上面的问题。', { images: [] });
       answer = lastAssistantText(session) ?? '';
     }

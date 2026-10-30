@@ -183,7 +183,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         // WebView 树的文本节点粒度随版本/渲染波动（"热度"↔"热度榜"），只查等值会假报"未匹配"。
         // 注意不能把 'text*=xx' 再喂回 matchSelector——parseTarget 不认识该前缀，会搜字面量。
         const s0 = String(selector);
-        const mm = /^text=(.+?)(?:#index=d+)?$/.exec(s0);
+        const mm = /^text=(.+?)(?:#index=\d+)?$/.exec(s0);
         if (mm) {
           const needle = mm[1];
           const n = flat.find((x) => String(x.text || '').includes(needle) || String(x.contentDesc || '').includes(needle));
@@ -277,7 +277,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       const useDist = distancePct != null;
       const moves = { down: ['bottom', 'top'], up: ['top', 'bottom'], right: ['right', 'left'], left: ['left', 'right'] };
       // 非法 direction 统一兜底 down（内容语义），两条路径（regionPoint/distancePct）必须一致
-      const dir = moves[String(direction ?? 'down').toLowerCase()] ? String(direction).toLowerCase() : 'down';
+      const dirKey = String(direction ?? 'down').toLowerCase();
+      const dir = moves[dirKey] ? dirKey : 'down';
       const [fromRegion, toRegion] = moves[dir];
       let prev = (await dumpTree()).hash;
       let scrolls = 0;
@@ -394,9 +395,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         };
         const pending = clusters.filter((c) => !(c.text && (answered.has(c.text) || skipped.has(c.text))));
         if (stopWhen) {
-          const stop = flat.find((n) => matchNode(n, stopWhen) && vis(n)); // matchNode 与 rows/tap 同方言（支持 text*=）；matchSelector 不认 text*= 会搜字面量
+          // matchNode 与 rows/tap 同方言（支持 text*=）；find 已含在屏过滤（vis），返回的是节点本身
+          const stop = flat.find((n) => matchNode(n, stopWhen) && vis(n));
           // 终止标记要求在屏（隐藏预渲染层的提交按钮不算），且全文档无未答行
-          if (stop?.node && vis(stop.node) && pending.length === 0) { result.done = true; return result; }
+          if (stop && pending.length === 0) { result.done = true; return result; }
         }
         // 本轮只 tap 第一个在屏可答行（选中即触发滚动，同轮第二 tap 坐标必失效）
         let target = null;
