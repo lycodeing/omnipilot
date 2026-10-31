@@ -194,12 +194,12 @@ test('waitIdle：连续两次相同 hash 即稳定（fresh dump，不吃缓存�
 });
 
 test('waitIdle：dump 失败（转场/idle 超时）不抛错，当作未稳定继续等', async () => {
-  // dumpXmlRaw 有 exec-out→shell 双通道回退：一次 dumpTree 失败要两个通道都失败，
-  // 故哨兵连给两次（消耗于同一次 dumpTree 的两通道），随后两次成功达成 quiet=2
+  // dumpXmlRaw 三通道回退（exec-out→shell→file）：一次 dumpTree 内前两通道吃掉两个失败
+  // 哨兵，file 通道成功返回 FIXTURE；随后一次成功达成 quiet=2
   const device = await makeDevice({ dumpScript: ['__FAIL__', '__FAIL__', FIXTURE, FIXTURE] });
   const r = await device.waitIdle({ quiet: 2, intervalMs: 1, timeoutMs: 5000 });
   assert.equal(r.stable, true);
-  assert.ok(r.dumps >= 3, '失败那次也计入 dumps');
+  assert.ok(r.dumps >= 2, '失败那次也计入 dumps');
   await device.close();
 });
 

@@ -95,11 +95,18 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   // exec-out 失败或返回不含 </hierarchy>（同为 shell 通道的病征）时回退 legacy shell（旧镜像/redroid 兼容）。
   // 通道粘性（性能）：旧实现每次 dump 都先试 exec-out、失败再回退 shell——在 exec-out 不可用的
   // 设备上每次 dump 付双倍成本（2.2s→4.4s+）。首次探测成功后记住通道，后续直走；失败再重置重探。
-  let dumpChannel = null; // 'execout' | 'shell' | null(未探测)
+  // 第三级回退：文件形式 dump + cat。实测（API 30 x86 + uni-app 模态弹窗） tty 两通道全部
+  // 返回无 hierarchy（UI busy / pipe 限制），文件形式稳定可用——没有它，弹窗态整个引擎失明。
+  let dumpChannel = null; // 'execout' | 'shell' | 'file' | null(未探测)
   async function dumpXmlRaw() {
+    // 两级策略（实测 busy 弹窗态成功 dump 需 38-39s——uiautomator idle 等待本身很长）：
+    // ① tty 快通道：设备侧 timeout 10s 快速失败（健康屏 ~2s 出结果；busy 屏不留孤儿——
+    //    客户端超时只杀 adb，设备侧 uiautomator 会变孤儿继续持有 a11y 锁，毒化后续尝试）；
+    // ② file 耐久通道：设备侧 50s 等满 idle 等待，&& 串联 cat（dump 失败非零退出不会 cat
+    //    陈旧文件）。粘性通道记住上次成功的形态，健康屏仍走快通道。
     const tryExecOut = async () => {
-      const buf = await adb.execOut(['exec-out', 'uiautomator', 'dump', '/dev/tty'], {
-        timeoutMs: adb.timeouts.dump,
+      const buf = await adb.execOut(['exec-out', 'timeout', '10', 'uiautomator', 'dump', '/dev/tty'], {
+        timeoutMs: 15000,
         binary: false,
       });
       const xml = buf.toString('utf8');
@@ -107,24 +114,37 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       return xml;
     };
     const tryShell = async () => {
-      const xml = await adb.shell('uiautomator dump /dev/tty', { timeoutMs: adb.timeouts.dump });
+      const xml = await adb.shell('timeout 10 uiautomator dump /dev/tty', { timeoutMs: 15000 });
       if (!String(xml).includes('</hierarchy>')) throw new Error('shell 无 hierarchy');
       return xml;
     };
-    // 粘性通道直走；失败则重置并用另一通道兜底一次（避免永久劣化）
-    if (dumpChannel === 'shell') {
-      try { return await tryShell(); } catch (e) { dumpChannel = null; }
-    } else if (dumpChannel === 'execout') {
-      try { return await tryExecOut(); } catch (e) { dumpChannel = null; }
+    const tryFile = async () => {
+      const xml = await adb.shell('timeout 50 uiautomator dump /sdcard/ask-uidump.xml && cat /sdcard/ask-uidump.xml', { timeoutMs: 55000 });
+      if (!String(xml).includes('</hierarchy>')) throw new Error('file 无 hierarchy');
+      return String(xml);
+    };
+    const tryChannel = {
+      execout: tryExecOut,
+      shell: tryShell,
+      file: tryFile,
+    };
+    // 粘性通道直走；失败则按 execout → shell → file 顺序重探。
+    // WebView 模态态下 uiautomator idle 等待是**间歇性**失败（同一通道时好时坏），
+    // 单轮全败后隔 600ms 再补一轮（file 形式绕开 tty pipe 限制，实测弹窗态稳定可用）
+    if (dumpChannel) {
+      try { return await tryChannel[dumpChannel](); } catch { dumpChannel = null; }
     }
-    try {
-      const xml = await tryExecOut();
-      dumpChannel = 'execout';
-      return xml;
-    } catch (e) { /* 回退 shell */ }
-    const xml = await tryShell();
-    dumpChannel = 'shell';
-    return xml;
+    for (let pass = 0; pass < 2; pass++) {
+      for (const ch of ['execout', 'shell', 'file']) {
+        try {
+          const xml = await tryChannel[ch]();
+          dumpChannel = ch;
+          return xml;
+        } catch { /* 试下一通道 */ }
+      }
+      if (pass === 0) await new Promise((r) => setTimeout(r, 600));
+    }
+    throw new Error('uiautomator dump 三通道（exec-out/shell/file）均无 hierarchy');
   }
 
   async function dumpTree({ fresh = false } = {}) {
