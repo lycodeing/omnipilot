@@ -3,6 +3,8 @@
 //     `adb exec-out uiautomator dump /dev/tty`；exec-out 失败或返回不含 </hierarchy> 时回退 legacy shell
 //   - screencap 必须走 exec-out 传输：`adb -s X screencap -p` 会报 unknown command（adb.exe 无此子命令）
 //   - dumpToFile 不得把非 XML 内容静默落盘
+//   - 2026-10-31：新增设备侧 timeout 包裹（防 busy 弹窗态孤儿锁）+ file&&cat 第三通道（tty
+//     在 busy 态只回提示行时，file 形式等满 idle 可用，实测 38s）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync } from 'node:fs';
@@ -23,11 +25,12 @@ function makeExec({ execOutDump = FIXTURE, shellDump = FIXTURE, execOutDumpThrow
     calls.push(joined);
     if (joined.includes('get-state')) return { code: 0, stdout: 'device', stderr: '' };
     if (joined.includes('wm size')) return { code: 0, stdout: 'Physical size: 720x1280', stderr: '' };
-    if (/exec-out uiautomator dump/.test(joined)) {
+    if (/exec-out timeout 10 uiautomator dump/.test(joined)) {
       if (execOutDumpThrows) throw new Error('adb exec-out 失败(exit 1): mock');
       return { code: 0, stdout: execOutDump, stderr: '' };
     }
-    if (/shell uiautomator dump/.test(joined)) return { code: 0, stdout: shellDump, stderr: '' };
+    if (/shell timeout 10 uiautomator dump/.test(joined)) return { code: 0, stdout: shellDump, stderr: '' };
+    if (/timeout 50 uiautomator dump \/sdcard/.test(joined)) return { code: 0, stdout: shellDump, stderr: '' };
     if (/exec-out screencap/.test(joined)) {
       return { code: 0, stdout: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1]), stderr: '' };
     }
@@ -42,8 +45,9 @@ test('dumpTree：走 exec-out 通道，且不触发 legacy shell 回退', async 
   const device = await createDeviceWithExecutor({ serial: 'test', exec });
   const r = await device.dumpTree({ fresh: true });
   assert.ok(r.nodes.length > 0);
-  assert.ok(exec.calls.some((c) => /exec-out uiautomator dump/.test(c)), '应有 exec-out dump 调用');
-  assert.ok(!exec.calls.some((c) => /shell uiautomator dump/.test(c)), 'exec-out 成功时不应回退 legacy shell');
+  assert.ok(exec.calls.some((c) => /exec-out timeout 10 uiautomator dump/.test(c)), '应有 exec-out dump 调用');
+  assert.ok(!exec.calls.some((c) => /shell timeout 10 uiautomator dump/.test(c)), 'exec-out 成功时不应回退 legacy shell');
+  assert.ok(!exec.calls.some((c) => /timeout 50 uiautomator dump/.test(c)), 'exec-out 成功时不应落到 file 通道');
   await device.close();
 });
 
@@ -52,7 +56,7 @@ test('dumpTree：exec-out 抛错时回退 legacy shell', async () => {
   const device = await createDeviceWithExecutor({ serial: 'test', exec });
   const r = await device.dumpTree({ fresh: true });
   assert.ok(r.nodes.length > 0);
-  assert.ok(exec.calls.some((c) => /shell uiautomator dump/.test(c)), '应回退 legacy shell');
+  assert.ok(exec.calls.some((c) => /shell timeout 10 uiautomator dump/.test(c)), '应回退 legacy shell');
   await device.close();
 });
 
@@ -61,7 +65,7 @@ test('dumpTree：exec-out 返回纯提示行（无 XML）时同样回退 legacy 
   const device = await createDeviceWithExecutor({ serial: 'test', exec });
   const r = await device.dumpTree({ fresh: true });
   assert.ok(r.nodes.length > 0);
-  assert.ok(exec.calls.some((c) => /shell uiautomator dump/.test(c)), '空响应应触发回退');
+  assert.ok(exec.calls.some((c) => /shell timeout 10 uiautomator dump/.test(c)), '空响应应触发回退');
   await device.close();
 });
 
