@@ -41,7 +41,6 @@ export const EXPECTED_TOOLS = [
 
 // 需要留取证截图的工具：写操作留"动作后截图"；locate 留"定位时截图"——
 // 它是 bounds 的真实载体，报告的"找元素镜头"（insight 高亮）就画在这张动作前画面上
-const SCREENSHOT_TOOLS = new Set(['tap', 'long_press', 'input', 'swipe', 'scroll', 'key', 'launch', 'terminate', 'net_profile', 'locate', 'tap_each_row', 'wait_element', 'wait_idle', 'assert_no_crash']);
 
 function targetOf(params = {}) {
   return params.target ?? params.appId ?? params.packageName ?? params.provider ?? params.name
@@ -77,11 +76,12 @@ export function withRecording(tool, ctx) {
         try {
           if (tool.name === 'screen' && res?.content?.[0]?.type === 'image') {
             recorder.attachScreenshot(handle.index, Buffer.from(res.content[0].data, 'base64'));
-          } else if (SCREENSHOT_TOOLS.has(tool.name) && !denied && d.ok !== false) {
-            // 取证截图移出关键路径（性能）：旧实现 await screencap()（adb 回传 0.5~1.5s）
-            // 才把工具结果还给模型，每个写动作白付这笔钱。adb 层是串行队列，
-            // 不 await 直接入队仍保证"截图排在下一动作之前"的画面时序；
-            // Promise 链挂到 recorder 的待写队列，finish 前统一排空，收尾不丢图。
+          } else if (!denied) {
+            // 报告截图**全覆盖**（2026-11-01）：每个工具步都留终态截图——失败步的截图
+            // 恰是诊断金矿（dump 全盲事故里 tap 全 MISS 却无图可看），只读工具（read/
+            // uitree/wait_element）的截图则是"决策当时画面"的证据。取证截图移出关键路径
+            // （性能）：不 await（adb 回传 0.5~1.5s），serial 队列保证"截图排在下一动作
+            // 之前"的画面时序；Promise 挂 recorder 待写队列，finish 前统一排空不丢图。
             const chain = ctx.device.screencap()
               .then((shot) => recorder.attachScreenshot(handle.index, shot.buffer))
               .catch(() => { /* 取证截图失败不影响动作 */ });
