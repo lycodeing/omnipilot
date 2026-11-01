@@ -123,6 +123,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       } catch (e) {
         uia2DeadUntil = Date.now() + 60_000;
         lastUia2Error = String(e?.message ?? e).slice(0, 100);
+        console.warn(`[uia2] 不可用（${lastUia2Error}），60s 内走 legacy dump 通道`);
       }
     }
     const tryExecOut = async () => {
@@ -479,7 +480,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         } catch (e) {
           // 连续 tap 异常（设备离线等）≥2 直接报错，防 busy 页 40s/轮 × maxRounds 空转
           tapFailCount++;
-          if (tapFailCount >= 2) { result.error = `连续 tap 失败: ${e?.message ?? e}`; return result; }
+          if (tapFailCount >= 2) { result.error = `连续 tap 失败: ${e?.message ?? e}`; result.skipped = [...skipped]; return result; }
           continue;
         }
         tapFailCount = 0;

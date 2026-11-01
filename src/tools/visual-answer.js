@@ -112,7 +112,7 @@ export async function runVisualAnswer(deps) {
     const reply = parseVisualReply(raw);
     if (reply.kind === 'invalid') { result.error = `VLM 回复无法解析: ${String(raw).slice(0, 80)}`; return result; }
     if (reply.kind === 'done') { result.done = true; log(`VLM 判定全部已答（提交按钮可见）`); return result; }
-    if (reply.kind === 'scroll' || !toPixels) {
+    if (reply.kind === 'scroll') {
       let sr;
       try { sr = await device.scroll('down', { max: 1, stopWhenNoChange: true }); } catch (e) { result.error = `scroll 失败: ${e?.message ?? e}`; return result; }
       log(`VLM 要求下翻（第 ${round} 轮）`);
@@ -122,13 +122,21 @@ export async function runVisualAnswer(deps) {
         const c2 = await compressForContext(shot2.buffer, { maxWidth: 720, quality: 75 });
         const raw2 = await chat(prompt, { images: [{ type: 'image', data: c2.buffer.toString('base64'), mimeType: c2.mimeType }] });
         const r2 = parseVisualReply(raw2);
-        if (r2.kind === 'answer' && strategy) {
+        if (r2.kind === 'answer') {
           const conv = strategy.toPixels(Array.isArray(r2.bbox) ? r2.bbox.join(' ') : '', size);
           if (conv?.center) {
             await device.tap(conv.center);
             result.taps++; result.verified++;
             if (r2.row) result.answers.push({ row: r2.row, option: r2.option });
-            if (r2.row === lastRow && ++repeats >= 3) {
+            if (onQuestion) {
+              try {
+                const { buffer } = await device.screencap();
+                await onQuestion({ row: r2.row, option: r2.option, verified: true, taps: 1, buffer });
+              } catch { /* 进度回调失败不阻断 */ }
+            }
+            const rowKey2 = (/\d+\s*\/\s*\d+/.exec(r2.row) || [null])[0] || r2.row;
+            const lastKey2 = (/\d+\s*\/\s*\d+/.exec(lastRow) || [null])[0] || lastRow;
+            if (rowKey2 && rowKey2 === lastKey2 && ++repeats >= 3) {
               result.error = `renderer_unresponsive: 同一题「${r2.row.slice(0, 20)}」连续 ${repeats} 轮未消失`; return result;
             }
             lastRow = r2.row;

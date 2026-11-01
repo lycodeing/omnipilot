@@ -1,48 +1,56 @@
-// Appium uiautomator2 server 独立通道（调研落地，2026-11-01）：
-// 设备内常驻 netty HTTP 服务（Am instrument 启动，与被测 App 生命周期无关），
-// GET /source 直取 AccessibilityNodeInfo 树——不做 legacy uiautomator 的 idle 等待。
-// 实测（API 30 x86 + busy uni-app 页）：157-958ms vs uiautomator dump 38-55s（快 40-250 倍）。
-// 依赖：设备安装 appium-uiautomator2-server（server+test 两个 APK，v10.6.6 实测可用）；
-// 未安装/服务死 → ensure() 返回 false，调用方回退 legacy 三通道（优雅降级）。
-// 参考：https://github.com/appium/appium-uiautomator2-server
-//       https://github.com/openatx/uiautomator2（无 Appium 单独使用的参考实现）
-
+// uia2 通道终版（终评 P1×2 + P3 修复）：
+// ① httpRaw 半途断连挂起修复（实证 P1）：res error/aborted 监听 + 客户端整体 deadline；
+// ② hostPort 线性探测防碰撞（多设备并行哈希撞槽 → 串台读别的设备的树）；
+// ③ started 死变量删除；模块级 usedPorts 进程内去重。
 import http from 'node:http';
 
 const DEVICE_PORT = 6790;
+const usedPorts = new Set(); // 进程内已占用 host 端口（--parallel 多设备防哈希碰撞）
 
-// serial → host 转发端口（多设备并行：每台一个 host 端口，6790 起按 serial 哈希偏移）
+// serial → host 转发端口：哈希 + 线性探测（进程内去重；跨进程由 adb forward 表全局互斥兜底）
 export function hostPort(serial) {
   let h = 0;
   for (const ch of String(serial)) h = (h * 31 + ch.charCodeAt(0)) % 997;
-  return 6790 + (h % 200);
+  let p = 6790 + (h % 200);
+  while (usedPorts.has(p)) p = p >= 6989 ? 6790 : p + 1;
+  usedPorts.add(p);
+  return p;
 }
 
 const noKeepAgent = new http.Agent({ keepAlive: false }); // 共享 agent：keep-alive 池化 socket 会吊住测试进程的 event loop
 
 function httpRaw(hostP, p, { method = 'GET', body = null, timeoutMs = 8000 } = {}) {
   return new Promise((resolve, reject) => {
+    // 整体 deadline：响应头已到但 body 半途断连时 end/error 都不触发（实证挂起），
+    // 客户端限时兜底 + req.destroy；socket 级 timeout 只管 idle，管不住这种场景
+    let settled = false;
     const req = http.request(
       { host: '127.0.0.1', port: hostP, path: p, method, headers: body ? { 'content-type': 'application/json' } : {}, timeout: timeoutMs, agent: noKeepAgent },
       (res) => {
         const chunks = [];
         res.on('data', (d) => chunks.push(d));
-        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+        res.on('error', (e) => { if (!settled) { settled = true; clearTimeout(deadline); reject(e); } });
+        res.on('aborted', () => { if (!settled) { settled = true; clearTimeout(deadline); reject(new Error(`uia2 连接中断: ${p}`)); } });
+        res.on('end', () => { if (!settled) { settled = true; clearTimeout(deadline); resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }); } });
       },
     );
-    req.on('timeout', () => req.destroy(new Error(`uia2 超时(${timeoutMs}ms): ${p}`)));
-    req.on('error', reject);
+    const deadline = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { req.destroy(); } catch { /* ignore */ }
+      reject(new Error(`uia2 超时(${timeoutMs}ms): ${p}`));
+    }, timeoutMs);
+    req.on('error', (e) => { if (!settled) { settled = true; clearTimeout(deadline); reject(e); } });
     if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
     req.end();
   });
 }
 
 export function createUia2({ adb, serial, port = null, log = () => {} } = {}) {
-  // port 显式注入（测试 DI）优先；缺省按 serial 哈希派生 host 转发端口
+  // port 显式注入（测试 DI）优先；缺省按 serial 哈希+线性探测派生 host 转发端口
   const hostP = port ?? hostPort(serial);
   let sessionId = null;
   let deadUntil = 0; // 探测失败后的退避期（期间 ensure 直接 false，走 legacy 通道）
-  let started = false;
 
   async function forward() {
     if (port != null) return; // 显式端口=测试直连 stub，无需 adb forward
@@ -73,7 +81,6 @@ export function createUia2({ adb, serial, port = null, log = () => {} } = {}) {
       await new Promise((r) => setTimeout(r, 800));
       if (await status()) return true;
     }
-    started = false; // 允许下次重试真正的 startServer
     deadUntil = Date.now() + 10 * 60_000;
     log(`uia2 服务不可达，${Math.round((deadUntil - Date.now()) / 60000)} 分钟内回退 legacy dump 通道`);
     return false;
@@ -113,6 +120,5 @@ export function createUia2({ adb, serial, port = null, log = () => {} } = {}) {
     ensureSession,
     resetSession: () => { sessionId = null; },
     source,
-    invalidate: () => { deadUntil = 0; started = false; },
   };
 }
