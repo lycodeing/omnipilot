@@ -252,7 +252,7 @@ async function cmdRun({ positional, flags }) {
       for (const caseObj of g.cases) {
         if (aborted) { perGroup.push({ case: caseObj.name, exitCode: 2, skipped: true }); continue; }
         const lock = acquireLock(WORKSPACE.lockRoot, g.serial);
-        if (!lock.ok) { aborted = true; perGroup.push({ case: caseObj.name, exitCode: 2, error: lock.reason }); continue; }
+        if (!lock.ok) { aborted = true; perGroup.push({ case: caseObj.name, exitCode: 2, error: lock.reason }); console.error(`[lock] ${lock.reason}`); continue; }
         try {
           const exitCode = await runOne(caseObj, { flags, serial: g.serial, bridge: sharedBridge });
           perGroup.push({ case: caseObj.name, exitCode });
