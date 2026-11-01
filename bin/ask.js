@@ -588,6 +588,12 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               const missText = `${d.code ?? ''} ${d.error ?? ''}`;
               const isLocateMiss = d.ok === false && /LOCATE_MISS|未找到目标/i.test(missText);
               const isTapFamily = call.tool === 'tap' || call.tool === 'long_press';
+              if (isLocateMiss && isTapFamily) {
+                // busy 态（提交动画/转场）下 WebView a11y 会把目标元素拒之门外，且 dump 单次
+                // 40-55s——与其立刻 VLM/视觉轮盲试（实测 6×380s 全 MISS），先等 idle 窗口过去
+                // （有界 90s），树稳定后目标自然出现在 a11y 树里
+                try { await device.waitIdle({ quiet: 1, timeoutMs: 90_000 }); } catch { /* 等待失败不阻断降级 */ }
+              }
               if (isLocateMiss && isTapFamily && ctx.vlm) {
                 // 先批量接地：一次看图为当前步+后续连续 tap 步预取坐标（写 vlmCache，
                 // 键 tree.hash::target，屏幕一变自动失效）。随后单目标 locate 直接命中缓存。

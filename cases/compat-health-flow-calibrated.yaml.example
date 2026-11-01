@@ -38,8 +38,8 @@ flow:
   - aiTap: 立即提交
   - aiWaitFor: "页面出现确认弹窗，弹窗内有确认按钮"
     timeout: 90000
-  - aiTap: text=确定
-  - aiTap: text=确认   # 上一行已确认则本行 MISS 无害（引擎步失败不中断）
+  # 确认按钮实测为「确认」（红色）；确定步在 busy 态每次 MISS 烧 380s+，已移除
+  - aiTap: text=确认
   - aiWaitFor: "页面出现'我的体质'卡片和柱状图"
     timeout: 90000
   - aiAssert: "页面顶部有'我的体质'卡片并显示体质名称，下方有柱状图，请用中文说明判断原因"
