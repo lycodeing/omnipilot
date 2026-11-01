@@ -82,9 +82,17 @@ export function withRecording(tool, ctx) {
             // uitree/wait_element）的截图则是"决策当时画面"的证据。取证截图移出关键路径
             // （性能）：不 await（adb 回传 0.5~1.5s），serial 队列保证"截图排在下一动作
             // 之前"的画面时序；Promise 挂 recorder 待写队列，finish 前统一排空不丢图。
-            const chain = ctx.device.screencap()
-              .then((shot) => recorder.attachScreenshot(handle.index, shot.buffer))
-              .catch(() => { /* 取证截图失败不影响动作 */ });
+            // busy 态下 serial 队列可能被 40-55s 的长 dump 堵住，screencap 15s 客户端预算
+            // 会排队超时 → 失败后隔 2s 重试，最多 3 次（穿透拥堵窗口）
+            const chain = (async () => {
+              for (let i = 0; i < 3; i++) {
+                try {
+                  const shot = await ctx.device.screencap();
+                  recorder.attachScreenshot(handle.index, shot.buffer);
+                  return;
+                } catch { if (i < 2) await new Promise((r) => setTimeout(r, 2000)); }
+              }
+            })();
             recorder.trackPending?.(chain);
           }
         } catch { /* 取证截图失败不影响动作 */ }
