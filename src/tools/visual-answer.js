@@ -16,7 +16,7 @@ export function parseVisualReply(raw) {
   const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
   if (fence) text = fence[1].trim();
   const brace = text.indexOf('{');
-  if (brace >= 0) text = text.slice(brace);
+  if (brace >= 0) text = text.slice(brace, text.lastIndexOf('}') + 1); // 掐头去尾：VLM 常在 JSON 前后带解释性杂文
   let obj = null;
   try { obj = JSON.parse(text); } catch { return { kind: 'invalid', row: '', option: '', bbox: null }; }
   if (!obj || typeof obj !== 'object') return { kind: 'invalid', row: '', option: '', bbox: null };
@@ -29,6 +29,22 @@ export function parseVisualReply(raw) {
     option: String(obj.option ?? ''),
     bbox,
   };
+}
+
+// 选项中心点变为选中色的像素校验（3×3 采样）：busy 态下唯一可靠的 tap 回执
+async function blueAt(device, pt, expect) {
+  try {
+    const { buffer } = await device.screencap();
+    const png = decodePng(buffer);
+    let hits = 0; let total = 0;
+    for (const dx of [-20, 0, 20]) for (const dy of [-20, 0, 20]) {
+      const px = pixelAt(png, pt[0] + dx, pt[1] + dy);
+      if (!px) continue;
+      total++;
+      if (expect ? isColorish(px, expect) : isBlueish(px)) hits++;
+    }
+    return total > 0 && hits >= Math.min(3, Math.max(2, Math.ceil(total * 0.5)));
+  } catch { return true; } // 截图失败放行（不阻断作答）
 }
 
 function buildPrompt(coordHint) {
@@ -56,7 +72,8 @@ export async function runVisualAnswer(deps) {
     return result;
   }
   const coordHint = strategy?.describeForPrompt?.() ?? 'bbox 归一化到 0-1000（左上角为原点）';
-  const toPixels = strategy?.toPixels;
+  // toPixels 是策略对象的方法（内部读 this 状态），必须 method 调用——解构会丢 this
+  const toPixels = (bboxStr, sz) => (strategy ? strategy.toPixels(bboxStr, sz ?? size) : null);
   const prompt = buildPrompt(coordHint);
   const size = await device.screenSize().catch(() => null);
   let lastRow = '';
@@ -101,41 +118,41 @@ export async function runVisualAnswer(deps) {
     // —— answer：像素换算 + tap + 像素验证 ——
     const conv = toPixels(Array.isArray(reply.bbox) ? reply.bbox.join(' ') : '', size);
     if (!conv?.center) { result.error = `bbox 无法换算: ${JSON.stringify(reply.bbox)}`; return result; }
-    const pre = await device.screencap();
-    try { await device.tap(conv.center); } catch (e) { result.error = `tap 失败: ${e?.message ?? e}`; return result; }
-    result.taps++;
-    await new Promise((r) => setTimeout(r, settleMs));
-    // 像素验证：选项中心变选中色（同一题连续重复时此验证不可靠，靠 repeats 计数兜底）
+    // 原地补 tap：VLM bbox 有 ±几十 px 抖动，首击可能落在芯片边缘/行间隙；
+    // 蓝检失败就原坐标（±20% 高度偏移）重试，比再开一轮 VLM grounding 便宜一个量级
     let blue = false;
-    try {
-      const { buffer } = await device.screencap();
-      const png = decodePng(buffer);
-      let hits = 0; let total = 0;
-      for (const dx of [-20, 0, 20]) for (const dy of [-20, 0, 20]) {
-        const px = pixelAt(png, conv.center[0] + dx, conv.center[1] + dy);
-        if (!px) continue;
-        total++;
-        if (expect ? isColorish(px, expect) : isBlueish(px)) hits++;
-      }
-      blue = total > 0 && hits >= Math.min(3, Math.max(2, Math.ceil(total * 0.5)));
-    } catch { blue = true; } // 截图失败放行（不阻断作答）
+    let tapsHere = 0;
+    const chipH = Array.isArray(conv.bounds) ? Math.max(20, conv.bounds[3] - conv.bounds[1]) : 60;
+    for (let att = 0; att < 3 && !blue; att++) {
+      const pt = att === 0
+        ? conv.center
+        : [conv.center[0], conv.center[1] + (att === 1 ? -1 : 1) * Math.round(chipH * 0.2)];
+      try { await device.tap(pt); } catch (e) { result.error = `tap 失败: ${e?.message ?? e}`; return result; }
+      tapsHere++;
+      result.taps++;
+      await new Promise((r) => setTimeout(r, settleMs));
+      blue = await blueAt(device, pt, expect);
+      if (!blue && att === 0) blue = await blueAt(device, pt, expect); // scroll-into-view 竞态：稍候复检一次
+    }
     if (blue) {
       result.verified++;
       if (reply.row) result.answers.push({ row: reply.row, option: reply.option });
       if (onQuestion) {
         try {
           const { buffer } = await device.screencap();
-          await onQuestion({ row: reply.row, option: reply.option, verified: blue, buffer });
+          await onQuestion({ row: reply.row, option: reply.option, verified: true, taps: tapsHere, buffer });
         } catch { /* 进度回调失败不阻断 */ }
       }
     } else {
       result.unverified++;
       if (onQuestion) {
-        try { await onQuestion({ row: reply.row, option: reply.option, verified: false, buffer: null }); } catch { /* ignore */ }
+        try { await onQuestion({ row: reply.row, option: reply.option, verified: false, taps: tapsHere, buffer: null }); } catch { /* ignore */ }
       }
     }
     // 同一题连续出现 = tap 未生效（挂死/误点），3 次即报错退出
-    if (reply.row && reply.row === lastRow) {
+    const rowKey = (/\d+\s*\/\s*\d+/.exec(reply.row) || [null])[0] || reply.row; // 按题号归一（全角/半角问号变体不绕过计数）
+    const lastKey = (/\d+\s*\/\s*\d+/.exec(lastRow) || [null])[0] || lastRow;
+    if (rowKey && rowKey === lastKey) {
       if (++repeats >= 3) {
         result.error = `renderer_unresponsive: 同一题「${reply.row.slice(0, 20)}」连续 ${repeats} 轮未消失，tap 疑似未生效`;
         return result;
