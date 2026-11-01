@@ -30,9 +30,13 @@ flow:
   # 作答引擎（视觉缺省形态）：VLM 看图逐题定位未作答题目并点选第一个选项，
   # 全程不依赖 a11y 树（busy 态免疫）、无需预知题干/选项文案，任何问卷通用；
   # 逐题像素验证 + 同题连续 3 轮未消失判挂死；报告逐题落子步骤带截图
+  # 作答引擎（selector 形态）：本问卷文案稳定，走确定性快路径（视觉形态为缺省，
+  # 未知问卷零配置可用；A/B 对比后回退——今日 App 状态下 VLM 行归属不稳）
   - aiTapEach:
-    maxRounds: 80
-  # 提交按钮在问卷页尾：滚到底必然可见（引擎确定性，不依赖模型自觉）
+    rows: "re:[0-9]+/27"
+    tap: "text=没有|text=根本不|text=很少|text=有一点|text=有时|text=经常|text=总是|text=有些|text=相当|text=非常"
+    stopWhen: "text=立即提交"
+    maxRounds: 60
   - aiScroll: down
     until: edge
     max: 8
