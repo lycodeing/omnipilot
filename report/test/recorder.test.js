@@ -266,8 +266,12 @@ test('directory：dataURL 字符串与 Buffer 均可落盘，重复 id 覆盖', 
 
 // ---------- loadShell ----------
 
-test('loadShell 缺失时返回内置兜底壳（含 #root 与 </body>）', () => {
-  for (const shell of [loadShell(null), loadShell(path.join(os.tmpdir(), 'no-such-dist-xyz'))]) {
+test('loadShell：缺省用仓库自带 viewer/dist；显式坏路径才兜底', () => {
+  // 缺省 = 开箱即用（真实构建壳内联），兜底壳只在显式路径不存在时出现
+  const def = loadShell(null);
+  assert.ok(def.includes('ASK 测试报告'), '应内联仓库自带构建壳');
+  assert.ok(!def.includes('报告壳未构建'));
+  for (const shell of [loadShell(path.join(os.tmpdir(), 'no-such-dist-xyz'))]) {
     assert.ok(shell.includes('<div id="root">报告壳未构建，仅数据可解析</div>'));
     assert.ok(shell.includes('</body>'));
   }

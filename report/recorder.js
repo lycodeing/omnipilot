@@ -6,6 +6,7 @@ import fsSync from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 export const DUMP_TAG_TYPE = 'ask-dump';
 export const IMAGE_TAG_TYPE = 'ask-image';
@@ -309,12 +310,13 @@ export class ReportWriter {
 // ---------- 壳加载 ----------
 
 // 读 dist/index.html 并把本地 <script src>/<link rel=stylesheet> 内联（构建产物单文件化）；
-// 缺失 → 内置兜底壳
+// distDir 缺省 → 仓库自带 viewer/dist（CLI 开箱即用）；显式路径不存在 → 内置兜底壳
+const DEFAULT_DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), 'viewer', 'dist');
 export function loadShell(distDir) {
-  if (!distDir) return FALLBACK_SHELL;
+  const dir = distDir == null || distDir === '' ? DEFAULT_DIST : distDir;
   let html;
   try {
-    html = fsSync.readFileSync(path.join(distDir, 'index.html'), 'utf8');
+    html = fsSync.readFileSync(path.join(dir, 'index.html'), 'utf8');
   } catch {
     return FALLBACK_SHELL;
   }
@@ -323,7 +325,7 @@ export function loadShell(distDir) {
     if (isExternal(src)) return tag;
     let code;
     try {
-      code = fsSync.readFileSync(path.resolve(distDir, decodeURIComponent(src)), 'utf8');
+      code = fsSync.readFileSync(path.resolve(dir, decodeURIComponent(src)), 'utf8');
     } catch {
       return tag;
     }
@@ -336,7 +338,7 @@ export function loadShell(distDir) {
     if (!href || isExternal(href)) return tag;
     let css;
     try {
-      css = fsSync.readFileSync(path.resolve(distDir, decodeURIComponent(href)), 'utf8');
+      css = fsSync.readFileSync(path.resolve(dir, decodeURIComponent(href)), 'utf8');
     } catch {
       return tag;
     }
