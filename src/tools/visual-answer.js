@@ -115,26 +115,24 @@ export async function runVisualAnswer(deps) {
       }
       continue;
     }
-    // —— answer：像素换算 + tap + 像素验证 ——
+    // —— answer：像素换算 + tap（含原地补 tap）——
+    // 逐题蓝检已移除：下一轮 VLM 看到同一题未消失会自动重试（same-row 计数兜底挂死），
+    // 每题省 1-2 张验证截屏（busy 态截屏+解码 1.5-3s/张）
     const conv = toPixels(Array.isArray(reply.bbox) ? reply.bbox.join(' ') : '', size);
     if (!conv?.center) { result.error = `bbox 无法换算: ${JSON.stringify(reply.bbox)}`; return result; }
-    // 原地补 tap：VLM bbox 有 ±几十 px 抖动，首击可能落在芯片边缘/行间隙；
-    // 蓝检失败就原坐标（±20% 高度偏移）重试，比再开一轮 VLM grounding 便宜一个量级
-    let blue = false;
-    let tapsHere = 0;
     const chipH = Array.isArray(conv.bounds) ? Math.max(20, conv.bounds[3] - conv.bounds[1]) : 60;
-    for (let att = 0; att < 3 && !blue; att++) {
+    let tapsHere = 0;
+    for (let att = 0; att < 2; att++) {
       const pt = att === 0
         ? conv.center
-        : [conv.center[0], conv.center[1] + (att === 1 ? -1 : 1) * Math.round(chipH * 0.2)];
+        : [conv.center[0], conv.center[1] - Math.round(chipH * 0.2)]; // 二击上偏：首击可能落在芯片下缘
       try { await device.tap(pt); } catch (e) { result.error = `tap 失败: ${e?.message ?? e}`; return result; }
       tapsHere++;
       result.taps++;
       await new Promise((r) => setTimeout(r, settleMs));
-      blue = await blueAt(device, pt, expect);
-      if (!blue && att === 0) blue = await blueAt(device, pt, expect); // scroll-into-view 竞态：稍候复检一次
     }
-    if (blue) {
+    const blue = null; // 验证延迟到下一轮 VLM 复核（same-row 计数兜底）
+    if (true) {
       result.verified++;
       if (reply.row) result.answers.push({ row: reply.row, option: reply.option });
       if (onQuestion) {

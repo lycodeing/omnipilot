@@ -98,6 +98,9 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   // 第三级回退：文件形式 dump + cat。实测（API 30 x86 + uni-app 模态弹窗） tty 两通道全部
   // 返回无 hierarchy（UI busy / pipe 限制），文件形式稳定可用——没有它，弹窗态整个引擎失明。
   let dumpChannel = null; // 'execout' | 'shell' | 'file' | null(未探测)
+  // 最近一次成功 dump 的树 hash：scroll 等只做**变化检测**的场景用它当对比基线，
+  // 免掉一次 38-55s 的慢 dump（动画不改 a11y 树，跨时间复用安全；换 App 的动作清空）
+  let lastTreeHash = null;
   async function dumpXmlRaw() {
     // 两级策略（实测 busy 弹窗态成功 dump 需 38-39s——uiautomator idle 等待本身很长）：
     // ① tty 快通道：设备侧 timeout 10s 快速失败（健康屏 ~2s 出结果；busy 屏不留孤儿——
@@ -165,6 +168,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     const nodes = parseXmlDump(text);
     if (!nodes.length) throw new Error(`uiautomator dump 失败: ${text.trim().slice(0, 120)}`);
     const hash = treeHash(nodes);
+    lastTreeHash = hash;
     cache.set({ nodes, hash });
     if (pendingPreHash != null) {
       lastActionChanged = hash !== pendingPreHash; // 懒校验：动作后画面是否变化
@@ -300,7 +304,9 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       const dirKey = String(direction ?? 'down').toLowerCase();
       const dir = moves[dirKey] ? dirKey : 'down';
       const [fromRegion, toRegion] = moves[dir];
-      let prev = (await dumpTree()).hash;
+      // 前基线复用 lastTreeHash（busy 页单次 dump 38-55s，省一次 = 省约 40s/滚动）：
+      // 动画不改变 a11y 树，跨时间复用安全；launch/terminate 等换 App 的动作会清空它
+      let prev = lastTreeHash ?? (await dumpTree()).hash;
       let scrolls = 0;
       let changed = false;
       while (scrolls < max) {
@@ -523,6 +529,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         const id = String(appId ?? '').trim();
         const [pkg, activity] = id.split('/');
         const out = await adb.shell(activity ? `am start -n ${pkg}/${activity}` : `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`);
+        lastTreeHash = null; // 换 App/重启：旧树基线作废
         beforeAction();
         const bad = /error|exception|failure|no activities/i.test(out);
         return { ok: !bad, error: bad ? out.trim().slice(0, 200) : null };
@@ -533,6 +540,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     async terminate(packageName) {
       try {
         await adb.shell(`am force-stop ${packageName}`);
+        lastTreeHash = null;
         beforeAction();
         return { ok: true };
       } catch (e) {
