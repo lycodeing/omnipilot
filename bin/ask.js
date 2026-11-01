@@ -369,6 +369,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       model = built.model;
       modelRuntime = built.modelRuntime;
       ctx.chat = createChatClient({ url: modelCfg.url, key: modelCfg.key, model: modelCfg.name });
+      ctx.modelCfg = modelCfg; // 视觉作答（tap_each_row 缺省形态）需要坐标族
+
       // --vlm-locate：把 chat 客户端包装成视觉定位函数注入 locate 策略链第 5 环（§5.1）。
       // 旧实现该 flag 只被读去做统计、vlm 从未接线（定位失败无视觉兜底）。
       // 视觉定位默认启用：引擎定位 MISS 时做确定性视觉接地（截图→坐标→tap），不耗 agent 轮

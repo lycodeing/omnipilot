@@ -355,7 +355,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // verifyColor：'auto'（蓝色启发式）| '#RRGGBB' | [r,g,b]；verify=false 关闭像素校验。
     // 转向：无在屏可答行时按第一个未答行几何：选项在屏下 → down 前进；行与选项都在屏上 → up 回退。
     // stopWhen 可见**且**全文档无未答行才 done。零面积节点（隐藏预渲染层）一律排除。
-    async tapEachRow({ rows, tap, stopWhen = null, maxRounds = 60, verify = true, verifyColor = 'auto' } = {}) {
+    async tapEachRow({ rows, tap, stopWhen = null, maxRounds = 60, verify = true, verifyColor = 'auto', onQuestion = null } = {}) {
       const result = { rounds: 0, taps: 0, verified: 0, unverified: 0, done: false, bottom: false, error: null, skipped: [] };
       if (!rows || !tap) { result.error = 'tapEachRow 需要 rows 与 tap 参数'; return result; }
       const expectedColor = verifyColor === 'auto' || verifyColor == null ? null : (Array.isArray(verifyColor) ? verifyColor : parseHexColor(verifyColor));
@@ -460,9 +460,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         let hash1 = null;
         try { hash1 = (await dumpTree({ fresh: true })).hash; } catch { hash1 = null; }
         let colorHit = false;
+        let verifyBuf = null; // 验证截图（有则交给 onQuestion 作逐题取证，免二次截屏）
         if (verify && hash1 === hash0) {
           try {
             const { buffer } = await this.screencap();
+            verifyBuf = buffer;
             const png = decodePng(buffer);
             const b = Array.isArray(target.pick.bounds) ? target.pick.bounds : null;
             const cx = target.pick.center[0]; const cy = target.pick.center[1];
@@ -488,6 +490,18 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
             result.error = `renderer_unresponsive: 连续两次 tap 后页面无响应（树未变且选项未变为选中色 ${verifyColor ?? 'auto'}），渲染器疑似挂死`;
             break;
           }
+        }
+        // 逐题进度回调（报告连续回放用）：每题一行子步骤 + 验证截图（hash 变化时 buffer 为
+        // null，由调用方自行补拍）。await 保证截图时序落在下一 tap 之前。
+        if (onQuestion) {
+          try {
+            await onQuestion({
+              row: target.cl.text,
+              option: String(target.pick.text || target.pick.contentDesc || ''),
+              ok: hash1 !== hash0 || (verify && colorHit),
+              buffer: verifyBuf,
+            });
+          } catch { /* 进度回调失败不阻断作答 */ }
         }
       }
       // maxRounds 自然耗尽且未终止：显式标记（done/bottom/error 均为假的第四态，调用方可区分）

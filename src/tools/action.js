@@ -200,27 +200,55 @@ export function buildActionTools(ctx) {
   const tapEachRow = defineTool({
     name: 'tap_each_row',
     label: 'tap_each_row',
-    description: '逐行作用域批量点击（引擎确定性，0 模型往返）：rows=行 scope selector、tap=行内目标 selector（取每行最左匹配）、stopWhen=终止标记 selector、maxRounds=滚动轮数上限；verify=false 关闭像素校验（树会响应的 App 用 hash 信号即可）、verifyColor="#RRGGBB" 指定选中色（默认 auto=蓝色启发式）。用于问卷/表单逐行作答，App 无关。',
+    description: '问卷/表单逐行作答。**缺省（推荐）视觉模式**：不传 rows/tap，VLM 看图逐题定位未作答题目并点选其第一个选项，逐题像素验证，App/问卷无关；maxRounds=轮数上限、verifyColor 指定选中色。selector 模式（传 rows=行 scope selector + tap=行内目标 selector）为确定性快路径，适合文案稳定的表单。',
     parameters: Type.Object({
-      rows: Type.String(),
-      tap: Type.String(),
+      rows: Type.Optional(Type.String({ description: 'selector 模式：行 scope selector；不传=视觉模式（推荐）' })),
+      tap: Type.Optional(Type.String({ description: 'selector 模式：行内目标 selector（取每行最左匹配）' })),
       stopWhen: Type.Optional(Type.String()),
       maxRounds: Type.Optional(Type.Number()),
-      verify: Type.Optional(Type.Boolean({ description: '默认 true：tap 后树未变时做像素选中色校验' })),
+      verify: Type.Optional(Type.Boolean({ description: '默认 true：tap 后做像素选中色校验' })),
       verifyColor: Type.Optional(Type.String({ description: "选中色：'auto'（蓝色启发式，默认）| '#RRGGBB'" })),
     }),
     execute: async (_id, params) => {
-      const gate = await confirmWrite(ctx, 'tap_each_row', params.rows);
+      const gate = await confirmWrite(ctx, 'tap_each_row', params.rows ?? '视觉模式');
       if (!gate.allowed) return denied('tap_each_row');
       // try/catch 与 scroll 工具同款：冷启动 getSize 未就绪等异常转结构化失败，
       // 不上抛（上抛会把整个 run 判 error）
       let r;
       try {
-        r = await device.tapEachRow({
-          rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null, maxRounds: params.maxRounds ?? 60,
-          ...(params.verify != null ? { verify: params.verify } : {}),
-          ...(params.verifyColor != null ? { verifyColor: params.verifyColor } : {}),
-        });
+        if (!params.rows || !params.tap) {
+          // —— 视觉模式（缺省）：VLM 看图逐题定位，不依赖 a11y 树（busy 态免疫）——
+          const { runVisualAnswer } = await import('./visual-answer.js');
+          const { resolveStrategy } = await import('../device/coord/registry.js');
+          const strategy = resolveStrategy(ctx.modelCfg?.family);
+          r = await runVisualAnswer({
+            device: ctx.device,
+            chat: ctx.chat,
+            strategy,
+            maxRounds: params.maxRounds ?? 60,
+            verify: params.verify !== false,
+            verifyColor: params.verifyColor ?? 'auto',
+            onQuestion: ctx.recorder
+              ? async (info) => {
+                  const handle = ctx.recorder.startStep('answer_row', `${String(info.row).slice(0, 24)} → ${info.option}`);
+                  try {
+                    let buf = info.buffer;
+                    if (!buf) { const shot = await ctx.device.screencap(); buf = shot.buffer; }
+                    ctx.recorder.attachScreenshot(handle.index, buf);
+                    handle.end({ result: 'ok', error: info.verified ? null : '像素验证未确认（可能已滚动出屏）' });
+                  } catch { try { handle.end({ result: 'ok' }); } catch { /* ignore */ } }
+                }
+              : null,
+            log: (m) => console.warn('[visual-answer] ' + m),
+          });
+        } else {
+          // —— selector 模式（确定性快路径）：文案稳定的表单用 ——
+          r = await device.tapEachRow({
+            rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null, maxRounds: params.maxRounds ?? 60,
+            ...(params.verify != null ? { verify: params.verify } : {}),
+            ...(params.verifyColor != null ? { verifyColor: params.verifyColor } : {}),
+          });
+        }
       } catch (e) {
         r = { error: String(e?.message ?? e) };
       }
