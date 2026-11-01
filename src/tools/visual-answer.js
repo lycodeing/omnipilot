@@ -18,7 +18,23 @@ export function parseVisualReply(raw) {
   const brace = text.indexOf('{');
   if (brace >= 0) text = text.slice(brace, text.lastIndexOf('}') + 1); // 掐头去尾：VLM 常在 JSON 前后带解释性杂文
   let obj = null;
-  try { obj = JSON.parse(text); } catch { return { kind: 'invalid', row: '', option: '', bbox: null }; }
+  try { obj = JSON.parse(text); } catch {
+    // 兜底：杂文里含示例花括号时，首个 { 到最后一个 } 的切片可能非法——
+    // 从每个 '{' 起尝试「平衡截断」解析，取第一个成功的
+    for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
+      let depth = 0; let end = -1; let inStr = false; let esc = false;
+      for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+        if (ch === '"') inStr = true;
+        else if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+      }
+      if (end < 0) break;
+      try { obj = JSON.parse(text.slice(start, end)); break; } catch { /* 试下一个起点 */ }
+    }
+    if (!obj || typeof obj !== 'object') return { kind: 'invalid', row: '', option: '', bbox: null };
+  }
   if (!obj || typeof obj !== 'object') return { kind: 'invalid', row: '', option: '', bbox: null };
   if (obj.done === true) return { kind: 'done', row: '', option: '', bbox: null };
   const bbox = Array.isArray(obj.bbox) && obj.bbox.every((v) => typeof v === 'number' && Number.isFinite(v)) ? obj.bbox : null;
@@ -66,6 +82,7 @@ export async function runVisualAnswer(deps) {
   const { device, chat, strategy, maxRounds = 60, verify = true, verifyColor = 'auto', settleMs = 700, onQuestion = null, log = () => {} } = deps;
   const result = { rounds: 0, taps: 0, verified: 0, unverified: 0, done: false, bottom: false, error: null, skipped: [], answers: [] };
   if (!chat) { result.error = '视觉模式需要模型配置（ASK_MODEL_*）'; return result; }
+  if (!strategy) { result.error = '坐标策略缺失（modelCfg.family 无法识别），无法视觉定位'; return result; }
   const expect = verifyColor === 'auto' || verifyColor == null ? null : (Array.isArray(verifyColor) ? verifyColor : parseHexColor(verifyColor));
   if (verifyColor != null && verifyColor !== 'auto' && !expect) {
     result.error = `verifyColor 无法解析: ${verifyColor}`;
@@ -76,23 +93,28 @@ export async function runVisualAnswer(deps) {
   const toPixels = (bboxStr, sz) => (strategy ? strategy.toPixels(bboxStr, sz ?? size) : null);
   const prompt = buildPrompt(coordHint);
   const size = await device.screenSize().catch(() => null);
+  if (!size) { result.error = 'screenSize 获取失败，无法视觉定位'; return result; }
   let lastRow = '';
   let repeats = 0;
   for (let round = 1; round <= maxRounds; round++) {
     result.rounds = round;
     let shot;
     try { shot = await device.screencap(); } catch (e) { result.error = `截屏失败: ${e?.message ?? e}`; return result; }
+    // （screencap 已守卫）
     let c;
     try { c = await compressForContext(shot.buffer, { maxWidth: 720, quality: 75 }); } catch (e) { result.error = `截图压缩失败: ${e?.message ?? e}`; return result; }
+    // （compress 已守卫）
     let raw = '';
     try {
       raw = await chat(prompt, { images: [{ type: 'image', data: c.buffer.toString('base64'), mimeType: c.mimeType }] });
     } catch (e) { result.error = `VLM 调用失败: ${e?.message ?? e}`; return result; }
+    // （chat 已守卫）
     const reply = parseVisualReply(raw);
     if (reply.kind === 'invalid') { result.error = `VLM 回复无法解析: ${String(raw).slice(0, 80)}`; return result; }
     if (reply.kind === 'done') { result.done = true; log(`VLM 判定全部已答（提交按钮可见）`); return result; }
     if (reply.kind === 'scroll' || !toPixels) {
-      const sr = await device.scroll('down', { max: 1, stopWhenNoChange: true });
+      let sr;
+      try { sr = await device.scroll('down', { max: 1, stopWhenNoChange: true }); } catch (e) { result.error = `scroll 失败: ${e?.message ?? e}`; return result; }
       log(`VLM 要求下翻（第 ${round} 轮）`);
       if (!sr.changed) {
         // 翻不动仍要求滚动：到底后 VLM 仍未见可答题 → bottom
@@ -100,12 +122,16 @@ export async function runVisualAnswer(deps) {
         const c2 = await compressForContext(shot2.buffer, { maxWidth: 720, quality: 75 });
         const raw2 = await chat(prompt, { images: [{ type: 'image', data: c2.buffer.toString('base64'), mimeType: c2.mimeType }] });
         const r2 = parseVisualReply(raw2);
-        if (r2.kind === 'answer' && toPixels) {
-          const conv = toPixels(Array.isArray(r2.bbox) ? r2.bbox.join(' ') : '', size);
+        if (r2.kind === 'answer' && strategy) {
+          const conv = strategy.toPixels(Array.isArray(r2.bbox) ? r2.bbox.join(' ') : '', size);
           if (conv?.center) {
             await device.tap(conv.center);
             result.taps++; result.verified++;
             if (r2.row) result.answers.push({ row: r2.row, option: r2.option });
+            if (r2.row === lastRow && ++repeats >= 3) {
+              result.error = `renderer_unresponsive: 同一题「${r2.row.slice(0, 20)}」连续 ${repeats} 轮未消失`; return result;
+            }
+            lastRow = r2.row;
             await new Promise((res) => setTimeout(res, settleMs));
             continue;
           }
@@ -115,24 +141,26 @@ export async function runVisualAnswer(deps) {
       }
       continue;
     }
-    // —— answer：像素换算 + tap（含原地补 tap）——
-    // 逐题蓝检已移除：下一轮 VLM 看到同一题未消失会自动重试（same-row 计数兜底挂死），
-    // 每题省 1-2 张验证截屏（busy 态截屏+解码 1.5-3s/张）
+    // —— answer：像素换算 + tap + 蓝检（条件原地补 tap）——
+    // VLM bbox 有 ±几十 px 抖动：首击后蓝检（scroll-into-view 竞态复检一次），
+    // 未蓝则上偏二击再检；仍未蓝记 unverified（下一轮 VLM 复核，same-row 计数兜底挂死）
     const conv = toPixels(Array.isArray(reply.bbox) ? reply.bbox.join(' ') : '', size);
     if (!conv?.center) { result.error = `bbox 无法换算: ${JSON.stringify(reply.bbox)}`; return result; }
     const chipH = Array.isArray(conv.bounds) ? Math.max(20, conv.bounds[3] - conv.bounds[1]) : 60;
     let tapsHere = 0;
-    for (let att = 0; att < 2; att++) {
+    let blue = false;
+    for (let att = 0; att < 3 && !blue; att++) {
       const pt = att === 0
         ? conv.center
-        : [conv.center[0], conv.center[1] - Math.round(chipH * 0.2)]; // 二击上偏：首击可能落在芯片下缘
+        : [conv.center[0], conv.center[1] + (att === 1 ? -1 : 1) * Math.round(chipH * 0.2)];
       try { await device.tap(pt); } catch (e) { result.error = `tap 失败: ${e?.message ?? e}`; return result; }
       tapsHere++;
       result.taps++;
       await new Promise((r) => setTimeout(r, settleMs));
+      blue = await blueAt(device, pt, expect);
+      if (!blue && att === 0) blue = await blueAt(device, pt, expect);
     }
-    const blue = null; // 验证延迟到下一轮 VLM 复核（same-row 计数兜底）
-    if (true) {
+    if (blue) {
       result.verified++;
       if (reply.row) result.answers.push({ row: reply.row, option: reply.option });
       if (onQuestion) {
@@ -148,7 +176,8 @@ export async function runVisualAnswer(deps) {
       }
     }
     // 同一题连续出现 = tap 未生效（挂死/误点），3 次即报错退出
-    const rowKey = (/\d+\s*\/\s*\d+/.exec(reply.row) || [null])[0] || reply.row; // 按题号归一（全角/半角问号变体不绕过计数）
+    const rowKey = (/\d+\s*\/\s*\d+/.exec(reply.row) || [null])[0] || reply.row
+      || (reply.option + (reply.bbox ? ':' + reply.bbox.map((v) => Math.round(v / 10)).join(',') : '')); // 按题号归一；无题号时选项+量化坐标兜底
     const lastKey = (/\d+\s*\/\s*\d+/.exec(lastRow) || [null])[0] || lastRow;
     if (rowKey && rowKey === lastKey) {
       if (++repeats >= 3) {

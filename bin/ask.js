@@ -512,6 +512,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     const contextAll = /^(all|全部)$/i.test(String(contextCfgRaw).trim());
     const ctxNum = Number(contextCfgRaw);
     const contextKeep = contextAll ? Infinity : (Number.isFinite(ctxNum) ? Math.max(1, Math.trunc(ctxNum)) : 3);
+    if (!contextAll && Number.isFinite(ctxNum) && ctxNum < 1) console.warn(`[warn] --context-steps ${ctxCfgRaw} 非法（<1），已回退 3`);
+    if (!contextAll && Number.isFinite(ctxNum) && !Number.isInteger(ctxNum)) console.warn(`[warn] --context-steps ${ctxCfgRaw} 非整数，已取整为 ${contextKeep}`);
     // SDK 消息数组双路径兼容（旧版 SDK 挂 session.messages）：取不到时治理整体 no-op，须有告警
     let _msgsWarned = false;
     const getMsgs = () => {
@@ -521,7 +523,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     };
     ctx.stepMsgCounts = []; // 每步产生的消息数（delta），供 pruneStepHistory 分段（delta 跨多轮剪枝稳定）
     const pushStepMsgDelta = () => {
-      ctx.stepMsgCounts.push(Math.max(0, (getMsgs()?.length ?? 0) - (ctx._msgStart ?? 0)));
+      try { ctx.stepMsgCounts.push(Math.max(0, (getMsgs()?.length ?? 0) - (ctx._msgStart ?? 0))); } catch { /* 记账失败不阻断 */ }
     };
     // 非 tool 路径（aiWaitFor 等 ask.js 直记账的步）的报告取证截图：fire-and-forget，
     // 与工具层同款模式（serial 队列保证时序、失败不阻断、finish 前统一排空）
@@ -536,6 +538,9 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     // 步内第 2 轮起的 prompt（催答/续作/视觉确认）自带本轮原始 role:'toolResult' 历史，
     // 网关对 role:tool 历史返回 400（对照实验实证）→ 每次追加 prompt 前先同步全折叠为纯文本。
     const foldForGateway = () => { foldToolHistoryForFollowup(session); };
+
+    // --continue/--session 恢复的历史可能含 role:tool 轮（网关 400）：主循环前先折叠一次
+    try { const rm = getMsgs(); if (rm) pruneToolHistory(rm, { keepRecent: 0 }); } catch { /* 折叠失败不阻断 */ }
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -742,7 +747,6 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         await session.prompt(text, { images: step.type === 'aiAssert' ? promptImages : aiImages });
         let answer = lastAssistantText(session);
         // 续作循环（ai/aiAct 步）：长任务步（如"逐题作答直到出现提交按钮"）模型常做一两个
-        const doneRe = /完成|完毕|已提交|DONE|BLOCKED/i;
         // 马拉松步续作循环：步骤文本含终止条件（直到/重复/逐题/每一题）时，模型每轮只做部分
         // 动作就收尾（如 27 题只答 1 题）。每轮结束后若未自报完成/受阻，就催它继续，最多 6 轮。
         const marathon = /直到|重复|逐题|每一题|依次/.test(stepText);

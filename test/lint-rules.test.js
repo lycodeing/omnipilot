@@ -99,3 +99,12 @@ test('unreachable-scroll：有显式停止条件（until/maxScrolls）时不拦�
   const nl = 'steps:\n  - ai: 一直往下滚直到最后\n';
   assert.ok(lintCaseText(nl).some((i) => i.rule === 'unreachable-scroll'), '纯 NL 仍拦');
 });
+
+test('assert-after-click：否定语境剥离（不要/请勿/严禁）不误报，正例仍报', () => {
+  const pos = lintCaseText('steps:' + String.fromCharCode(10) + '  - ai: 点击按钮后返回列表页' + String.fromCharCode(10) + '  - aiAssert: 屏幕正常');
+  assert.ok(pos.some((i) => i.rule === 'assert-after-click' && i.level === 'warn'), '相邻点击+断言应报 warn');
+  for (const neg of ['不要点击按钮', '请勿点击任何内容', '严禁点击文章、图片、宫格']) {
+    const r = lintCaseText('steps:' + String.fromCharCode(10) + '  - ai: ' + neg + String.fromCharCode(10) + '  - aiAssert: 屏幕正常');
+    assert.equal(r.filter((f) => f.id === 'assert-after-click').length, 0, neg + ' 不应报');
+  }
+});

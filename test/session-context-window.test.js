@@ -30,7 +30,7 @@ test('pruneStepHistory：超窗口 → 删最旧段，插入整体描述，syste
   // 保留的是最近 3 段：s2..s4
   const texts = msgs.map((m) => m.content?.[0]?.text ?? '');
   assert.ok(texts.includes('s2') && texts.includes('s4'));
-  assert.ok(!texts.includes('s1') || texts[1] === 'DIGEST' ? !texts.slice(2).includes('s1') : true);
+  assert.ok(!texts.slice(2).includes('s1'), '最旧段应被删除');
 });
 
 test('pruneStepHistory：无 system 消息时 digest 插在 0 位', () => {

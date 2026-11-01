@@ -393,6 +393,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       let prevKey = null;
       let noProgress = 0; // 连续"0 tap 且转向目标不变"轮数；WebView 过滚回弹只抖一帧，2 轮才判到底
       let hangRounds = 0; // 连续"tap 后双信号皆无"次数；2 次即判渲染器挂死退出
+      let tapFailCount = 0; // 连续 tap 抛错次数（≥2 报错退出）
       for (let round = 0; round < maxRounds; round++) {
         result.rounds = round + 1;
         let flat = [];
@@ -403,6 +404,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           hash0 = t.hash;
         } catch (e) {
           result.error = `dump 失败: ${e?.message ?? e}`;
+          result.skipped = [...skipped];
           return result;
         }
         const size = await getSize().catch(() => null);
@@ -444,7 +446,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           // matchNode 与 rows/tap 同方言（支持 text*=）；find 已含在屏过滤（vis），返回的是节点本身
           const stop = flat.find((n) => matchNode(n, stopWhen) && vis(n));
           // 终止标记要求在屏（隐藏预渲染层的提交按钮不算），且全文档无未答行
-          if (stop && pending.length === 0) { result.done = true; return result; }
+          if (stop && pending.length === 0) { result.done = true; result.skipped = [...skipped]; return result; }
         }
         // 本轮只 tap 第一个在屏可答行（选中即触发滚动，同轮第二 tap 坐标必失效）
         let target = null;
@@ -462,7 +464,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
               skipped.add(firstUn.text); // 在屏但选项集不匹配：记跳过，避免死循环
               continue;
             }
-            const lastOpt = opts[opts.length - 1];
+            const lastOpt = opts.reduce((a, b) => (!a || b.center[1] > a.center[1] ? b : a), null); // 最低选项（非最右）
             if (firstUn.cy < 0 && (!lastOpt || lastOpt.center[1] < 0)) dir = 'up'; // 行与选项都在屏上 → 回退
           }
           const key = `${firstUn?.text ?? ''}@${dir}`;
@@ -474,7 +476,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         noProgress = 0; prevKey = null;
         try {
           await action.tap(adb, target.pick.center);
-        } catch { /* 单行 tap 失败本轮重来 */ continue; }
+        } catch (e) {
+          // 连续 tap 异常（设备离线等）≥2 直接报错，防 busy 页 40s/轮 × maxRounds 空转
+          tapFailCount++;
+          if (tapFailCount >= 2) { result.error = `连续 tap 失败: ${e?.message ?? e}`; return result; }
+          continue;
+        }
+        tapFailCount = 0;
         result.taps++;
         await new Promise((r) => setTimeout(r, 700)); // 选中渲染 + scroll-into-view 动画
         // 双信号验证：树 hash 变化（页面滚动/响应）或原坐标像素变为选中色（未滚动但选中）。

@@ -200,7 +200,7 @@ export function buildActionTools(ctx) {
   const tapEachRow = defineTool({
     name: 'tap_each_row',
     label: 'tap_each_row',
-    description: '问卷/表单逐行作答。**缺省（推荐）视觉模式**：不传 rows/tap，VLM 看图逐题定位未作答题目并点选其第一个选项，逐题像素验证，App/问卷无关；maxRounds=轮数上限、verifyColor 指定选中色。selector 模式（传 rows=行 scope selector + tap=行内目标 selector）为确定性快路径，适合文案稳定的表单。',
+    description: '问卷/表单逐行作答。**缺省（推荐）视觉模式**：不传 rows/tap，VLM 看图逐题定位未作答题目并点选其第一个选项（tap 后像素验证，未验证项下一轮 VLM 复核），App/问卷无关；maxRounds=轮数上限、verifyColor 指定选中色。selector 模式（传 rows=行 scope selector + tap=行内目标 selector）为确定性快路径，适合文案稳定的表单。',
     parameters: Type.Object({
       rows: Type.Optional(Type.String({ description: 'selector 模式：行 scope selector；不传=视觉模式（推荐）' })),
       tap: Type.Optional(Type.String({ description: 'selector 模式：行内目标 selector（取每行最左匹配）' })),
@@ -217,6 +217,10 @@ export function buildActionTools(ctx) {
       let r;
       try {
         if (!params.rows || !params.tap) {
+          if (params.stopWhen) {
+            const msg = 'stopWhen 仅 selector 形态支持；视觉模式的终止条件内建（VLM 判定提交按钮可见且无未答题目）';
+            return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: msg }) }], details: { ok: false, error: msg } };
+          }
           // —— 视觉模式（缺省）：VLM 看图逐题定位，不依赖 a11y 树（busy 态免疫）——
           const { runVisualAnswer } = await import('./visual-answer.js');
           const { resolveStrategy } = await import('../device/coord/registry.js');
@@ -250,7 +254,8 @@ export function buildActionTools(ctx) {
           });
         }
       } catch (e) {
-        r = { error: String(e?.message ?? e) };
+        // 契约骨架兜底：异常时也返回完整形状，避免调用方读到 undefined
+        r = { rounds: 0, taps: 0, verified: 0, unverified: 0, done: false, bottom: false, skipped: [], error: String(e?.message ?? e) };
       }
       return { content: [{ type: 'text', text: JSON.stringify({ ok: !r.error, ...r }) }], details: { ok: !r.error, ...r } };
     },
