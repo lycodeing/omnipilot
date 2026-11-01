@@ -12,6 +12,7 @@ import { withLocateRetry, StepRollout } from './rollout.js';
 import * as state from './state.js';
 import * as net from '../net/profile.js';
 import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor } from './png.js';
+import { createUia2 } from './uia2.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
@@ -98,6 +99,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   // 第三级回退：文件形式 dump + cat。实测（API 30 x86 + uni-app 模态弹窗） tty 两通道全部
   // 返回无 hierarchy（UI busy / pipe 限制），文件形式稳定可用——没有它，弹窗态整个引擎失明。
   let dumpChannel = null; // 'execout' | 'shell' | 'file' | null(未探测)
+  // 测试注入 exec 时跳过 uia2（单测走 legacy 路径保持确定性；真机不受影响）
+  const uia2 = exec ? null : createUia2({ adb, serial, log: (m) => console.warn('[uia2] ' + m) });
+  let uia2DeadUntil = 0;
+  let lastUia2Error = '';
   // 最近一次成功 dump 的树 hash：scroll 等只做**变化检测**的场景用它当对比基线，
   // 免掉一次 38-55s 的慢 dump（动画不改 a11y 树，跨时间复用安全；换 App 的动作清空）
   let lastTreeHash = null;
@@ -107,6 +112,19 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     //    客户端超时只杀 adb，设备侧 uiautomator 会变孤儿继续持有 a11y 锁，毒化后续尝试）；
     // ② file 耐久通道：设备侧 50s 等满 idle 等待，&& 串联 cat（dump 失败非零退出不会 cat
     //    陈旧文件）。粘性通道记住上次成功的形态，健康屏仍走快通道。
+    // 通道 0：uia2 server（busy 态 157-958ms vs 38-55s，调研落地 2026-11-01）。
+    // 失败退避 60s 后重试探测；期间走 legacy 三通道。lastTreeHash 基线在两通道间通用
+    // （都是同一棵 a11y 树的 hash）。返回形状与 legacy 完全一致。
+    if (uia2 && Date.now() >= uia2DeadUntil) {
+      try {
+        const xml = await uia2.source();
+        if (xml.includes('</hierarchy>')) return xml;
+        throw new Error('uia2 无 hierarchy');
+      } catch (e) {
+        uia2DeadUntil = Date.now() + 60_000;
+        lastUia2Error = String(e?.message ?? e).slice(0, 100);
+      }
+    }
     const tryExecOut = async () => {
       const buf = await adb.execOut(['exec-out', 'timeout', '10', 'uiautomator', 'dump', '/dev/tty'], {
         timeoutMs: 15000,
