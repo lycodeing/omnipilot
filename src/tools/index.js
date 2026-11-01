@@ -41,7 +41,7 @@ export const EXPECTED_TOOLS = [
 
 // 需要留取证截图的工具：写操作留"动作后截图"；locate 留"定位时截图"——
 // 它是 bounds 的真实载体，报告的"找元素镜头"（insight 高亮）就画在这张动作前画面上
-const SCREENSHOT_TOOLS = new Set(['tap', 'long_press', 'input', 'swipe', 'scroll', 'key', 'launch', 'terminate', 'net_profile', 'locate']);
+const SCREENSHOT_TOOLS = new Set(['tap', 'long_press', 'input', 'swipe', 'scroll', 'key', 'launch', 'terminate', 'net_profile', 'locate', 'tap_each_row', 'wait_element', 'wait_idle', 'assert_no_crash']);
 
 function targetOf(params = {}) {
   return params.target ?? params.appId ?? params.packageName ?? params.provider ?? params.name

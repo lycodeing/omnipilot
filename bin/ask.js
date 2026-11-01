@@ -521,6 +521,16 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     const pushStepMsgDelta = () => {
       ctx.stepMsgCounts.push(Math.max(0, (getMsgs()?.length ?? 0) - (ctx._msgStart ?? 0)));
     };
+    // 非 tool 路径（aiWaitFor 等 ask.js 直记账的步）的报告取证截图：fire-and-forget，
+    // 与工具层同款模式（serial 队列保证时序、失败不阻断、finish 前统一排空）
+    const attachStepShot = (stepIndex) => {
+      try {
+        const chain = device.screencap()
+          .then((shot) => recorder.attachScreenshot(stepIndex, shot.buffer))
+          .catch(() => { /* 取证截图失败不影响 */ });
+        recorder.trackPending?.(chain);
+      } catch { /* 截图失败不影响 */ }
+    };
     // 步内第 2 轮起的 prompt（催答/续作/视觉确认）自带本轮原始 role:'toolResult' 历史，
     // 网关对 role:tool 历史返回 400（对照实验实证）→ 每次追加 prompt 前先同步全折叠为纯文本。
     const foldForGateway = () => { foldToolHistoryForFollowup(session); };
@@ -537,6 +547,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           const handle = recorder.startStep('sleep', `${step.seconds}s`);
           await new Promise((r) => setTimeout(r, (step.seconds || 0) * 1000));
           handle.end({ result: 'ok' });
+          attachStepShot(handle.index); // 报告取证：sleep 后的画面状态
           continue;
         }
         if (step.type === 'net') {
@@ -674,10 +685,12 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             }
             r = { ...(r ?? {}), appeared: confirmed };
             handle.end({ result: confirmed ? 'ok' : 'failed' });
+            attachStepShot(handle.index); // 报告取证：aiWaitFor 步没有工具层截图钩子，这里补终态截图
             if (!confirmed && !flags.quiet) console.warn(`[warn] aiWaitFor「${stepText}」未见真实可见元素（${sel}，视觉确认 ${confirms} 轮）`);
           } else {
             r = await device.waitIdle({ quiet, timeoutMs: timeout });
             handle.end({ result: 'ok' });
+            attachStepShot(handle.index);
           }
           continue;
         }
