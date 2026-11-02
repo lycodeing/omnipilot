@@ -11,14 +11,30 @@
 //     ├── locks/     设备独占锁（★ 必须全局：跨 instance 共享，否则锁失效）
 //     └── family-probe.json  模型家族坐标探测缓存（设备属性，全局复用）
 //
-// ASK_HOME 默认：win32 → C:/opt/scene-kit（Git Bash 下等价的 /c/opt/scene-kit）；其他平台 → /opt/scene-kit
+// ASK_HOME 默认：win32 → C:/opt/scene-kit（Git Bash 下等价的 /c/opt/scene-kit）；
+// 其他平台 → 优先 /opt/scene-kit（存在且可写时），否则回退 ~/.local/share/scene-kit
+// （非 root 在 Linux/macOS 上通常无 /opt 写权限，硬编码会导致工作区创建静默失败）
+//
 // ASK_WORKSPACE 可直接钉死整个 instance 目录（测试 / CI 用）；ASK_DATE / ASK_INSTANCE 分别覆盖日期与实例名。
 
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const DEFAULT_HOME = process.platform === 'win32' ? 'C:/opt/scene-kit' : '/opt/scene-kit';
+export const DEFAULT_HOME = pickDefaultHome();
 export const DEFAULT_INSTANCE = 'instance';
+
+function pickDefaultHome() {
+  if (process.platform === 'win32') return 'C:/opt/scene-kit';
+  const preferred = '/opt/scene-kit';
+  try {
+    // 父目录可写（或目标已存在且可写）才采用 /opt
+    const target = fs.existsSync(preferred) ? preferred : path.dirname(preferred);
+    fs.accessSync(target, fs.constants.W_OK);
+    return preferred;
+  } catch {
+    return path.join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share', 'scene-kit');
+  }
+}
 
 export function formatDate(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0');

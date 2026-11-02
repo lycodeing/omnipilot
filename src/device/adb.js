@@ -7,9 +7,15 @@ const DISCONNECT_RE =
 
 const DEFAULT_TIMEOUTS = { command: 15000, dump: 25000, screencap: 15000, connect: 10000 };
 
+// adb 可执行名按平台派生：Windows 优先 adb.exe（原生 cmd/PowerShell 不认无扩展名的 adb；
+// Git Bash 下 PATH 里的 adb 也通常指向 adb.exe，故 .exe 在两处都可用）
+export function defaultAdbPath() {
+  return process.platform === 'win32' ? 'adb.exe' : 'adb';
+}
+
 // 注入执行器（测试用）签名：async (args, { timeoutMs, binary }) => { code, stdout: string|Buffer, stderr }
 export class Adb {
-  constructor({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts = {}, exec = null } = {}) {
+  constructor({ serial, adbPath = process.env.ASK_ADB || defaultAdbPath(), timeouts = {}, exec = null } = {}) {
     this.serial = serial ?? '';
     this.adbPath = adbPath;
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...timeouts };

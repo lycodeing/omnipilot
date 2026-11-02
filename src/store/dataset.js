@@ -187,6 +187,19 @@ async function writeRowsAtomic(file, rows) {
   ROW_CACHE.delete(file);
 }
 
+// 进程内 per-file 串行锁：append（增量追加）与 upsert/clear（全量重写）都用"读快照→写"，
+// 并发交错时全量重写方会用陈旧快照覆盖增量落盘内容（实测：并发 upsert 合并值被静默丢弃）。
+// 锁粒度为文件路径；同进程内所有写操作排队，跨进程仍靠 tmp+rename 原子性与内容 _id 去重兜底。
+const FILE_LOCKS = new Map(); // file → 末尾 Promise（链式排队）
+
+function withFileLock(file, fn) {
+  const prev = FILE_LOCKS.get(file) ?? Promise.resolve();
+  const run = prev.then(fn, fn); // 前序失败不阻断后续
+  // 链尾保存"已 settle"的 Promise，避免链无限增长持有 rejection
+  FILE_LOCKS.set(file, run.then(() => {}, () => {}));
+  return run;
+}
+
 export function openDataset({ dataDir = 'datasets' } = {}) {
   if (!dataDir || typeof dataDir !== 'string') throw new Error('openDataset 需要 dataDir 目录');
   let dirReady = false;
@@ -204,40 +217,43 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
     if (!rows.length) return { written: 0 };
     await ensureDir();
     const file = path.join(dataDir, `${name}.jsonl`);
-    const existing = await readRowsCached(dataDir, name);
-    const seen = ROW_CACHE.get(file)?.ids ?? new Set(existing.map((r) => r?._id).filter(Boolean));
-    const lines = [];
-    const added = [];
-    for (const row of rows) {
-      const id = contentId(row);
-      if (seen.has(id)) continue; // 内容去重（§14.2 滚动采集）
-      seen.add(id);
-      const final = finalizeRow(row, id, meta);
-      added.push(final);
-      lines.push(JSON.stringify(final));
-    }
-    if (lines.length) {
-      try {
-        await appendFile(file, lines.join('\n') + '\n', 'utf8');
-      } catch (e) {
-        invalidateCache(dataDir, name); // 写失败：缓存已原地 mutate，必须失效回磁盘真相
-        throw e;
+    // 读快照→写 必须在文件锁内（与 upsert/clear 互斥，防陈旧快照覆盖并发写）
+    return withFileLock(file, async () => {
+      const existing = await readRowsCached(dataDir, name);
+      const seen = ROW_CACHE.get(file)?.ids ?? new Set(existing.map((r) => r?._id).filter(Boolean));
+      const lines = [];
+      const added = [];
+      for (const row of rows) {
+        const id = contentId(row);
+        if (seen.has(id)) continue; // 内容去重（§14.2 滚动采集）
+        seen.add(id);
+        const final = finalizeRow(row, id, meta);
+        added.push(final);
+        lines.push(JSON.stringify(final));
       }
-      // 缓存原地维护：rows 追加、indexById/ids 更新；mtime/size 同步到刚写完的状态
-      const st = await stat(file).catch(() => null);
-      const entry = ROW_CACHE.get(file) ?? { rows: [...existing], indexById: new Map(), ids: new Set() };
-      for (const row of added) {
-        if (row._id !== undefined) {
-          entry.ids.add(row._id); // 去重集合必须同步，否则同内容 append 会重复写入
-          if (!entry.indexById.has(row._id)) entry.indexById.set(row._id, entry.rows.length);
+      if (lines.length) {
+        try {
+          await appendFile(file, lines.join('\n') + '\n', 'utf8');
+        } catch (e) {
+          invalidateCache(dataDir, name); // 写失败：缓存已原地 mutate，必须失效回磁盘真相
+          throw e;
         }
-        entry.rows.push(row);
+        // 缓存原地维护：rows 追加、indexById/ids 更新；mtime/size 同步到刚写完的状态
+        const st = await stat(file).catch(() => null);
+        const entry = ROW_CACHE.get(file) ?? { rows: [...existing], indexById: new Map(), ids: new Set() };
+        for (const row of added) {
+          if (row._id !== undefined) {
+            entry.ids.add(row._id); // 去重集合必须同步，否则同内容 append 会重复写入
+            if (!entry.indexById.has(row._id)) entry.indexById.set(row._id, entry.rows.length);
+          }
+          entry.rows.push(row);
+        }
+        entry.mtimeMs = st?.mtimeMs ?? Date.now();
+        entry.size = st?.size ?? 0;
+        commitCache(dataDir, name, entry);
       }
-      entry.mtimeMs = st?.mtimeMs ?? Date.now();
-      entry.size = st?.size ?? 0;
-      commitCache(dataDir, name, entry);
-    }
-    return { written: lines.length };
+      return { written: lines.length };
+    });
   }
 
   async function upsert(name, key, rows, meta = {}) {
@@ -248,57 +264,60 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
     if (!rows.length) return { written: 0, merged: 0 };
     await ensureDir();
     const file = path.join(dataDir, `${name}.jsonl`);
-    const existing = await readRowsCached(dataDir, name);
-    const entry = ROW_CACHE.get(file);
-    const indexById = entry?.indexById ?? new Map();
-    if (!entry) {
-      existing.forEach((r, i) => {
-        if (r && r._id !== undefined && !indexById.has(r._id)) indexById.set(r._id, i);
-      });
-    }
-    let written = 0;
-    let merged = 0;
-    const appendedLines = [];
-    for (const row of rows) {
-      const id = keyIdentity(key, row);
-      const final = finalizeRow(row, id, meta);
-      if (indexById.has(id)) {
-        existing[indexById.get(id)] = final; // 原位替换，保持行序稳定
-        merged++;
-      } else {
-        indexById.set(id, existing.length);
-        if (entry) entry.ids.add(id);
-        existing.push(final);
-        appendedLines.push(JSON.stringify(final));
-        written++;
+    // 读快照→（可能）全量重写 必须在文件锁内：否则会用陈旧快照覆盖并发 append 的内容
+    return withFileLock(file, async () => {
+      const existing = await readRowsCached(dataDir, name);
+      const entry = ROW_CACHE.get(file);
+      const indexById = entry?.indexById ?? new Map();
+      if (!entry) {
+        existing.forEach((r, i) => {
+          if (r && r._id !== undefined && !indexById.has(r._id)) indexById.set(r._id, i);
+        });
       }
-    }
-    if (merged > 0) {
-      // 有原位替换：必须全量重写保持行序（语义不变）
-      try {
-        await writeRowsAtomic(file, existing);
-      } catch (e) {
-        invalidateCache(dataDir, name);
-        throw e;
+      let written = 0;
+      let merged = 0;
+      const appendedLines = [];
+      for (const row of rows) {
+        const id = keyIdentity(key, row);
+        const final = finalizeRow(row, id, meta);
+        if (indexById.has(id)) {
+          existing[indexById.get(id)] = final; // 原位替换，保持行序稳定
+          merged++;
+        } else {
+          indexById.set(id, existing.length);
+          if (entry) entry.ids.add(id);
+          existing.push(final);
+          appendedLines.push(JSON.stringify(final));
+          written++;
+        }
       }
-      const st = await stat(file).catch(() => null);
-      const e = { mtimeMs: st?.mtimeMs ?? Date.now(), size: st?.size ?? 0, rows: existing, indexById, ids: new Set(indexById.keys()) };
-      commitCache(dataDir, name, e);
-    } else if (appendedLines.length) {
-      // 纯新增：append-only，避免全量重写
-      try {
-        await appendFile(file, appendedLines.join('\n') + '\n', 'utf8');
-      } catch (e) {
-        invalidateCache(dataDir, name);
-        throw e;
+      if (merged > 0) {
+        // 有原位替换：必须全量重写保持行序（语义不变）
+        try {
+          await writeRowsAtomic(file, existing);
+        } catch (e) {
+          invalidateCache(dataDir, name);
+          throw e;
+        }
+        const st = await stat(file).catch(() => null);
+        const e = { mtimeMs: st?.mtimeMs ?? Date.now(), size: st?.size ?? 0, rows: existing, indexById, ids: new Set(indexById.keys()) };
+        commitCache(dataDir, name, e);
+      } else if (appendedLines.length) {
+        // 纯新增：append-only，避免全量重写
+        try {
+          await appendFile(file, appendedLines.join('\n') + '\n', 'utf8');
+        } catch (e) {
+          invalidateCache(dataDir, name);
+          throw e;
+        }
+        const st = await stat(file).catch(() => null);
+        const e = entry ?? { rows: existing, indexById, ids: new Set(indexById.keys()) };
+        e.mtimeMs = st?.mtimeMs ?? Date.now();
+        e.size = st?.size ?? 0;
+        commitCache(dataDir, name, e);
       }
-      const st = await stat(file).catch(() => null);
-      const e = entry ?? { rows: existing, indexById, ids: new Set(indexById.keys()) };
-      e.mtimeMs = st?.mtimeMs ?? Date.now();
-      e.size = st?.size ?? 0;
-      commitCache(dataDir, name, e);
-    }
-    return { written, merged };
+      return { written, merged };
+    });
   }
 
   return {
@@ -310,8 +329,12 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
     },
     clear: async (name) => {
       assertName(name);
-      await rm(path.join(dataDir, `${name}.jsonl`), { force: true });
-      invalidateCache(dataDir, name);
+      const file = path.join(dataDir, `${name}.jsonl`);
+      // 删除同样进锁：否则并发 append 可能在 rm 之后又把旧数据追加回已清空的数据集
+      await withFileLock(file, async () => {
+        await rm(file, { force: true });
+        invalidateCache(dataDir, name);
+      });
     },
     query: async (name, opts = {}) => {
       assertName(name);

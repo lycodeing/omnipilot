@@ -187,3 +187,33 @@ test('非法输入：数据集名与行形状', async (t) => {
   await assert.rejects(() => ds.append('ok', [[1, 2]]), /普通对象/);
   await assert.rejects(() => ds.upsert('ok', 'k', [{ other: 1 }]), /主键字段/);
 });
+
+test('并发 append 与 upsert 交错：增量零丢失、upsert 不丢、磁盘与缓存一致（文件锁回归）', async (t) => {
+  // 回归（2026-11-02）：append 走增量追加、upsert 走全量重写，两者都"读快照→写"，
+  // 无互斥时全量重写方用陈旧快照覆盖并发追加内容（实测静默丢写）。
+  const dir = tmpDir(t, 'ds-race-');
+  const store = openDataset({ dataDir: dir });
+  await store.append('t', [{ k: 'a', v: 1 }]);
+  for (let i = 0; i < 5; i++) {
+    await Promise.all([
+      store.append('t', Array.from({ length: 20 }, (_, j) => ({ k: `app${i}-${j}`, v: j }))),
+      store.upsert('t', 'k', [{ k: 'a', v: 999 + i }]),
+    ]);
+  }
+  const rows = await store.read('t');
+  const diskLines = fs.readFileSync(path.join(dir, 't.jsonl'), 'utf8').split('\n').filter(Boolean).length;
+  assert.equal(rows.filter((r) => String(r.k).startsWith('app')).length, 100, 'append 100 行零丢失');
+  assert.ok(rows.some((r) => r.k === 'a' && r.v >= 999), 'upsert 行存在');
+  assert.equal(diskLines, rows.length, '磁盘行数与缓存一致');
+});
+
+test('并发 clear 与 append：清除后不再有旧数据复活', async (t) => {
+  const dir = tmpDir(t, 'ds-clear-');
+  const store = openDataset({ dataDir: dir });
+  await store.append('t', Array.from({ length: 10 }, (_, i) => ({ k: `old${i}` })));
+  await Promise.all([store.clear('t'), store.append('t', [{ k: 'new1' }])]);
+  const rows = await store.read('t');
+  // 顺序不定：要么清空后只剩 new1，要么先 append 再清空（0 行）——但绝不该出现 10 条 old
+  assert.ok(rows.filter((r) => String(r.k).startsWith('old')).length === 0 || rows.length === 0,
+    `旧数据不得复活（实际 ${rows.length} 行）`);
+});

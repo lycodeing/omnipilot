@@ -106,6 +106,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   // 最近一次成功 dump 的树 hash：scroll 等只做**变化检测**的场景用它当对比基线，
   // 免掉一次 38-55s 的慢 dump（动画不改 a11y 树，跨时间复用安全；换 App 的动作清空）
   let lastTreeHash = null;
+  let timeoutSupported = null; // 设备侧 timeout 可用性（null=未探测，false=降级无包裹）
   async function dumpXmlRaw() {
     // 两级策略（实测 busy 弹窗态成功 dump 需 38-39s——uiautomator idle 等待本身很长）：
     // ① tty 快通道：设备侧 timeout 10s 快速失败（健康屏 ~2s 出结果；busy 屏不留孤儿——
@@ -126,22 +127,35 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         console.warn(`[uia2] 不可用（${lastUia2Error}），60s 内走 legacy dump 通道`);
       }
     }
+    // 设备侧 timeout 可用性探测（旧镜像/redroid 老底可能无 toybox timeout）：
+    // 缺失时降级为无包裹命令——放弃"到点自杀不留孤儿"，但至少能工作（否则三通道同因失败＝引擎全盲）
+    if (timeoutSupported === null) {
+      try {
+        const w = await adb.shell('which timeout 2>/dev/null || echo NO', { timeoutMs: 5000 });
+        timeoutSupported = !/NO\s*$/.test(String(w).trim()) && String(w).trim().length > 0;
+        if (!timeoutSupported) console.warn('[warn] 设备无 timeout 命令：dump 降级为无包裹（客户端超时后可能残留孤儿 uiautomator 进程）');
+      } catch { timeoutSupported = true; } // 探测失败按有处理（多数设备有）
+    }
+    // timeout 前缀（含秒数）：`timeout 10 <cmd>`；降级时为空串 → 直接 <cmd>
+    const tw = (sec) => (timeoutSupported ? `timeout ${sec} ` : '');
     const tryExecOut = async () => {
-      const buf = await adb.execOut(['exec-out', 'timeout', '10', 'uiautomator', 'dump', '/dev/tty'], {
-        timeoutMs: 15000,
-        binary: false,
-      });
+      const cmd = timeoutSupported
+        ? ['exec-out', 'timeout', '10', 'uiautomator', 'dump', '/dev/tty']
+        : ['exec-out', 'uiautomator', 'dump', '/dev/tty'];
+      const buf = await adb.execOut(cmd, { timeoutMs: 15000, binary: false });
       const xml = buf.toString('utf8');
       if (!xml.includes('</hierarchy>')) throw new Error('exec-out 无 hierarchy');
       return xml;
     };
     const tryShell = async () => {
-      const xml = await adb.shell('timeout 10 uiautomator dump /dev/tty', { timeoutMs: 15000 });
+      const xml = await adb.shell(`${tw(10)}uiautomator dump /dev/tty`, { timeoutMs: 15000 });
       if (!String(xml).includes('</hierarchy>')) throw new Error('shell 无 hierarchy');
       return xml;
     };
     const tryFile = async () => {
-      const xml = await adb.shell('timeout 50 uiautomator dump /sdcard/ask-uidump.xml && cat /sdcard/ask-uidump.xml', { timeoutMs: 55000 });
+      // 前置 rm -f：实测 `uiautomator dump <不可写路径>` 仍打印成功且 exit 0，
+      // 此时 && 不生效、cat 会吐上一轮残留的合法 XML（被当当前树用）——必须清旧文件
+      const xml = await adb.shell(`rm -f /sdcard/ask-uidump.xml; ${tw(50)}uiautomator dump /sdcard/ask-uidump.xml && cat /sdcard/ask-uidump.xml`, { timeoutMs: 55000 });
       if (!String(xml).includes('</hierarchy>')) throw new Error('file 无 hierarchy');
       return String(xml);
     };
@@ -166,6 +180,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       }
       if (pass === 0) await new Promise((r) => setTimeout(r, 600));
     }
+    // 全败：客户端超时只会杀 adb 进程，设备侧 uiautomator 可能已成孤儿并**持有 a11y 锁**，
+    // 毒化后续所有 dump（实测：孤儿存在时 uia2 建会话报 "Got null UiAutomation"）。
+    // 非 root 无法杀他人进程，但可杀**本 shell 用户**起的历史 uiautomator（同一 u0_aXXX uid 下
+    // 新起的 dump 进程属同一 uid，pkill 只影响自己这一侧残留），尽力清理后交下一轮重试。
+    try {
+      await adb.shell('pkill -f "uiautomator dump" 2>/dev/null; true', { timeoutMs: 5000 });
+    } catch { /* 清理失败不阻断错误上抛 */ }
     throw new Error('uiautomator dump 三通道（exec-out/shell/file）均无 hierarchy');
   }
 

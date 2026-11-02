@@ -512,8 +512,9 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     const contextAll = /^(all|全部)$/i.test(String(contextCfgRaw).trim());
     const ctxNum = Number(contextCfgRaw);
     const contextKeep = contextAll ? Infinity : (Number.isFinite(ctxNum) ? Math.max(1, Math.trunc(ctxNum)) : 3);
-    if (!contextAll && Number.isFinite(ctxNum) && ctxNum < 1) console.warn(`[warn] --context-steps ${ctxCfgRaw} 非法（<1），已回退 3`);
-    if (!contextAll && Number.isFinite(ctxNum) && !Number.isInteger(ctxNum)) console.warn(`[warn] --context-steps ${ctxCfgRaw} 非整数，已取整为 ${contextKeep}`);
+    if (!contextAll && Number.isFinite(ctxNum) && ctxNum < 1) console.warn(`[warn] --context-steps ${contextCfgRaw} 非法（<1），已回退 3`);
+    if (!contextAll && Number.isFinite(ctxNum) && !Number.isInteger(ctxNum)) console.warn(`[warn] --context-steps ${contextCfgRaw} 非整数，已取整为 ${contextKeep}`);
+    if (flags['context-steps'] === true) console.warn('[warn] --context-steps 需要一个值（n 或 all），已回退 3');
     // SDK 消息数组双路径兼容（旧版 SDK 挂 session.messages）：取不到时治理整体 no-op，须有告警
     let _msgsWarned = false;
     const getMsgs = () => {

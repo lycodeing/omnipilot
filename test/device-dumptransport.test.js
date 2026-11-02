@@ -25,6 +25,8 @@ function makeExec({ execOutDump = FIXTURE, shellDump = FIXTURE, execOutDumpThrow
     calls.push(joined);
     if (joined.includes('get-state')) return { code: 0, stdout: 'device', stderr: '' };
     if (joined.includes('wm size')) return { code: 0, stdout: 'Physical size: 720x1280', stderr: '' };
+    // 设备侧 timeout 探测（dumpXmlRaw 首次调用时探一次）
+    if (joined.includes('which timeout')) return { code: 0, stdout: '/system/bin/timeout\n', stderr: '' };
     if (/exec-out timeout 10 uiautomator dump/.test(joined)) {
       if (execOutDumpThrows) throw new Error('adb exec-out 失败(exit 1): mock');
       return { code: 0, stdout: execOutDump, stderr: '' };

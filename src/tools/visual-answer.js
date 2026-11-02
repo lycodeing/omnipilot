@@ -165,6 +165,7 @@ export async function runVisualAnswer(deps) {
       tapsHere++;
       result.taps++;
       await new Promise((r) => setTimeout(r, settleMs));
+      if (!verify) { blue = true; break; } // verify=false 跳过像素校验（信任 tap 语义）
       blue = await blueAt(device, pt, expect);
       if (!blue && att === 0) blue = await blueAt(device, pt, expect);
     }
