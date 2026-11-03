@@ -166,6 +166,16 @@ export class Adb {
     return stdout;
   }
 
+  // host 侧子命令（forward / reverse / devices …）：不加 `shell` 前缀。
+  // 必须与 shell() 区分——`adb shell forward …` 是在**设备**上找 forward 命令，恒失败(127)。
+  async host(args, { timeoutMs, binary = false } = {}) {
+    const res = await this._enqueue(this._withSerial(args), { timeoutMs: timeoutMs ?? this.timeouts.command, binary });
+    if (res.code !== 0) {
+      throw new Error(`adb ${args[0]} 失败(exit ${res.code}): ${String(res.stderr ?? '').trim()}`);
+    }
+    return binary ? res.stdout : Buffer.from(res.stdout ?? '').toString('utf8');
+  }
+
   // 二进制通道：返回原始 Buffer（screencap 用）
   async execOut(args, { timeoutMs, binary = true } = {}) {
     const res = await this._enqueue(this._withSerial(args), { timeoutMs: timeoutMs ?? this.timeouts.command, binary });
