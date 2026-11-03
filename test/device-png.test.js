@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor } from '../src/device/png.js';
+import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor, screenSignature } from '../src/device/png.js';
 
 // 构造最小 PNG：8-bit、色彩类型 2(RGB)、指定每行滤波类型
 function makePng(width, height, pixels, filterType = 0) {
@@ -99,4 +99,33 @@ test('isColorish / parseHexColor：任意主题色容差匹配（通用化）', 
 
 test('decodePng：非 PNG 输入抛错', () => {
   assert.throws(() => decodePng(Buffer.from('not a png at all')), /不是 PNG/);
+});
+
+// scroll 的变化检测从整树 hash 换成屏幕像素签名（性能修复）：busy WebView 上一次 a11y dump
+// 4-30s（uia2）/ 38-55s（legacy），而截图+解码+采样 0.5-1s。签名必须满足：同画面同签名、
+// 任一显著像素变化即变签名、与尺寸无关地稳定。
+test('screenSignature：同画面稳定，像素变化即变签名', () => {
+  const flat = Buffer.from(Array.from({ length: W * H }, () => px(245, 246, 248)).flat());
+  const pngA = makePng(W, H, flat);
+  const pngB = makePng(W, H, flat);
+  assert.equal(screenSignature(pngA), screenSignature(pngB), '同像素 → 同签名');
+  assert.equal(screenSignature(pngA), screenSignature(pngA), '重复调用稳定');
+
+  // 单像素变化：4×3 图在 40px 步长下只会采到左上角一点 → 用 step=1 保证覆盖
+  const changed = Buffer.from(flat);
+  changed[0] = 0; changed[1] = 0; changed[2] = 0;
+  const pngC = makePng(W, H, changed);
+  assert.notEqual(screenSignature(pngA, { step: 1, marginPct: 0 }), screenSignature(pngC, { step: 1, marginPct: 0 }), '像素变化 → 签名变化');
+});
+
+test('screenSignature：跳过上下边缘（状态栏/导航栏时钟不触发"画面变化"）', () => {
+  // 4×3 图：marginPct=0.34 → 只采中间行（y=1）。改第 0 行（顶部）签名不变，改第 1 行才变
+  const base = Buffer.from(Array.from({ length: W * H }, () => px(20, 20, 20)).flat());
+  const topChanged = Buffer.from(base);
+  for (let x = 0; x < W * 3; x++) topChanged[x] = 255; // 第 0 行整行变白
+  const midChanged = Buffer.from(base);
+  for (let x = W * 3; x < W * 6; x++) midChanged[x] = 255; // 第 1 行整行变白
+  const sig = (buf2) => screenSignature(makePng(W, H, buf2), { step: 1, marginPct: 0.34 });
+  assert.equal(sig(base), sig(topChanged), '顶部边缘变化被跳过');
+  assert.notEqual(sig(base), sig(midChanged), '中间区域变化被采到');
 });
