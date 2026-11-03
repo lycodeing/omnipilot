@@ -51,11 +51,24 @@ function httpRaw(hostP, p, { method = 'GET', body = null, timeoutMs = 8000 } = {
 // 不可达并进入 10 分钟退避。测试注入小值以免空等真实时间。
 export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll = {} } = {}) {
   // port 显式注入（测试 DI）优先；缺省按 serial 哈希+线性探测派生 host 转发端口
-  const hostP = port ?? hostPort(serial);
+  let hostP = port ?? hostPort(serial);
   const pollTries = Number.isFinite(readyPoll.tries) ? readyPoll.tries : 15;
   const pollIntervalMs = Number.isFinite(readyPoll.intervalMs) ? readyPoll.intervalMs : 1000;
   let sessionId = null;
   let deadUntil = 0; // 探测失败后的退避期（期间 ensure 直接 false，走 legacy 通道）
+  let bound = false;  // forward 已成功建立（粘性：健康后每个 dump 不再重跑 adb forward，
+                      // Windows 上省一次 spawn 开销；status 拒连时重置重探）
+
+  // 换下一个空闲 host 端口（bind 冲突时线性探测重试；旧槽释放）
+  function rebindPort() {
+    usedPorts.delete(hostP);
+    let p = hostP >= 6989 ? 6790 : hostP + 1;
+    let probes = 0;
+    while (usedPorts.has(p) && ++probes <= 200) p = p >= 6989 ? 6790 : p + 1;
+    if (probes > 200) throw new Error('hostPort 端口耗尽（200 槽全占用）');
+    usedPorts.add(p);
+    hostP = p;
+  }
 
   async function forward() {
     if (port != null) return; // 显式端口=测试直连 stub，无需 adb forward
@@ -64,6 +77,27 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
     const args = ['forward', `tcp:${hostP}`, `tcp:${DEVICE_PORT}`];
     if (typeof adb.host === 'function') await adb.host(args, { timeoutMs: 8000 });
     else await adb.execOut(args, { timeoutMs: 8000, binary: false }); // 老注入执行器兜底
+  }
+
+  // forward + 串台防护（2026-11-04 评审 P1-2）：bind 失败**不得**吞掉——adb 的 forward
+  // 监听按本地端口全局唯一，跨进程哈希撞端口时 status() 会命中**别台设备**的隧道，
+  // 静默读错树。bind 失败 → 换端口重试一次 → 仍失败则 ensure 返回 false（不信任 status）。
+  async function ensureForward() {
+    if (port != null || bound) return true;
+    try {
+      await forward();
+      bound = true;
+      return true;
+    } catch {
+      try {
+        rebindPort();
+        await forward();
+        bound = true;
+        return true;
+      } catch {
+        return false; // 换端口也失败：本设备 uia2 不可用（绝不能去探测不明归属的端口）
+      }
+    }
   }
 
   async function status() {
@@ -120,8 +154,13 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
 
   async function ensure() {
     if (Date.now() < deadUntil) return false;
-    await forward().catch(() => {});
+    if (!(await ensureForward())) {
+      deadUntil = Date.now() + 60_000;
+      return false; // forward 建不起来（换端口也不行）：不可用，绝不探测不明归属的端口
+    }
     if (await status()) return true;
+    // status 拒连：转发可能失效（设备重连等），下次重建
+    bound = false;
     // 关键（2026-11-02 实证）：`am instrument` 会**先杀掉**同名旧进程再启动——对"正忙但
     // 健康"的服务重复调用等于自杀。logcat 铁证：
     //   Killing <pid>:io.appium.uiautomator2.server (adj 0): stop ... due to start instr
@@ -129,13 +168,17 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
     // 因此：进程还活着就**绝不**重启，只在"进程确实不存在"时才 startServer。
     const pid = await serverPid();
     if (pid) {
-      // 进程在，但 /status 没在 2.5s 内就绪：是在忙，不是在死。给它更长的等待窗口。
-      for (let i = 0; i < pollTries; i++) {
+      // 进程在，但 /status 没就绪：是在忙，不是在死（评审 P2-1：15s 窗口短于 busy 页
+      // worst-case 38-55s，会在长 busy 期把正在出活的健康服务杀掉）。给 60s 墙钟预算，
+      // 到点才允许按"卡死"重启。
+      const busyDeadline = Date.now() + 60_000;
+      let guard = 0;
+      while (Date.now() < busyDeadline && guard++ < 300) {
         await new Promise((r) => setTimeout(r, pollIntervalMs));
         if (await status()) return true;
       }
       // 等到窗口结束仍不就绪：此时才允许杀掉重启（服务可能真的卡死）
-      log(`uia2 服务进程存活(pid ${pid})但 ${pollTries}s 内未就绪，重启服务`);
+      log('uia2 服务进程存活但 60s 未就绪，按卡死重启服务');
       await restartServer();
       return await status();
     }
@@ -172,6 +215,19 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
     const j = JSON.parse(r.body);
     sessionId = j.value?.sessionId ?? null;
     if (!sessionId) throw new Error('uia2 会话 id 缺失');
+    // 会话级 settings（Appium Settings API，server 10.6.6 实测 200，settings 按**会话**生效）：
+    // waitForIdleTimeout=0 跳过 a11y idle 盲等——busy WebView 页 source 从 4-30s 降到
+    // 0.3-0.4s（2026-11-04 真机实测；openatx 出厂默认即 0）。失败不阻断：老 server 无此
+    // 端点时仅退回旧行为。
+    try {
+      await httpRaw(hostP, `/wd/hub/session/${sessionId}/appium/settings`, {
+        method: 'POST',
+        body: JSON.stringify({ settings: { waitForIdleTimeout: 0 } }),
+        timeoutMs: 5000,
+      });
+    } catch (e) {
+      log(`settings 注入失败（不阻断）: ${String(e?.message ?? e).slice(0, 60)}`);
+    }
     return sessionId;
   }
 
@@ -213,7 +269,7 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
   }
 
   return {
-    port: hostP,
+    get port() { return hostP; }, // getter：rebind 换端口后外部读到的总是当前端口（值快照会读到旧端口）
     ensure,
     ensureSession,
     resetSession: () => { sessionId = null; },

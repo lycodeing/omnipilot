@@ -232,3 +232,62 @@ test('uia2：pidof 确认进程不存在 → 正常 startServer', async () => {
     assert.equal(shellCalls.filter((c) => c.includes('force-stop')).length, 0, '进程不存在时无需 force-stop');
   } finally { close(); }
 });
+
+// 回归（2026-11-04 评审 P1-2）：forward bind 失败不得吞掉——adb forward 监听按本地端口
+// 全局唯一，跨进程哈希撞端口时 status() 会命中**别台设备**的隧道静默读错树。
+// 修复：bind 失败 → 换下一端口重试；换端口也失败则 ensure false（绝不探测不明归属端口）。
+test('uia2：forward bind 失败 → 换端口重试并成功（不吞错防串台）', async () => {
+  const serial = 'rebind-' + Date.now();
+  let h = 0;
+  for (const ch of serial) h = (h * 31 + ch.charCodeAt(0)) % 997;
+  const firstPort = 6790 + (h % 200);
+  const secondPort = firstPort >= 6989 ? 6790 : firstPort + 1;
+  let hostCalls = 0;
+  const adb = {
+    shell: async () => '',
+    host: async () => { hostCalls++; if (hostCalls === 1) throw new Error('bind: cannot rebind'); return ''; },
+  };
+  const server = http.createServer((req, res) => { res.writeHead(200); res.end('{"value":{"ready":true}}'); });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(secondPort, '127.0.0.1', resolve); });
+  try {
+    const uia2 = createUia2({ adb, serial, port: null, log: () => {}, readyPoll: { tries: 1, intervalMs: 1 } });
+    const ok = await uia2.ensure();
+    assert.equal(ok, true, '首端口 bind 失败换端口后应成功');
+    assert.equal(hostCalls, 2, '应恰好尝试两个端口');
+    assert.equal(uia2.port, secondPort, '应切换到重绑端口');
+  } finally {
+    server.closeAllConnections?.();
+    server.close();
+  }
+});
+
+// 对照：换端口也失败 → ensure false（不信任任何 status）
+test('uia2：forward 全部失败 → ensure false（不探测不明归属端口）', async () => {
+  const adb = { shell: async () => '', host: async () => { throw new Error('bind: fail'); } };
+  const uia2 = createUia2({ adb, serial: 'rebind-fail-' + Date.now(), port: null, log: () => {}, readyPoll: { tries: 1, intervalMs: 1 } });
+  assert.equal(await uia2.ensure(), false);
+});
+
+// 回归（2026-11-04 业界调研落地，Appium/openatx 同款）：waitForIdleTimeout=0 跳过 a11y
+// idle 盲等——busy WebView 页 source 从 4-30s 降到 0.3-0.4s（真机实测）。settings 按
+// **会话**生效，故每次新建会话后必须注入一次；失败不阻断（老 server 无此端点）。
+test('uia2：新建会话后注入 waitForIdleTimeout=0 settings（不阻断）', async () => {
+  const posts = [];
+  const { port, close } = await stubOn({
+    '/wd/hub/status GET': (req, res) => { res.writeHead(200); res.end('{"value":{"ready":true}}'); },
+    '/wd/hub/session POST': (req, res) => { res.writeHead(200); res.end('{"value":{"sessionId":"sid-set"}}'); },
+    '/wd/hub/session/sid-set/appium/settings POST': (req, res) => {
+      let body = '';
+      req.on('data', (d) => { body += d; });
+      req.on('end', () => { posts.push(body); res.writeHead(200); res.end('{"value":null}'); });
+    },
+    '/wd/hub/session/sid-set/source GET': (req, res) => { res.writeHead(200); res.end(JSON.stringify({ value: XML })); },
+  });
+  try {
+    const uia2 = createUia2({ adb: fakeAdb([]), serial: 't', port, log: () => {}, readyPoll: { tries: 2, intervalMs: 1 } });
+    const xml = await uia2.source();
+    assert.ok(xml.includes('</hierarchy>'));
+    assert.equal(posts.length, 1, '新会话应恰好注入一次 settings');
+    assert.match(posts[0], /"waitForIdleTimeout":0/);
+  } finally { close(); }
+});

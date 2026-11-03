@@ -504,3 +504,90 @@ test('tapEachRow：就绪等待不消耗 maxRounds 配额', async () => {
   assert.equal(r.error, null);
   await device.close();
 });
+
+// 回归（2026-11-04 双代理评审实证复现）：快通道命中（签名变化）会把树基线置 null；
+// 紧接着的冻帧轮进树确认分支时若无基线，moved 恒 false → 误判"到底"提前 break。
+// 修复后循环顶部在 swipe 前补基线。帧=[变,冻,冻]、树逐轮都变 → 必须跑满 max 轮。
+test('scroll：快通道→冻帧切换点仍做树确认（不误判到底）', async () => {
+  const frames = [
+    makePng(40, 40, [200, 30, 40]), // 基线
+    makePng(40, 40, [30, 160, 60]), // r1 签名变化 → 快通道
+    makePng(40, 40, [30, 160, 60]), // r2 冻帧 → 树确认
+    makePng(40, 40, [30, 160, 60]), // r3 冻帧 → 树确认
+  ];
+  const treeA = FIXTURE;
+  const treeB = FIXTURE_B;
+  const treeC = FIXTURE_B.replace('</hierarchy>', '  <node index="9" text="再变" resource-id="com.lgdg:id/extra2" class="android.widget.TextView" clickable="false" bounds="[0,1260][720,1280]"/>\n</hierarchy>');
+  // 树逐轮都在变（真实滚动中 WebView 冻帧的场景）——任何一轮误判"没动"都会提前 break
+  const exec = makeExec({ screencapScript: frames, dumpScript: [treeA, treeB, treeC, treeC] });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  const r = await device.scroll('up', { max: 3 });
+  assert.deepEqual(r, { scrolls: 3, changed: true }, `冻帧切换点须做树确认并继续滚动，实际 ${JSON.stringify(r)}`);
+  await device.close();
+});
+
+// ===== dumpXmlRaw 通道决策（uia2 注入缝）=====
+// 评审（2026-11-04）：这是整个引擎的可用性命门，此前因"注入 exec 就硬性 uia2=null"零覆盖。
+
+function makeUia2Stub({ sourceImpl, pid = '4242' }) {
+  const calls = { source: 0, pid: 0 };
+  return {
+    calls,
+    source: async (...a) => { calls.source++; return sourceImpl(...a); },
+    serverPid: async () => { calls.pid++; return pid; },
+    ensure: async () => true,
+    ensureSession: async () => 'stub',
+    resetSession: () => {},
+  };
+}
+
+test('通道决策：uia2 成功 → 直接返回，不碰 legacy', async () => {
+  const exec = makeExec({});
+  const stub = makeUia2Stub({ sourceImpl: async () => FIXTURE });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec, uia2: stub, waitReady: false });
+  const r = await device.dumpTree({ fresh: true });
+  assert.ok(r.nodes.length > 0);
+  assert.equal(stub.calls.source, 1);
+  assert.equal(exec.calls.filter((c) => c.includes('uiautomator dump')).length, 0, 'legacy 通道不应被触碰');
+  await device.close();
+});
+
+// P1 回归（评审 P1-1）：uia2 "有应答但无树"（无 hierarchy）时服务必活着=槽被占，
+// 不得掉进注定的 legacy 三通道；应走有界 uia2 重试。重试仍失败 → 抛"槽被占"错误，
+// 且全程零 legacy dump 调用。
+test('通道决策：uia2 无 hierarchy（槽被占）→ 有界重试，绝不碰 legacy', async () => {
+  const exec = makeExec({});
+  const stub = makeUia2Stub({ sourceImpl: async () => '<?xml version="1.0"?><hierarchy rotation="0"/>' });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec, uia2: stub, waitReady: false });
+  await assert.rejects(
+    () => device.dumpTree({ fresh: true }),
+    /UiAutomation 槽被 uia2 占用/,
+  );
+  assert.equal(exec.calls.filter((c) => c.includes('uiautomator dump')).length, 0, '槽被占时 legacy 是死路，不得触碰');
+  assert.ok(stub.calls.source >= 2, `应有首次 + 有界重试，实际 ${stub.calls.source}`);
+  await device.close();
+});
+
+// 对照：建会话 500 = 服务活着但未注册 UiAutomation = 槽空闲 → legacy 可用且必须走
+test('通道决策：uia2 建会话 500（槽空闲）→ 正常走 legacy 三通道', async () => {
+  const exec = makeExec({});
+  const stub = makeUia2Stub({ sourceImpl: async () => { const e = new Error('uia2 建会话失败: 500'); e.status = 500; throw e; }, pid: null });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec, uia2: stub, waitReady: false });
+  const r = await device.dumpTree({ fresh: true });
+  assert.ok(r.nodes.length > 0, '500 型失败（槽空闲）应走 legacy 拿到树');
+  assert.ok(exec.calls.some((c) => c.includes('uiautomator dump')), '应触碰 legacy 通道');
+  await device.close();
+});
+
+// 槽守卫下 busy 重试成功路径：首次超时（槽被占）→ 退避等待 → 重试拿到树
+test('通道决策：uia2 超时（槽被占）→ 退避后重试成功，不碰 legacy', async () => {
+  const exec = makeExec({});
+  let n = 0;
+  const stub = makeUia2Stub({ sourceImpl: async () => { if (++n === 1) throw new Error('uia2 超时(30000ms)'); return FIXTURE; } });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec, uia2: stub, waitReady: false });
+  const r = await device.dumpTree({ fresh: true });
+  assert.ok(r.nodes.length > 0);
+  assert.equal(stub.calls.source, 2, '首次超时 + 重试一次');
+  assert.equal(exec.calls.filter((c) => c.includes('uiautomator dump')).length, 0);
+  await device.close();
+});

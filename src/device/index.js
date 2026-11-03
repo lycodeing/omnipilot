@@ -17,7 +17,7 @@ import { createUia2 } from './uia2.js';
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
 // probeFile：模型家族坐标探测缓存路径（默认 cwd/.ask/family-probe.json；工作区模式下由 CLI 传全局路径）
-export async function createDeviceWithExecutor({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts = {}, exec, waitReady = null, probeFile = null } = {}) {
+export async function createDeviceWithExecutor({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts = {}, exec, waitReady = null, probeFile = null, uia2: uia2Inject = null } = {}) {
   const adb = new Adb({ serial, adbPath, timeouts, exec });
   await adb.ensureConnected().catch(() => {}); // 首连失败不阻塞，命令期仍有重连机会
 
@@ -100,7 +100,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   // 返回无 hierarchy（UI busy / pipe 限制），文件形式稳定可用——没有它，弹窗态整个引擎失明。
   let dumpChannel = null; // 'execout' | 'shell' | 'file' | null(未探测)
   // 测试注入 exec 时跳过 uia2（单测走 legacy 路径保持确定性；真机不受影响）
-  const uia2 = exec ? null : createUia2({ adb, serial, log: (m) => console.warn('[uia2] ' + m) });
+  // uia2 注入缝（2026-11-04 评审：dumpXmlRaw 通道决策层是唯一零覆盖的关键分支，根因是
+  // 注入 exec 就硬性 uia2=null）。显式传 uia2 stub 即可测通道决策（槽守卫/瞬态分类/busy
+  // 重试），与 exec 注入的 adb stub 组合使用。
+  const uia2 = uia2Inject ?? (exec ? null : createUia2({ adb, serial, log: (m) => console.warn('[uia2] ' + m) }));
   let uia2DeadUntil = 0;
   let lastUia2Error = '';
   // 最近一次成功 dump 的树 hash：scroll 等只做**变化检测**的场景用它当对比基线，
@@ -121,7 +124,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // （服务端内部仍要等一次 a11y idle），而 legacy 三通道在同类 busy 页会全败。若超时也
     // 退避 60s，一次抖动就让整轮退化成"引擎全盲"，实测 run-20261102-125547 因此 8 断言全灭。
     // 传输类错误（超时/断连）只退避 5s（下一两次 dump 就回来），只有服务真的起不来才 60s。
-    let uia2FailedTransiently = false; // 本轮 uia2 是否因超时/断连失败（=服务活着且在忙=槽被占）
+    let uia2FailedTransiently = false; // （保留供退避分类）本轮 uia2 是否因超时/断连失败
     if (uia2 && Date.now() >= uia2DeadUntil) {
       try {
         const xml = await uia2.source();
@@ -146,7 +149,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // 死路**（exec-out/shell 崩 + file 通道 50s 白等 + 二轮重试 ≈ 140s/次，实测
     // run-20261102-220327 被 37 次超时 × 140s 拖到 3323s）。此时唯一正路是**等退避结束
     // 再试 uia2**（60s 预算，对齐历史 busy 页 38-55s 的 worst-case）。
-    if (uia2 && uia2FailedTransiently) {
+    // 槽被占的判定（2026-11-04 评审修正 P1-1）：**服务进程存活 且 失败不是"建会话失败: 500"**
+    // （500=服务活着但 UiAutomation 没注册上 → 槽空闲 → legacy 可用）。旧实现把守卫收窄到
+    // "瞬时报错"，导致"有应答但无树"（无 hierarchy/会话 id 缺失/JSON 解析失败——服务明显
+    // 活着=槽被占）也掉进 140s 的注定 legacy 死路。注释判据与实现对齐到同一句话。
+    // lastUia2Error 跨调用保留：跳过 uia2 尝试（退避期内）的调用也能凭上次的失败类型入守卫。
+    const slotHeldError = lastUia2Error && !/建会话失败: 500/.test(lastUia2Error) && !/uia2 不可用/.test(lastUia2Error);
+    if (uia2 && slotHeldError) {
       const pid = await uia2.serverPid().catch(() => null);
       if (pid) {
         // 等过退避期，然后给一次 60s 的 uia2 重试（页面在退避期间继续渲染，往往能出树）
@@ -425,9 +434,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           prevHash = null;
           continue;
         }
-        // ② 签名不变/不可用（冻帧或截图失败）：树 hash 判定。基线是本轮 swipe 前的状态
+        // ② 签名不变/不可用（冻帧或截图失败）：树 hash 判定。
+        // 基线可能已被快通道轮置 null（签名变化即清空）——此时无法证伪"没动"，保守按
+        // moved=true 处理（2026-11-04 评审实证：判 false 会让冻帧切换点跳过树确认误判
+        // "到底"，帧=[变,冻,冻]+树逐轮变 → 第 2 轮 break）。代价仅一轮多滚，下一轮起
+        // 基线恢复，比较恢复正常。
         const curHash = await hashNow();
-        const moved = prevHash != null && curHash !== prevHash;
+        const moved = prevHash == null ? true : curHash !== prevHash;
         prevHash = curHash; // 无论是否 moved 都推进基线（下轮与当前状态比）
         prevSig = curSig;
         if (moved) {
