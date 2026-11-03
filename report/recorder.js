@@ -110,10 +110,17 @@ export function buildDump(runJson, opts = {}) {
   const preset = opts.screenshotIds ?? null;
   const screenshots = {};
   const tasks = (run.steps ?? []).map((step) => {
+    // result 词表收敛（2026-11-04 评审 P2）：写侧有 'ok'|'failed'|'cancelled'|'error' 四种
+    // （withRecording），fixture/旧数据还有 'fail' 拼写；cancelled（用户拒绝确认）与 error
+    // （设备异常）此前都被折叠成 failed，报告语义有损。映射为四态 + 未知拼写兜底 failed。
+    const status = step.result === 'ok' ? 'finished'
+      : step.result === 'cancelled' ? 'cancelled'
+      : step.result === 'error' ? 'error'
+      : 'failed'; // failed / 旧拼写 fail / 未知值一律按失败显示
     const task = {
       taskId: String(step.index),
       type: step.type,
-      status: step.result === 'ok' ? 'finished' : 'failed',
+      status,
       thought: step.thought ?? '',
       errorMessage: step.error ?? null,
       timing: {
