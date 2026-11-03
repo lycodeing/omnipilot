@@ -11,7 +11,7 @@ import { Yadb, readTextAt } from './input.js';
 import { withLocateRetry, StepRollout } from './rollout.js';
 import * as state from './state.js';
 import * as net from '../net/profile.js';
-import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor } from './png.js';
+import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor, screenSignature } from './png.js';
 import { createUia2 } from './uia2.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
@@ -114,17 +114,52 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // ② file 耐久通道：设备侧 50s 等满 idle 等待，&& 串联 cat（dump 失败非零退出不会 cat
     //    陈旧文件）。粘性通道记住上次成功的形态，健康屏仍走快通道。
     // 通道 0：uia2 server（busy 态 157-958ms vs 38-55s，调研落地 2026-11-01）。
-    // 失败退避 60s 后重试探测；期间走 legacy 三通道。lastTreeHash 基线在两通道间通用
+    // 失败退避后重试探测；期间走 legacy 三通道。lastTreeHash 基线在两通道间通用
     // （都是同一棵 a11y 树的 hash）。返回形状与 legacy 完全一致。
+    //
+    // 退避时长按错误类型区分（2026-11-02 实证）：uia2 source 超时是 busy 页的**瞬时抖动**
+    // （服务端内部仍要等一次 a11y idle），而 legacy 三通道在同类 busy 页会全败。若超时也
+    // 退避 60s，一次抖动就让整轮退化成"引擎全盲"，实测 run-20261102-125547 因此 8 断言全灭。
+    // 传输类错误（超时/断连）只退避 5s（下一两次 dump 就回来），只有服务真的起不来才 60s。
+    let uia2FailedTransiently = false; // 本轮 uia2 是否因超时/断连失败（=服务活着且在忙=槽被占）
     if (uia2 && Date.now() >= uia2DeadUntil) {
       try {
         const xml = await uia2.source();
         if (xml.includes('</hierarchy>')) return xml;
         throw new Error('uia2 无 hierarchy');
       } catch (e) {
-        uia2DeadUntil = Date.now() + 60_000;
         lastUia2Error = String(e?.message ?? e).slice(0, 100);
-        console.warn(`[uia2] 不可用（${lastUia2Error}），60s 内走 legacy dump 通道`);
+        const transient = e?.status === undefined && /超时|连接|中断|ECONN|socket/i.test(lastUia2Error);
+        uia2FailedTransiently = transient;
+        const backoffMs = transient ? 5_000 : 60_000;
+        uia2DeadUntil = Date.now() + backoffMs;
+        console.warn(`[uia2] 不可用（${lastUia2Error}），${Math.round(backoffMs / 1000)}s 内走 legacy dump 通道`);
+      }
+    }
+    // —— 关键平台约束（2026-11-03 双向实验证实）——
+    // Android 11 的 UiAutomation 注册槽**排他**：uia2 服务健康持槽时，shell 的
+    // `uiautomator dump` 去注册第二个 → AccessibilityManagerService 抛 RemoteException →
+    // uiautomator 未捕获自爆（logcat: Sending signal PID SIG:9）→ rc=137。
+    // 实验证据：停服务 → dump 立刻成功（106KB）；起服务 → dump 必 rc=137。
+    // 槽被占的判定：服务进程存活 **且** 本次失败不是"建会话失败: 500"（500=服务活着但
+    // UiAutomation 没注册上 → 槽空闲 → legacy 可用）。槽被占时 legacy 三通道是**注定的
+    // 死路**（exec-out/shell 崩 + file 通道 50s 白等 + 二轮重试 ≈ 140s/次，实测
+    // run-20261102-220327 被 37 次超时 × 140s 拖到 3323s）。此时唯一正路是**等退避结束
+    // 再试 uia2**（60s 预算，对齐历史 busy 页 38-55s 的 worst-case）。
+    if (uia2 && uia2FailedTransiently) {
+      const pid = await uia2.serverPid().catch(() => null);
+      if (pid) {
+        // 等过退避期，然后给一次 60s 的 uia2 重试（页面在退避期间继续渲染，往往能出树）
+        const remain = Math.max(0, uia2DeadUntil - Date.now());
+        if (remain > 0) await new Promise((r) => setTimeout(r, Math.min(remain, 10_000)));
+        uia2DeadUntil = 0;
+        try {
+          const xml = await uia2.source({ timeoutMs: 60_000 });
+          if (xml.includes('</hierarchy>')) return xml;
+        } catch (e) {
+          throw new Error(`uia2 busy（重试仍失败: ${String(e?.message ?? e).slice(0, 80)}）；legacy 因 UiAutomation 槽被 uia2 占用不可用（Android 11 排他注册）`);
+        }
+        throw new Error('uia2 busy 且重试无 hierarchy；legacy 因 UiAutomation 槽被 uia2 占用不可用（Android 11 排他注册）');
       }
     }
     // 设备侧 timeout 可用性探测（旧镜像/redroid 老底可能无 toybox timeout）：
@@ -344,9 +379,31 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       const dirKey = String(direction ?? 'down').toLowerCase();
       const dir = moves[dirKey] ? dirKey : 'down';
       const [fromRegion, toRegion] = moves[dir];
-      // 前基线复用 lastTreeHash（busy 页单次 dump 38-55s，省一次 = 省约 40s/滚动）：
-      // 动画不改变 a11y 树，跨时间复用安全；launch/terminate 等换 App 的动作会清空它
-      let prev = lastTreeHash ?? (await dumpTree()).hash;
+      // 变化检测：**像素签名快通道 + 树 hash 兜底**（2026-11-02 性能修复）。
+      // 动机：整树 dump 在 busy WebView 上要 4-30s（uia2）/ 38-55s（legacy），实测 scroll
+      // 因此 170s/次，把 uia2 省下的取树时间全吃掉；截图+解码+采样实测 0.5-1s（解码 116-141ms、
+      // 采样 1-2ms），快 1-2 个数量级。
+      // 但不能只用签名：实测该 App 的 WebView 会**停止出帧**（screencap 连续返回逐字节相同的
+      // 陈旧画面）而 a11y 树仍在更新——此时签名恒等，单靠它会误判"到底"并提前中断。
+      // 所以签名只作**单向判据**：签名变了 ⇒ 一定变了（不问树）；签名没变 ⇒ 必须树确认。
+      //
+      // 关键：树基线用 lastTreeHash（上一次 dumpTree 的结果，即 swipe **前**的状态）——
+      // 不能用"降级后现取"（那时已经 swipe 过，本轮变化会被算到下一轮，max=1 的调用方
+      // （scrollUntil / tapEachRow 转向）会因此误判"到底"）。lastTreeHash 缺失才补一次 dump。
+      const sig = async () => {
+        try {
+          const { buffer } = await this.screencap();
+          return screenSignature(buffer);
+        } catch {
+          return null; // 截图失败：走树 hash 判定
+        }
+      };
+      const hashNow = async () => (await dumpTree({ fresh: true })).hash;
+      let prevSig = await sig();
+      // 树基线：优先复用跨调用基线 lastTreeHash（0 dump，调用方通常刚 dump 过）。
+      // 没有基线时必须**在首次 swipe 之前**补一次——否则"签名没变"无法证明"没动"，
+      // 会把真实滚动误报成到底（scrollUntil / tapEachRow 转向都用 max=1）。
+      let prevHash = lastTreeHash ?? (await hashNow());
       let scrolls = 0;
       let changed = false;
       while (scrolls < max) {
@@ -360,10 +417,21 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         }
         beforeAction();
         scrolls++;
-        const h = (await dumpTree()).hash;
-        if (h !== prev) {
+        const curSig = await sig();
+        // ① 快通道：签名变了 ⇒ 有变化。树基线随之失效（当前树未取，置 null 等下次确认时重建）
+        if (curSig && prevSig && curSig !== prevSig) {
           changed = true;
-          prev = h;
+          prevSig = curSig;
+          prevHash = null;
+          continue;
+        }
+        // ② 签名不变/不可用（冻帧或截图失败）：树 hash 判定。基线是本轮 swipe 前的状态
+        const curHash = await hashNow();
+        const moved = prevHash != null && curHash !== prevHash;
+        prevHash = curHash; // 无论是否 moved 都推进基线（下轮与当前状态比）
+        prevSig = curSig;
+        if (moved) {
+          changed = true;
         } else if (stopWhenNoChange) {
           break;
         }
@@ -401,14 +469,37 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // verifyColor：'auto'（蓝色启发式）| '#RRGGBB' | [r,g,b]；verify=false 关闭像素校验。
     // 转向：无在屏可答行时按第一个未答行几何：选项在屏下 → down 前进；行与选项都在屏上 → up 回退。
     // stopWhen 可见**且**全文档无未答行才 done。零面积节点（隐藏预渲染层）一律排除。
-    async tapEachRow({ rows, tap, stopWhen = null, maxRounds = 60, verify = true, verifyColor = 'auto', onQuestion = null } = {}) {
+    async tapEachRow({ rows, tap, stopWhen = null, maxRounds = null, verify = true, verifyColor = null, profile = null, onQuestion = null } = {}) {
       const result = { rounds: 0, taps: 0, verified: 0, unverified: 0, done: false, bottom: false, error: null, skipped: [] };
       if (!rows || !tap) { result.error = 'tapEachRow 需要 rows 与 tap 参数'; return result; }
-      const expectedColor = verifyColor === 'auto' || verifyColor == null ? null : (Array.isArray(verifyColor) ? verifyColor : parseHexColor(verifyColor));
-      if (verifyColor !== 'auto' && verifyColor != null && !expectedColor) {
-        result.error = `verifyColor 无法解析: ${verifyColor}（应为 '#RRGGBB' 或 [r,g,b] 或 'auto'）`;
+      // 场景 profile（skills 式按需加载）：只在调用方显式指定时 import，未指定的场景
+      // 零成本。profile 仅提供**调优参数**（settleMs / maxRounds / verifyColor），
+      // 不含任何 App 专有选择器——题面/选项/终止仍全部由 rows/tap/stopWhen 表达。
+      let prof = null;
+      if (profile) {
+        try {
+          const { loadProfile } = await import('./profiles/index.js');
+          prof = await loadProfile(profile);
+        } catch (e) {
+          result.error = `profile 加载失败: ${e?.message ?? e}`;
+          return result;
+        }
+      }
+      const effVerifyColor = verifyColor ?? prof?.verifyColor ?? 'auto';
+      const expectedColor = effVerifyColor === 'auto' || effVerifyColor == null ? null : (Array.isArray(effVerifyColor) ? effVerifyColor : parseHexColor(effVerifyColor));
+      if (effVerifyColor !== 'auto' && effVerifyColor != null && !expectedColor) {
+        result.error = `verifyColor 无法解析: ${effVerifyColor}（应为 '#RRGGBB' 或 [r,g,b] 或 'auto'）`;
         return result;
       }
+      const settleMs = Number.isFinite(prof?.settleMs) ? prof.settleMs : 700;
+      const maxRoundsEff = Math.max(1, Math.trunc(Number(maxRounds ?? prof?.maxRounds ?? 60)) || 60);
+      // 就绪等待预算（2026-11-02 实证）：调用方往往在"点进问卷"的同一步里紧接着调本工具，
+      // 此时页面可能还在转场/首屏渲染，树里**一行都没有**。旧实现见到 0 行立刻按"无行可答"
+      // 收尾返回 ok（实测 11s 就 ok 退出，整轮其余断言全灭）。改为：从未 tap 过且树中
+      // 0 行时，在 readyWaitMs 内反复等，不当成"到底/无行"。
+      const readyWaitMs = Math.max(0, Math.min(120_000, Number(prof?.readyTimeoutMs ?? 30_000) || 0));
+      const readyDeadline = Date.now() + readyWaitMs;
+      let readyWaitedMs = 0;
       const answered = new Set(); // 已作答行文本（跳过重 tap）
       const skipped = new Set(); // 选项集不匹配、无法作答的行（避免转向死循环）
       const tapSels = String(tap).split('|').map((s) => s.trim()).filter(Boolean);
@@ -416,7 +507,60 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       let noProgress = 0; // 连续"0 tap 且转向目标不变"轮数；WebView 过滚回弹只抖一帧，2 轮才判到底
       let hangRounds = 0; // 连续"tap 后双信号皆无"次数；2 次即判渲染器挂死退出
       let tapFailCount = 0; // 连续 tap 抛错次数（≥2 报错退出）
-      for (let round = 0; round < maxRounds; round++) {
+      // 待验证的上一轮 tap（延迟验证）：由下一次观测（下一轮 dump 或收尾 drain）结案。
+      let pendingTap = null;
+      // 结案一次待验证 tap。hashNow 可复用调用方刚取到的树 hash（省一次 dump）。
+      // 双信号：树 hash 变化（滚动/换页都算响应）或原坐标像素变为选中色（只选中未滚动）。
+      const finishPending = async (hashNow) => {
+        if (!pendingTap) return true;
+        const p = pendingTap;
+        let h = hashNow;
+        if (h === undefined) {
+          try { h = (await dumpTree({ fresh: true })).hash; } catch { h = null; }
+        }
+        let ok = h != null && h !== p.preHash;
+        let buf = null; // 验证截图（交给 onQuestion 作逐题取证，免二次截屏）
+        if (!ok && verify) {
+          try {
+            const { buffer } = await this.screencap();
+            buf = buffer;
+            const png = decodePng(buffer);
+            const b = p.bounds;
+            const cx = p.center[0]; const cy = p.center[1];
+            const rx = b ? Math.max(4, Math.round((b[2] - b[0]) * 0.2)) : 22;
+            const ry = b ? Math.max(4, Math.round((b[3] - b[1]) * 0.2)) : 22;
+            let hits = 0; let total = 0;
+            for (const fx of [-1, 0, 1]) for (const fy of [-1, 0, 1]) {
+              const px = pixelAt(png, cx + fx * rx, cy + fy * ry);
+              if (!px) continue;
+              total++;
+              if (expectedColor ? isColorish(px, expectedColor) : isBlueish(px)) hits++;
+            }
+            ok = total > 0 && hits >= Math.min(5, Math.max(3, Math.ceil(total * 0.6)));
+          } catch { ok = true; result.screencapFailed = (result.screencapFailed ?? 0) + 1; } // 放行但计数暴露（screencap 故障可绕过挂死防线的观测口）
+        }
+        pendingTap = null;
+        if (ok) {
+          result.verified++;
+          hangRounds = 0;
+          if (p.rowText) answered.add(p.rowText);
+        } else {
+          result.unverified++;
+          hangRounds++;
+        }
+        // 逐题进度回调（报告连续回放用）：每题一行子步骤 + 验证截图（无截图时由调用方补拍）
+        if (onQuestion) {
+          try {
+            await onQuestion({ row: p.rowText, option: p.optionText, ok, buffer: buf });
+          } catch { /* 进度回调失败不阻断作答 */ }
+        }
+        return ok;
+      };
+      // 注意：就绪等待轮次**不消耗 maxRounds 配额**（readyBumps 抵消）。否则 questionnaire
+      // profile 的 45s 就绪预算会吃掉 45 轮，YAML 的 maxRounds: 60 只剩 15 轮给 27 题——
+      // 表现为"答到一半 exhausted"，且与就绪快慢耦合，难以排查。
+      let readyBumps = 0;
+      for (let round = 0; round < maxRoundsEff + readyBumps; round++) {
         result.rounds = round + 1;
         let flat = [];
         let hash0 = null;
@@ -426,6 +570,15 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           hash0 = t.hash;
         } catch (e) {
           result.error = `dump 失败: ${e?.message ?? e}`;
+          result.skipped = [...skipped];
+          return result;
+        }
+        // 本轮这次 dump 同时充当**上一轮 tap 的回执**（延迟验证）：tap 后没必要立刻再 dump
+        // 一次——下一轮开头本来就要取同一棵树。单题成本因此从 2 次 dump 降到 1 次
+        // （uia2 下单次 1-6s，27 题实测省约一半作答时间）。
+        await finishPending(hash0);
+        if (hangRounds >= 2) {
+          result.error = `renderer_unresponsive: 连续两次 tap 后页面无响应（树未变且选项未变为选中色 ${effVerifyColor ?? 'auto'}），渲染器疑似挂死`;
           result.skipped = [...skipped];
           return result;
         }
@@ -463,6 +616,17 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
             .filter((n) => tapSels.some((s) => matchNode(n, s)) && n.center[1] > cl.cy && n.center[1] <= bandEnd && areaOk(n))
             .sort((a, b) => a.center[0] - b.center[0]);
         };
+        // 就绪门（见上方 readyWaitMs 说明）：还没 tap 过任何行、且树上 0 个行节点 = 页面大概
+        // 还没到位（转场/首屏渲染中）。此时**不能**按"无行可答"收尾，否则 11s 就 ok 退出、
+        // 后续断言全灭（实测 run-20261102-213839）。等一小段再重新观测，直到预算耗尽。
+        if (clusters.length === 0 && result.taps === 0 && Date.now() < readyDeadline) {
+          const nap = Math.min(1000, Math.max(200, Math.round((readyDeadline - Date.now()) / 10)));
+          await new Promise((r) => setTimeout(r, nap));
+          readyWaitedMs += nap;
+          readyBumps++; // 归还本轮的 maxRounds 配额
+          result.rounds--; // 就绪等待不计入"轮次"（调用方看到的轮次应只统计真实作答轮）
+          continue;
+        }
         const pending = clusters.filter((c) => !(c.text && (answered.has(c.text) || skipped.has(c.text))));
         if (stopWhen) {
           // matchNode 与 rows/tap 同方言（支持 text*=）；find 已含在屏过滤（vis），返回的是节点本身
@@ -506,58 +670,21 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         }
         tapFailCount = 0;
         result.taps++;
-        await new Promise((r) => setTimeout(r, 700)); // 选中渲染 + scroll-into-view 动画
-        // 双信号验证：树 hash 变化（页面滚动/响应）或原坐标像素变为选中色（未滚动但选中）。
-        // 选中色 verifyColor：'auto'（蓝色启发式，蓝主题问卷兜底）| '#RRGGBB' | [r,g,b]；
-        // verify=false 关闭像素校验（树会响应的 App 用 hash 信号即可，全通用）。
-        // 采样网格按选项节点 bounds 缩放（3×3，30% 内缩），不假设控件尺寸。
-        let hash1 = null;
-        try { hash1 = (await dumpTree({ fresh: true })).hash; } catch { hash1 = null; }
-        let colorHit = false;
-        let verifyBuf = null; // 验证截图（有则交给 onQuestion 作逐题取证，免二次截屏）
-        if (verify && hash1 === hash0) {
-          try {
-            const { buffer } = await this.screencap();
-            verifyBuf = buffer;
-            const png = decodePng(buffer);
-            const b = Array.isArray(target.pick.bounds) ? target.pick.bounds : null;
-            const cx = target.pick.center[0]; const cy = target.pick.center[1];
-            const rx = b ? Math.max(4, Math.round((b[2] - b[0]) * 0.2)) : 22;
-            const ry = b ? Math.max(4, Math.round((b[3] - b[1]) * 0.2)) : 22;
-            let hits = 0; let total = 0;
-            for (const fx of [-1, 0, 1]) for (const fy of [-1, 0, 1]) {
-              const px = pixelAt(png, cx + fx * rx, cy + fy * ry);
-              if (!px) continue;
-              total++;
-              if (expectedColor ? isColorish(px, expectedColor) : isBlueish(px)) hits++;
-            }
-            colorHit = total > 0 && hits >= Math.min(5, Math.max(3, Math.ceil(total * 0.6)));
-          } catch { colorHit = true; result.screencapFailed = (result.screencapFailed ?? 0) + 1; } // 放行但计数暴露（screencap 故障可绕过挂死防线的观测口）
-        }
-        if (hash1 !== hash0 || (verify && colorHit)) {
-          result.verified++;
-          hangRounds = 0;
-          if (target.cl.text) answered.add(target.cl.text);
-        } else {
-          result.unverified++;
-          if (++hangRounds >= 2) {
-            result.error = `renderer_unresponsive: 连续两次 tap 后页面无响应（树未变且选项未变为选中色 ${verifyColor ?? 'auto'}），渲染器疑似挂死`;
-            break;
-          }
-        }
-        // 逐题进度回调（报告连续回放用）：每题一行子步骤 + 验证截图（hash 变化时 buffer 为
-        // null，由调用方自行补拍）。await 保证截图时序落在下一 tap 之前。
-        if (onQuestion) {
-          try {
-            await onQuestion({
-              row: target.cl.text,
-              option: String(target.pick.text || target.pick.contentDesc || ''),
-              ok: hash1 !== hash0 || (verify && colorHit),
-              buffer: verifyBuf,
-            });
-          } catch { /* 进度回调失败不阻断作答 */ }
-        }
+        // 选中渲染 + scroll-into-view 动画的 settle。延迟验证下这是**唯一**的等待：
+        // 下一轮 dump 落在 settle 之后，天然覆盖渲染；因此这里不必再为"立刻验证"多等一轮。
+        await new Promise((r) => setTimeout(r, settleMs));
+        // 挂起验证：本轮 tap 的回执由下一次观测（下一轮 dump / 收尾 drain）结案。
+        pendingTap = {
+          preHash: hash0,
+          center: target.pick.center,
+          bounds: Array.isArray(target.pick.bounds) ? target.pick.bounds : null,
+          rowText: target.cl.text ?? '',
+          optionText: String(target.pick.text || target.pick.contentDesc || ''),
+        };
       }
+      // 收尾 drain：最后一题的 tap 没有"下一轮 dump"可用，这里补一次观测结案。
+      // 只有在仍有挂起 tap 时才付这次代价（正常 done/bottom 退出路径会带上它）。
+      if (pendingTap && !result.error) await finishPending();
       // maxRounds 自然耗尽且未终止：显式标记（done/bottom/error 均为假的第四态，调用方可区分）
       if (!result.done && !result.bottom && !result.error) result.exhausted = true;
       result.skipped = [...skipped];

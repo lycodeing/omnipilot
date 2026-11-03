@@ -1,6 +1,7 @@
 // 门面 createDevice（契约 §1.1）：缓存流 / 动作置脏 / yadb 输入序列 / 环境查询 / 取证（注入假 adb 执行器）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import zlib from 'node:zlib';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,16 +20,49 @@ const FIXTURE_INPUT = FIXTURE.replace('<node index="2" text="" resource-id="com.
 
 const DUMPSYS = '  mResumedActivity: ActivityRecord{948c168 u0 com.lgdg.fourt/io.dcloud.PandoraEntryActivity t123}\n';
 
+// 构造最小合法 PNG（8-bit RGB、filter 0）：screenSignature 需要真可解码的截图，
+// 否则恒走 tree 回退路径，快通道永远测不到。
+function makePng(width, height, rgb) {
+  const stride = width * 3;
+  const raw = Buffer.alloc(height * (stride + 1));
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * (stride + 1) + 1 + x * 3;
+      raw[i] = rgb[0]; raw[i + 1] = rgb[1]; raw[i + 2] = rgb[2];
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; ihdr[9] = 2; ihdr[12] = 0;
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+    return Buffer.concat([len, Buffer.from(type, 'ascii'), data, Buffer.alloc(4)]);
+  };
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
 // 按子命令路由的假 adb 执行器
-function makeExec({ dumpScript = null } = {}) {
+// screencapScript：依次返回的 PNG（用于测"出帧 vs 冻帧"）；缺省返回非法 PNG（走 tree 回退）
+function makeExec({ dumpScript = null, screencapScript = null } = {}) {
   const calls = [];
   let dumpIdx = 0;
+  let shotIdx = 0;
   const exec = async (args) => {
     const joined = args.join(' ');
     calls.push(joined);
     if (joined.includes('get-state')) return { code: 0, stdout: 'device', stderr: '' };
     if (joined.includes('wm size')) return { code: 0, stdout: 'Physical size: 720x1280', stderr: '' };
-    if (joined.includes('screencap')) return { code: 0, stdout: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1]), stderr: '' };
+    if (joined.includes('screencap')) {
+      if (!screencapScript) return { code: 0, stdout: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1]), stderr: '' };
+      const png = screencapScript[Math.min(shotIdx, screencapScript.length - 1)];
+      shotIdx++;
+      return { code: 0, stdout: png, stderr: '' };
+    }
     if (joined.includes('uiautomator dump')) {
       const xml = dumpScript ? (dumpIdx < dumpScript.length ? dumpScript[dumpIdx++] : dumpScript.at(-1)) : FIXTURE;
       if (xml === '__FAIL__') return { code: 1, stdout: '', stderr: 'could not get idle state' };
@@ -369,5 +403,104 @@ test('readText：text=x#index=N 等值 MISS 后兜底剥 #index 做包含匹配'
   const r = await device.readText('text=子相#index=0'); // 等值必 MISS（无节点文本为'子相'），只能走剥 #index 的包含兜底
   assert.equal(r.ok, true);
   assert.equal(r.value, '电子相册');
+  await device.close();
+});
+
+// 回归（2026-11-02 真机实证）：该 App 的 WebView 会**停止出帧**——screencap 连续返回逐字节
+// 相同的陈旧画面，而 a11y 树仍在更新。纯像素签名会因此恒判"无变化"、把 scroll 误停在第一轮。
+// 修复后签名只作单向快通道（变了 ⇒ 一定变了），签名没变时必须用树 hash 确认。
+test('scroll：签名不变时回落树 hash（防 WebView 冻帧误判到底）', async () => {
+  // screencap 固定返回同一张 PNG（模拟冻帧），树按脚本变化
+  const device = await makeDevice({ dumpScript: [FIXTURE, FIXTURE_B, FIXTURE_B] });
+  const r = await device.scroll('up', { max: 5 });
+  assert.deepEqual(r, { scrolls: 2, changed: true }, '冻帧下仍按树变化判定（2 轮后树不再变 → 停）');
+  await device.close();
+});
+
+// 快通道验证：滚动持续生效（每帧都不同）时**0 次 dump**。
+// 前提是已有 lastTreeHash（真实调用方都先 dump 过：scrollUntil/tapEachRow 每轮开头 dump）。
+test('scroll：签名持续变化走快通道（0 次 uiautomator dump）', async () => {
+  const frames = [
+    makePng(40, 40, [200, 30, 40]),
+    makePng(40, 40, [30, 160, 60]),
+    makePng(40, 40, [40, 60, 200]),
+    makePng(40, 40, [220, 200, 40]),
+  ];
+  const exec = makeExec({ screencapScript: frames, dumpScript: [FIXTURE] });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  await device.dumpTree({ fresh: true }); // 建立 lastTreeHash（真实调用方的常态）
+  const before = exec.calls.filter((c) => c.includes('uiautomator dump')).length;
+  const r = await device.scroll('up', { max: 3 });
+  assert.deepEqual(r, { scrolls: 3, changed: true }, '每轮都判有变化，跑满 max');
+  const dumpCalls = exec.calls.filter((c) => c.includes('uiautomator dump')).length - before;
+  assert.equal(dumpCalls, 0, `快通道不应触发整树 dump，实际 ${dumpCalls} 次`);
+  await device.close();
+});
+
+// 冻帧场景：签名恒等 → 每轮付一次树 dump 确认。基线取 lastTreeHash 时（已有前置 dump）
+// 首轮即可正确判定"没动"，不会把真实滚动误报成到底。
+test('scroll：冻帧时用树 hash 兜底判定，且不重复建基线', async () => {
+  const red = makePng(40, 40, [200, 30, 40]);
+  const exec = makeExec({ screencapScript: [red, red, red, red], dumpScript: [FIXTURE, FIXTURE, FIXTURE] });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  await device.dumpTree({ fresh: true }); // lastTreeHash = FIXTURE 的 hash
+  const before = exec.calls.filter((c) => c.includes('uiautomator dump')).length;
+  const r = await device.scroll('up', { max: 5 });
+  assert.deepEqual(r, { scrolls: 1, changed: false }, '首轮签名不变 + 树未变 → 立即判到底');
+  const dumpCalls = exec.calls.filter((c) => c.includes('uiautomator dump')).length - before;
+  assert.equal(dumpCalls, 1, `复用基线后仅需 1 次确认 dump，实际 ${dumpCalls} 次`);
+  await device.close();
+});
+
+// 正确性红线：没有 lastTreeHash 时必须在首次 swipe **之前**补基线，
+// 否则"签名没变"无法证明"没动"（scrollUntil / tapEachRow 转向都用 max=1，会直接卡死）。
+test('scroll：无既有树基线时先补一次基线（max=1 也能识别真实滚动）', async () => {
+  const red = makePng(40, 40, [200, 30, 40]);
+  // 树从 FIXTURE 变到 FIXTURE_B：第 1 轮就应判 changed=true
+  const exec = makeExec({ screencapScript: [red, red], dumpScript: [FIXTURE, FIXTURE_B] });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  const r = await device.scroll('up', { max: 1 });
+  assert.deepEqual(r, { scrolls: 1, changed: true }, '首轮基线在 swipe 前取 → 能识别滚动');
+  await device.close();
+});
+
+// 回归（2026-11-02 真机实证）：调用方常在"点进问卷"同一步紧接着调 tapEachRow，此时页面
+// 还在转场/首屏渲染，树里一行都没有。旧实现见到 0 行立刻按"无行可答"收尾返回 ok
+// （实测 11s 就 ok 退出，整轮后续断言全灭）。修复：从未 tap 过且 0 行时先等页面就绪。
+test('tapEachRow：0 行且未 tap 过 → 先等页面就绪（不立刻 ok 退出）', async () => {
+  // 前两次 dump 是空树（模拟转场中），第 3 次起出现行与选项
+  const empty = '<?xml version="1.0"?><hierarchy rotation="0"><node index="0" text="加载中" resource-id="" class="android.widget.TextView" clickable="false" bounds="[0,600][720,660]" /></hierarchy>';
+  const exec = makeExec({ dumpScript: [empty, empty, FIXTURE, FIXTURE, FIXTURE] });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  const r = await device.tapEachRow({ rows: 'text=相册', tap: 'text=2025-09-16', maxRounds: 6, profile: 'form' });
+  assert.ok(r.taps >= 1, `就绪后应真的作答，实际 taps=${r.taps}（0 = 又提前 ok 退出了）`);
+  assert.equal(r.error, null);
+  await device.close();
+});
+
+// 对照：一直没有行（页面压根没有此类表单）→ 必须在预算耗尽后正常收尾，不能无限等
+test('tapEachRow：始终 0 行 → 就绪预算耗尽后收尾（不挂死）', async () => {
+  const empty = '<?xml version="1.0"?><hierarchy rotation="0"><node index="0" text="加载中" resource-id="" class="android.widget.TextView" clickable="false" bounds="[0,600][720,660]" /></hierarchy>';
+  const exec = makeExec({ dumpScript: [empty] });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  const t0 = Date.now();
+  const r = await device.tapEachRow({ rows: 'text=相册', tap: 'text=2025-09-16', maxRounds: 4, profile: 'form' });
+  assert.equal(r.taps, 0);
+  assert.equal(r.error, null, '无行是正常情形（非错误），但必须退出');
+  assert.ok(Date.now() - t0 < 60_000, '不应无限等待');
+  await device.close();
+});
+
+// 回归（自查发现的隐患）：就绪等待**不得消耗** maxRounds 配额。否则 questionnaire profile
+// 的 45s 就绪预算会吃掉 45 轮，YAML 的 maxRounds: 60 只剩 15 轮给 27 题（表现为答到一半
+// exhausted，且与就绪快慢耦合）。
+test('tapEachRow：就绪等待不消耗 maxRounds 配额', async () => {
+  // 前 3 次 dump 无行（转场），之后出现完整行/选项；maxRounds 设很小（2）也能答完
+  const loading = '<?xml version="1.0"?><hierarchy rotation="0"><node index="0" text="加载中" resource-id="" class="android.widget.TextView" clickable="false" bounds="[0,600][720,660]" /></hierarchy>';
+  const exec = makeExec({ dumpScript: [loading, loading, loading, FIXTURE, FIXTURE, FIXTURE] });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  const r = await device.tapEachRow({ rows: 'text=相册', tap: 'text=2025-09-16', maxRounds: 2, profile: 'form' });
+  assert.ok(r.taps >= 1, `就绪等待不应吃掉配额，实际 taps=${r.taps} rounds=${r.rounds}`);
+  assert.equal(r.error, null);
   await device.close();
 });

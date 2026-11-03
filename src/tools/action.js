@@ -215,6 +215,7 @@ export function buildActionTools(ctx) {
       maxRounds: Type.Optional(Type.Number()),
       verify: Type.Optional(Type.Boolean({ description: '默认 true：tap 后做像素选中色校验' })),
       verifyColor: Type.Optional(Type.String({ description: "选中色：'auto'（蓝色启发式，默认）| '#RRGGBB'" })),
+      profile: Type.Optional(Type.String({ description: "场景预设（按需加载，只含时序调优不含选择器）：questionnaire|form，或 ASK_PROFILE_DIR 下的自定义名" })),
     }),
     execute: async (_id, params) => {
       const gate = await confirmWrite(ctx, 'tap_each_row', params.rows ?? '视觉模式');
@@ -255,9 +256,11 @@ export function buildActionTools(ctx) {
         } else {
           // —— selector 模式（确定性快路径）：文案稳定的表单用 ——
           r = await device.tapEachRow({
-            rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null, maxRounds: params.maxRounds ?? 60,
+            rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null,
+            ...(params.maxRounds != null ? { maxRounds: params.maxRounds } : {}),
             ...(params.verify != null ? { verify: params.verify } : {}),
             ...(params.verifyColor != null ? { verifyColor: params.verifyColor } : {}),
+            ...(params.profile != null ? { profile: params.profile } : {}),
           });
         }
       } catch (e) {

@@ -597,16 +597,21 @@ test('scroll 工具 until=<selector>：透传 scrollUntil，found=false 转 erro
   assert.match(b2.error, /仍不可见/);
 });
 
-test('tap_each_row 工具：参数透传 + 默认 maxRounds 60 + device 抛错转结构化', async () => {
+test('tap_each_row 工具：参数透传 + maxRounds 交由设备层/profile 兜底 + device 抛错转结构化', async () => {
   const ctx = makeCtx({});
   ctx.opts = { yes: true };
   let captured = null;
   ctx.device.tapEachRow = async (o) => { captured = o; return { rounds: 1, taps: 1, verified: 1, unverified: 0, done: true, bottom: false, error: null, skipped: [] }; };
   const tool = buildTools(ctx).find((t) => t.name === 'tap_each_row');
   await tool.execute('id1', { rows: 're:Q', tap: 'text=opt', verifyColor: '#FF0000' }, undefined, undefined, {});
-  assert.equal(captured.maxRounds, 60, '工具层默认与设备层一致');
+  // 工具层不钉死 maxRounds：缺省交给设备层（profile 可提供），显式值原样透传
+  assert.equal(captured.maxRounds, undefined, '未传时不得覆盖设备层/profile 默认');
+  assert.equal(captured.profile, undefined, '未传 profile 时不得注入');
   assert.equal(captured.verifyColor, '#FF0000');
   assert.equal(captured.verify, undefined);
+  await tool.execute('id1b', { rows: 're:Q', tap: 'text=opt', maxRounds: 12, profile: 'questionnaire' }, undefined, undefined, {});
+  assert.equal(captured.maxRounds, 12, '显式 maxRounds 原样透传');
+  assert.equal(captured.profile, 'questionnaire', 'profile 原样透传（按需加载在设备层）');
   // device 抛错（冷启动 getSize 未就绪等）→ ok:false 结构化，不上抛
   ctx.device.tapEachRow = async () => { throw new Error('屏幕尺寸未就绪'); };
   const r = await tool.execute('id2', { rows: 're:Q', tap: 'text=opt' }, undefined, undefined, {});

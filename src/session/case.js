@@ -32,7 +32,7 @@ const ALL_TYPES = new Set([...AGENT_TYPES, ...ASSERT_TYPES, ...QUERY_TYPES, ...W
 const PARAM_KEYS = new Set([
   'value', 'direction', 'distancePct', 'until', 'keyName', 'name', 'timeout',
   'max', 'maxScrolls', 'durationMs', 'appId', 'package', 'packageName', 'mode', 'path', 'quiet',
-  'rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor',
+  'rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile',
 ]);
 const NUMBER_KEYS = new Set(['seconds', 'max', 'timeout', 'maxScrolls', 'durationMs', 'distancePct']);
 
@@ -204,7 +204,7 @@ export function buildToolCall(step) {
       },
     };
   }
-  if (t === 'aiTapEach') return { tool: 'tap_each_row', params: { ...(step.rows ? { rows: step.rows } : {}), ...(step.tap ? { tap: step.tap } : {}), ...(step.stopWhen ? { stopWhen: step.stopWhen } : {}), ...(step.maxRounds != null && Number.isFinite(Number(step.maxRounds)) ? { maxRounds: Math.max(1, Math.trunc(Number(step.maxRounds))) } : {}), ...(step.verify != null ? { verify: /^(false|no|off)$/i.test(String(step.verify)) ? false : true } : {}), ...(step.verifyColor ? { verifyColor: String(step.verifyColor) } : {}) } };
+  if (t === 'aiTapEach') return { tool: 'tap_each_row', params: { ...(step.rows ? { rows: step.rows } : {}), ...(step.tap ? { tap: step.tap } : {}), ...(step.stopWhen ? { stopWhen: step.stopWhen } : {}), ...(step.maxRounds != null && Number.isFinite(Number(step.maxRounds)) ? { maxRounds: Math.max(1, Math.trunc(Number(step.maxRounds))) } : {}), ...(step.verify != null ? { verify: /^(false|no|off)$/i.test(String(step.verify)) ? false : true } : {}), ...(step.verifyColor ? { verifyColor: String(step.verifyColor) } : {}), ...(step.profile ? { profile: String(step.profile) } : {}) } };
   if (t === 'uiDump') return { tool: 'ui_dump', params: { ...(step.path ? { path: step.path } : {}) } };
   if (t === 'launch') return { tool: 'launch', params: { appId: step.appId || step.text } };
   if (t === 'terminate') return { tool: 'terminate', params: { packageName: step.packageName || step.package || step.text } };
