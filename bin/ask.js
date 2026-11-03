@@ -12,6 +12,7 @@ import { parseArgv } from '../src/cli/argv.js';
 import { acquireLock, releaseLock } from '../src/cli/lock.js';
 import { collectDeviceFacts } from '../src/cli/device-facts.js';
 import { pruneToolHistory } from '../src/session/image-prune.js';
+import { createPlanCache, planKey } from '../src/session/plan-cache.js';
 import { resolveWorkspace, ensureWorkspace } from '../src/cli/workspace.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -99,6 +100,7 @@ const usage = `ask — 安卓场景测试 agent
   --model-url/--model-key/--model-name/--model-family   覆盖 ASK_MODEL_* 环境变量
   --prompt <t> --prompt-file <f> --prompt-mode append|replace|none
   --vlm-locate --yes --timeout <sec> --fresh-locate --json --quiet --pregrant
+                      （--timeout：整 run 时间预算秒数，主循环/马拉松/重试各处生效；缺省不限）
   --keep-images <n>   会话历史保留最近 n 张截图（默认 3；断言密集用例可设 2 省 token）
   --context-steps <n|all> 步骤上下文窗口：保留最近 n 步原文 + 整体描述（默认 3；all=全部保留；
                       优先级高于用例 YAML 顶层 context: 键）
@@ -291,11 +293,15 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
 
   const opts = {
     yes: !!flags.yes,
-    timeoutMs: Number(flags.timeout || 60) * 1000,
+    // 整 run 时间预算（cases/README："整 run 时长由 --timeout 控制"）。此前 opts.timeoutMs
+    // 全仓零消费者是死配置（实测 run 超预算仍不退出）；现在 runDeadline 在主循环/马拉松/
+    // 空轮重试各处生效。缺省 0 = 不限（兼容未传 flag 的既有调用），传了才生效。
+    timeoutMs: flags.timeout != null ? Number(flags.timeout) * 1000 : 0,
     vlmLocate: !!flags['vlm-locate'],
     freshLocate: !!flags['fresh-locate'],
     rollback: flags.rollback || 'on',
   };
+  const runDeadline = opts.timeoutMs > 0 ? Date.now() + opts.timeoutMs : 0;
 
   let device;
   let bridge = null;
@@ -419,6 +425,28 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
 
     // 引擎直执行步骤用：工具名 → 工具（与 agent 共用同一批实例）
     const toolMap = new Map(runTools.map((t) => [t.name, t]));
+
+    // —— 动作计划缓存（业界调研落地，Midscene caching 同款）——
+    // 包装工具 execute 记录"本步实际使用的工具调用序列"（仅统计，不改行为）；ai/aiAct 步
+    // 结束时若全部调用成功，则缓存完整调用序列（plan）。二次执行同一步骤时按序回放
+    // （0 模型往返），任一调用失败即中止回放、删条目、回退模型规划。
+    // 马拉松步（文本含终止条件的续作循环）不缓存：其后续动作依赖逐轮页面状态，整段
+    // 回放不安全（Midscene 同款取舍）。
+    const lastTool = { calls: [] };
+    for (const t of runTools) {
+      const orig = t.execute.bind(t);
+      t.execute = async (id, params, ...rest) => {
+        const r = await orig(id, params, ...rest);
+        lastTool.calls.push({ tool: t.name, params, ok: r?.details ? r.details.ok !== false : true });
+        return r;
+      };
+    }
+    const planCache = createPlanCache(WORKSPACE.stateDir);
+    const planKeyOf = (i, stepText) => planKey({
+      caseId: caseObj.source || caseObj.name || 'case',
+      stepIndex: i,
+      stepText,
+    });
 
     // 逐步骤执行。ai/aiQuery/aiAssert 的设备动作由工具记账包装自动写入 steps[]（§14.1），
     // 这里只记用例级的 net/sleep/aiWaitFor（它们不走工具层）。
@@ -544,6 +572,11 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     try { const rm = getMsgs(); if (rm) pruneToolHistory(rm, { keepRecent: 0 }); } catch { /* 折叠失败不阻断 */ }
 
     for (let i = 0; i < steps.length; i++) {
+      // 整 run 时间预算（--timeout）：到点即止，剩余步骤跳过——实测 run 曾超预算 2 倍仍不退出
+      if (runDeadline && Date.now() > runDeadline) {
+        console.warn(`[timeout] 已超 --timeout 预算（${Math.round(opts.timeoutMs / 1000)}s），剩余 ${steps.length - i} 步跳过`);
+        break;
+      }
       const step = steps[i];
       ctx.currentStepIndex = i;
       // 坐标缓存键（§2.1）：步骤身份 + 该步骤内定位序号；每步重置 ordinal
@@ -744,6 +777,32 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             aiImages = [{ type: 'image', data: c0.buffer.toString('base64'), mimeType: c0.mimeType }];
           } catch { /* 取图失败不阻断 */ }
         }
+        // —— 动作计划缓存回放（0 模型往返，业界调研落地）——
+        // 命中即按序回放缓存的调用序列；任一失败删条目并落回模型规划（重新学习后重写）。
+        const curPlanKey = (step.type === 'ai' || step.type === 'aiAct') ? planKeyOf(i, stepText) : null;
+        if (curPlanKey) {
+          const cached = planCache.get(curPlanKey);
+          const plan = Array.isArray(cached?.plan) && cached.plan.length ? cached.plan : (cached ? [cached] : null);
+          if (plan) {
+            if (!flags.quiet) console.warn(`[plan-cache] 步骤 ${i} 命中缓存，回放 ${plan.length} 个调用（省模型往返）`);
+            let allOk = true;
+            lastTool.calls = [];
+            for (const c of plan) {
+              const tool = toolMap.get(c.tool);
+              if (!tool) { allOk = false; break; }
+              const r = await tool.execute(`plan-${i}`, c.params);
+              if (r?.details?.ok === false) { allOk = false; break; }
+            }
+            if (allOk) {
+              attachStepShot(recorder.stepCount); // 回放步终态取证
+              continue;
+            }
+            if (!flags.quiet) console.warn('[plan-cache] 回放未成功，回退模型规划');
+            planCache.delete(curPlanKey);
+            lastTool.calls = []; // 丢弃回放期的半程调用，模型路径重新记账
+          }
+        }
+        lastTool.calls = []; // 模型路径重新记账（清掉此前引擎步/回放步的调用）
         const stepsBefore = recorder.stepCount;
         await session.prompt(text, { images: step.type === 'aiAssert' ? promptImages : aiImages });
         let answer = lastAssistantText(session);
@@ -753,9 +812,15 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         const marathon = /直到|重复|逐题|每一题|依次/.test(stepText);
         // 终止标记：步骤文本"直到…"后的引号文本（确定性验证，不依赖模型自报）
         const marathonMarker = marathon ? waitSelectorFromText((/直到[^，。；]*?[「“"']([^」”"']{1,20})[」”"']/.exec(stepText) || [null, null])[1] || '') : null;
+        let marathonRan = false; // 是否发生过续作催促（发生了则该步不写计划缓存）
         if ((step.type === 'ai' || step.type === 'aiAct') && marathon) {
           for (let resume = 0; resume < 10; resume++) {
-            if (answer && /BLOCKED/i.test(answer)) break; // 模型显式受阻 → 结束
+            if (runDeadline && Date.now() > runDeadline) { console.warn('[timeout] 步内催促超 --timeout 预算，提前收束'); break; }
+            // 完成自报（2026-11-04 评审修复）：催促词让模型"终止条件已满足回复'完成'"，但旧
+            // 循环从不检查 answer——模型每轮回"完成"仍被逼答满 10 轮（实测单步空耗 24-88 分钟）。
+            // 仅认"短回复含完成"（防长篇散文里 incidental 完成二字误判）；BLOCKED 同义结束。
+            const selfDone = answer && answer.length <= 20 && /完成/i.test(answer);
+            if (answer && (/BLOCKED/i.test(answer) || selfDone)) break;
             // 确定性终止检测：终止标记元素已可见 → 任务完成，结束循环
             if (marathonMarker) {
               try {
@@ -763,6 +828,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                 if (done?.appeared) break;
               } catch { /* 检测失败继续催 */ }
             }
+            marathonRan = true;
             if (!flags.quiet) console.warn(`[warn] 马拉松步未完成（无完成标记），催促继续 ${resume + 1}/10`);
             // 每轮取新截图：题目推进后屏幕已变，步首旧图会误导模型
             let freshImgs = [];
@@ -785,6 +851,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         // 否则 ai 步静默无操作会让后续步骤在错误页面上连锁失败（真机事故根因）。
         if (!answer && recorder.stepCount === stepsBefore && step.type !== 'aiAssert') {
           for (let retry = 0; retry < 3 && !answer; retry++) {
+            if (runDeadline && Date.now() > runDeadline) { console.warn('[timeout] 空轮重试超 --timeout 预算，停止重试'); break; }
             // 第 2 次重试去图：网关对"带图+短文本"偶发空响应，去图可绕开该触发面
             const imgs = retry === 0 ? aiImages : [];
             if (!flags.quiet) console.warn(`[warn] 模型空轮（无文本无工具），重试 ${retry + 1}/3（${retry === 0 ? '附屏' : retry === 1 ? '去图' : '换措辞去图'}）`);
@@ -845,6 +912,15 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             { images: [] },
           );
           answer = lastAssistantText(session);
+        }
+        // —— 计划缓存写入：全部工具调用成功的 ai/aiAct 步记完整 plan；马拉松步不缓存
+        //（其续作依赖逐轮页面状态，整段回放不安全——Midscene 同款取舍）——
+        if (curPlanKey && !marathonRan && lastTool.calls.length >= 1 && lastTool.calls.every((c) => c.ok)) {
+          planCache.put(curPlanKey, {
+            tool: lastTool.calls[0].tool,
+            params: lastTool.calls[0].params,
+            plan: lastTool.calls.map((c) => ({ tool: c.tool, params: c.params })),
+          });
         }
         // ai 步无文本属正常（工具调用即交付），不催答
         ctx.lastThought = answer;
