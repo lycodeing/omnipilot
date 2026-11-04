@@ -8,6 +8,7 @@ export const ACTION_TYPES = ['tap', 'input', 'swipe', 'long_press', 'key', 'back
 const LABELS = {
   tap: '点击', input: '输入', swipe: '滑动', assert: '断言',
   screenshot: '截图', sleep: '等待', extract: '提取',
+  answer_row: '作答', // tapEachRow 逐题取证子步骤（selector/视觉两模式共用）
 };
 
 export function typeLabel(type) {

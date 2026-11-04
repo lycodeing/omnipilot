@@ -247,7 +247,7 @@ export function buildActionTools(ctx) {
                     let buf = info.buffer;
                     if (!buf) { const shot = await ctx.device.screencap(); buf = shot.buffer; }
                     ctx.recorder.attachScreenshot(handle.index, buf);
-                    handle.end({ result: 'ok', error: info.verified ? null : '像素验证未确认（可能已滚动出屏）' });
+                    handle.end({ result: info.ok ? 'ok' : 'failed', error: info.ok ? null : '像素验证未确认（可能已滚动出屏）' });
                   } catch { try { handle.end({ result: 'ok' }); } catch { /* ignore */ } }
                 }
               : null,
@@ -255,12 +255,27 @@ export function buildActionTools(ctx) {
           });
         } else {
           // —— selector 模式（确定性快路径）：文案稳定的表单用 ——
+          // onQuestion 逐题取证（2026-11-05 修复：此前只有视觉模式接了 onQuestion，
+          // selector 模式的报告里整步只有一张终态截图，逐题作答过程完全不可见——
+          // 用户看报告无法确认"到底答没答"。与视觉模式同款：每题一行 answer_row
+          // 子步骤 + 验证截图（hash 变化轮 buffer 为 null 时补拍终态）。
           r = await device.tapEachRow({
             rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null,
             ...(params.maxRounds != null ? { maxRounds: params.maxRounds } : {}),
             ...(params.verify != null ? { verify: params.verify } : {}),
             ...(params.verifyColor != null ? { verifyColor: params.verifyColor } : {}),
             ...(params.profile != null ? { profile: params.profile } : {}),
+            onQuestion: ctx.recorder
+              ? async (info) => {
+                  const handle = ctx.recorder.startStep('answer_row', `${String(info.row).slice(0, 24)} → ${info.option}`);
+                  try {
+                    let buf = info.buffer;
+                    if (!buf) { const shot = await ctx.device.screencap(); buf = shot.buffer; }
+                    ctx.recorder.attachScreenshot(handle.index, buf);
+                    handle.end({ result: info.ok ? 'ok' : 'failed', error: info.ok ? null : '像素验证未确认（可能已滚动出屏）' });
+                  } catch { try { handle.end({ result: 'ok' }); } catch { /* ignore */ } }
+                }
+              : null,
           });
         }
       } catch (e) {
