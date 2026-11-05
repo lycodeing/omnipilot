@@ -300,7 +300,8 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
+  box-shadow: var(--glow-accent);
   cursor: pointer;
   transition: background 0.15s ease, transform 0.1s ease;
 }

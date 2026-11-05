@@ -256,7 +256,7 @@ function onSelectTask(executionIndex, taskId) {
   position: sticky;
   top: 0;
   z-index: 40;
-  background: rgba(242, 244, 247, 0.88);
+  background: rgba(7, 11, 20, 0.78);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
@@ -297,18 +297,22 @@ function onSelectTask(executionIndex, taskId) {
 }
 .nav-name {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   color: var(--text-1);
+  text-shadow: 0 0 18px rgba(34, 211, 238, 0.25);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .nav-sub {
   flex: none;
-  font-size: 12px;
+  font-size: 11px;
+  font-family: var(--font-mono);
   color: var(--text-3);
   white-space: nowrap;
+  letter-spacing: 0.02em;
 }
 .status-badge {
   flex: none;
@@ -320,27 +324,40 @@ function onSelectTask(executionIndex, taskId) {
   border-radius: var(--radius-chip);
   font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.06em;
   background: var(--neutral-weak);
   color: var(--neutral);
+  border: 1px solid var(--border);
 }
 .badge-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  animation: badge-pulse 2s ease-in-out infinite;
+}
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 .status-badge.status-pass {
   background: var(--pass-weak);
   color: var(--pass);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  box-shadow: var(--glow-pass);
 }
 .status-badge.status-fail,
 .status-badge.status-error {
   background: var(--fail-weak);
   color: var(--fail);
+  border: 1px solid rgba(251, 113, 133, 0.45);
+  box-shadow: var(--glow-fail);
 }
 .status-badge.status-timeout {
   background: var(--warn-weak);
   color: var(--warn);
+  border: 1px solid rgba(251, 191, 36, 0.45);
 }
 
 /* 手机 Tab（≤767 显示） */
@@ -388,16 +405,25 @@ function onSelectTask(executionIndex, taskId) {
 }
 .nav-stat-label {
   color: var(--text-3);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.12em;
 }
 .nav-stat-value {
-  color: var(--text-1);
-  font-weight: 600;
+  color: var(--accent);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 .model-chip {
   display: inline-block;
   padding: 1px 8px;
   border-radius: var(--radius-chip);
-  background: var(--neutral-weak);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--accent-weak);
   color: var(--text-2);
   font-size: 11px;
 }
@@ -478,6 +504,8 @@ function onSelectTask(executionIndex, taskId) {
   overflow: hidden;
 }
 .player-card {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   flex: 1;
   min-height: 0;
   display: flex;
@@ -490,7 +518,7 @@ function onSelectTask(executionIndex, taskId) {
   gap: 10px;
   padding: 12px;
   border-top: 1px solid var(--divider);
-  background: #fafbfd;
+  background: var(--bg-subtle);
 }
 .detail-card {
   min-width: 0;
@@ -498,7 +526,15 @@ function onSelectTask(executionIndex, taskId) {
   flex-direction: column;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-ctl);
+  border-radius: var(--radius-card);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--shadow-card);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.detail-card:hover {
+  border-color: var(--accent-border);
+  box-shadow: var(--shadow-card), 0 0 0 1px rgba(34, 211, 238, 0.12);
   padding: 12px 14px;
 }
 .detail-card > * {

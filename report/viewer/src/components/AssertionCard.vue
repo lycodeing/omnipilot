@@ -131,7 +131,8 @@ const list = computed(() =>
 }
 .assertion-row.fail .assertion-flag {
   background: var(--fail);
-  color: #fff;
+  color: #2a070d;
+  box-shadow: var(--glow-fail);
 }
 .assertion-body {
   min-width: 0;
