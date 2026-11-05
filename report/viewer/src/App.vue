@@ -75,6 +75,20 @@ const statusText = computed(() => {
   return { pass: '通过', fail: '失败', error: '错误', timeout: '超时' }[s] || s
 })
 
+// 主题：默认浅色；深色 HUD 为可选模式，选择持久化（index.html 的内联脚本在挂载前
+// 应用 data-theme 防白闪）。切换即改 <html data-theme>，令牌层整体换肤。
+const theme = ref(document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light')
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark'
+  if (theme.value === 'dark') document.documentElement.setAttribute('data-theme', 'dark')
+  else document.documentElement.removeAttribute('data-theme')
+  try {
+    localStorage.setItem('ask-report-theme', theme.value)
+  } catch {
+    /* 存储不可用：本次会话内切换仍有效 */
+  }
+}
+
 function isStr(v) {
   return typeof v === 'string'
 }
@@ -138,6 +152,26 @@ function onSelectTask(executionIndex, taskId) {
         <span class="status-badge" :class="'status-' + (meta.status || 'unknown')">
           <i class="badge-dot"></i>{{ statusText }}
         </span>
+        <button
+          class="theme-toggle"
+          type="button"
+          :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色 HUD 主题'"
+          :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色 HUD 主题'"
+          @click="toggleTheme"
+        >
+          <svg v-if="theme === 'dark'" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <circle cx="8" cy="8" r="3.2" fill="currentColor" />
+            <path
+              d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+            />
+          </svg>
+          <svg v-else viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path d="M13.4 9.6A5.6 5.6 0 0 1 6.4 2.6a5.6 5.6 0 1 0 7 7Z" fill="currentColor" />
+          </svg>
+        </button>
         <div class="nav-tabs" role="tablist">
           <button
             type="button"
@@ -256,7 +290,7 @@ function onSelectTask(executionIndex, taskId) {
   position: sticky;
   top: 0;
   z-index: 40;
-  background: rgba(7, 11, 20, 0.78);
+  background: var(--nav-bg);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
@@ -301,7 +335,7 @@ function onSelectTask(executionIndex, taskId) {
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--text-1);
-  text-shadow: 0 0 18px rgba(34, 211, 238, 0.25);
+  text-shadow: var(--title-glow);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -334,7 +368,7 @@ function onSelectTask(executionIndex, taskId) {
   height: 6px;
   border-radius: 50%;
   background: currentColor;
-  box-shadow: 0 0 8px currentColor;
+  box-shadow: var(--dot-glow);
   animation: badge-pulse 2s ease-in-out infinite;
 }
 @keyframes badge-pulse {
@@ -358,6 +392,26 @@ function onSelectTask(executionIndex, taskId) {
   background: var(--warn-weak);
   color: var(--warn);
   border: 1px solid rgba(251, 191, 36, 0.45);
+}
+
+.theme-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: var(--bg-card);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.theme-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  box-shadow: var(--glow-accent);
 }
 
 /* 手机 Tab（≤767 显示） */

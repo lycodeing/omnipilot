@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#f2f4f7" />
     <title>ASK 测试报告</title>
     <style>
@@ -13,7 +13,21 @@
         padding: 0;
         background: #f2f4f7;
       }
+      /* 深色主题（用户上次选择）：挂载前即生效，避免白闪 */
+      html[data-theme='dark'],
+      html[data-theme='dark'] body {
+        background: #070b14;
+      }
     </style>
+    <script>
+      // 主题持久化：缺省浅色；用户切到 dark 后记住（与 global.css 的 :root[data-theme] 对应）
+      try {
+        var t = localStorage.getItem('ask-report-theme');
+        if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+      } catch (e) {
+        /* localStorage 不可用（file:// 隐私模式等）→ 保持浅色默认 */
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
