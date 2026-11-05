@@ -70,6 +70,14 @@ const totalSteps = computed(() =>
   )
 )
 
+// 无数据组件隐藏（2026-11-05 布局优化）：空卡片只占版面不承载信息，直接不渲染。
+// 网格随之自适应（auto rows），不再为隐藏卡留空槽。
+const hasNetwork = computed(() => Array.isArray(data.networkTimeline) && data.networkTimeline.length > 0)
+const hasLocate = computed(() =>
+  currentExecutionTasks.value.some((t) => t && t.locate && typeof t.locate === 'object')
+)
+const hasAssertions = computed(() => Array.isArray(data.assertions) && data.assertions.length > 0)
+
 const statusText = computed(() => {
   const s = meta.status || 'unknown'
   return { pass: '通过', fail: '失败', error: '错误', timeout: '超时' }[s] || s
@@ -257,16 +265,16 @@ function onSelectTask(executionIndex, taskId) {
           />
         </section>
         <div class="detail-grid">
-          <section class="detail-card">
+          <section v-if="currentTask" class="detail-card">
             <ThoughtPanel :task="currentTask" />
           </section>
-          <section class="detail-card">
+          <section v-if="hasAssertions" class="detail-card">
             <AssertionCard :assertions="data.assertions" />
           </section>
-          <section class="detail-card">
+          <section v-if="hasNetwork" class="detail-card">
             <NetworkLane :network-timeline="data.networkTimeline" :duration-ms="meta.durationMs" />
           </section>
-          <section class="detail-card">
+          <section v-if="hasLocate" class="detail-card">
             <LocateStats :tasks="currentExecutionTasks" />
           </section>
         </div>
@@ -485,6 +493,10 @@ function onSelectTask(executionIndex, taskId) {
 /* ---------- 主体 ---------- */
 .app-body {
   flex: 1;
+  /* min-height:0 是视口内滚动的关键：flex 项默认 min-height:auto 会被内容最小高度
+     （侧栏+详情卡 ≈1980px）撑破 .app 的 height:100vh，导致 detail-grid 的百分比
+     限高算在 1957px 上而失效（2026-11-05 布局修复）。 */
+  min-height: 0;
   display: flex;
   align-items: stretch;
   min-width: 0;
@@ -659,9 +671,11 @@ function onSelectTask(executionIndex, taskId) {
     flex: 1;
   }
   .detail-grid {
-    height: 302px;
+    max-height: 44%;
+    overflow-y: auto;
     grid-template-columns: 1.25fr 1fr;
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(0, auto);
+    align-content: start;
   }
   .detail-card {
     overflow: hidden;

@@ -12,12 +12,21 @@ const thought = computed(
 
 const paramText = computed(() => {
   const p = props.task && props.task.param
-  if (p == null) return '（无参数）'
+  if (p == null) return ''
   try {
     return JSON.stringify(p, null, 2)
   } catch {
     return String(p)
   }
+})
+
+// 参数块可见性：param 缺失/空对象/空串都视为无参数（隐藏整块，不占版面）
+const hasParam = computed(() => {
+  const p = props.task && props.task.param
+  if (p == null) return false
+  if (typeof p === 'string') return p.trim().length > 0
+  if (typeof p === 'object') return Object.keys(p).length > 0
+  return true
 })
 
 const timingText = computed(() => {
@@ -38,11 +47,11 @@ const timingText = computed(() => {
       <span v-if="task" class="panel-task mono">#{{ task.taskId }}</span>
     </div>
     <div class="panel-body">
-      <div class="panel-block">
+      <div v-if="thought" class="panel-block">
         <span class="panel-label">思考</span>
-        <p class="panel-thought">{{ thought || '（无思考记录）' }}</p>
+        <p class="panel-thought">{{ thought }}</p>
       </div>
-      <div class="panel-block">
+      <div v-if="hasParam" class="panel-block">
         <span class="panel-label">参数</span>
         <details class="panel-param">
           <summary>param JSON</summary>
