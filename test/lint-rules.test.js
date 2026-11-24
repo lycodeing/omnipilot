@@ -129,3 +129,19 @@ test('assert-after-click：否定语境剥离（不要/请勿/严禁）不误报
     assert.equal(r.filter((f) => f.id === 'assert-after-click').length, 0, neg + ' 不应报');
   }
 });
+
+test('lint 与 parser 对 allowCoords 位置判定一致：steps 之后的 allowCoords 不放行', () => {
+  // 回归用例：lint 原先扫全文找 allowCoords，parser 却要求它在 steps 之前——
+  // lint 报 0 error 但 run 时硬失败，作者按 lint 修完仍跑不起来。
+  const text = ['steps:', '  - tap: {x: 135, y: 2115}', 'allowCoords: true'].join('\n');
+  const findings = lintCaseText(text);
+  assert.ok(findings.some((f) => f.rule === 'pixel-coords' && f.level === 'error'),
+    'steps 之后的 allowCoords 不应放行坐标步');
+});
+
+test('lint 与 parser 对 allowCoords 位置判定一致：steps 之前的 allowCoords 放行', () => {
+  const text = ['allowCoords: true', 'steps:', '  - tap: {x: 135, y: 2115}'].join('\n');
+  const findings = lintCaseText(text);
+  assert.ok(!findings.some((f) => f.rule === 'pixel-coords'),
+    'steps 之前的 allowCoords 应放行坐标步');
+});

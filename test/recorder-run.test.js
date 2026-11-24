@@ -179,17 +179,50 @@ test('registerSecret 单独登记也能全文兜底', async (t) => {
   assert.ok(!fs.readFileSync(rec.jsonPath, 'utf8').includes('SECRET-VALUE-42'));
 });
 
-test('tmp+rename 原子写：finish 前无 .json、后有、tmp 清理、不可重复 finish', async (t) => {
+test('tmp+rename 原子写：立即无 .json、finish 后有、tmp 清理、不可重复 finish', async (t) => {
   const runsDir = tmpRuns(t);
   const rec = new RunRecorder({ runsDir, caseName: 'c.yaml' });
   rec.startStep('tap', 'x').end();
+  // 崩溃安全：记账后去抖落盘，finish 前可能已有增量快照（_partial 标记）
+  // ——但快照是去抖的，刚记账完立刻断言仍应无文件
   assert.equal(fs.existsSync(rec.jsonPath), false);
   await rec.finish('pass');
   assert.equal(fs.existsSync(rec.jsonPath), true);
-  JSON.parse(fs.readFileSync(rec.jsonPath, 'utf8'));
+  const doc = JSON.parse(fs.readFileSync(rec.jsonPath, 'utf8'));
+  assert.equal(doc._partial, undefined, '最终态不带 _partial 标记');
   const leftovers = fs.readdirSync(runsDir).filter((f) => f.includes('.tmp-'));
   assert.deepEqual(leftovers, []);
   await assert.rejects(() => rec.finish('pass'), /重复/);
+});
+
+test('崩溃安全：未 finish 时增量快照仍留下可解析的 run.json（含步骤与断言）', async (t) => {
+  // 回归用例：run.json 原先只在 finish() 落盘，SIGKILL/OOM 会让整条 run 的
+  // 步骤、断言、网络时间线全部丢失（只剩孤儿截图）。增量快照保证崩溃后仍可读。
+  const runsDir = tmpRuns(t);
+  const rec = new RunRecorder({ runsDir, caseName: 'c.yaml' });
+  rec.startStep('tap', 'x').end();
+  rec.startStep('tap', 'y').end();
+  rec.addAssertion({ text: '断言A', passed: true });
+  await new Promise((r) => setTimeout(r, 700)); // 等去抖落盘
+  assert.equal(fs.existsSync(rec.jsonPath), true, '崩溃前应已落增量快照');
+  const doc = JSON.parse(fs.readFileSync(rec.jsonPath, 'utf8'));
+  assert.equal(doc._partial, true, '增量快照带 _partial 标记');
+  assert.equal(doc.status, 'running');
+  assert.equal(doc.steps.length, 2, '步骤数据不丢');
+  assert.equal(doc.assertions.length, 1, '断言数据不丢');
+});
+
+test('崩溃安全：finish 覆写增量快照，去掉 _partial 标记', async (t) => {
+  const runsDir = tmpRuns(t);
+  const rec = new RunRecorder({ runsDir, caseName: 'c.yaml' });
+  rec.startStep('tap', 'x').end();
+  await new Promise((r) => setTimeout(r, 700));
+  assert.equal(JSON.parse(fs.readFileSync(rec.jsonPath, 'utf8'))._partial, true);
+  await rec.finish('pass', { exitCode: 0 });
+  const final = JSON.parse(fs.readFileSync(rec.jsonPath, 'utf8'));
+  assert.equal(final._partial, undefined, '最终态应去掉 _partial');
+  assert.equal(final.status, 'pass');
+  assert.equal(final.exitCode, 0);
 });
 
 test('finish 状态校验与未收尾步骤之外的非法 end', async (t) => {

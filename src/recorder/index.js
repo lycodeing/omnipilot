@@ -113,6 +113,53 @@ export class RunRecorder {
     this._secrets = []; // { provider, key, value }
     this._pendingWrites = []; // attachScreenshot 的后台写盘 Promise，finish 前统一 await
     this._finished = false;
+    // 崩溃安全（2026-11-24）：run.json 原先只在 finish() 落盘，SIGKILL/OOM/设备断连
+    // 会让整条 run 的步骤、断言、网络时间线全部丢失（只剩孤儿截图）。改为记账后去抖
+    // 增量落盘，崩溃后仍留下可解析的 partial JSON（_partial 标记），finish 时覆写为最终态。
+    this._partialTimer = null;
+    this._partialWriting = null;
+    this._partialPending = false;
+  }
+
+  // 去抖触发一次增量快照落盘（崩溃安全）。timer 不可靠（进程可能随时被杀），
+  // 故同时保证「至少已发起过一次写盘」，不追求严格去抖语义。
+  _schedulePartial() {
+    if (this._finished) return;
+    this._partialPending = true;
+    if (this._partialTimer) return;
+    this._partialTimer = setTimeout(() => {
+      this._partialTimer = null;
+      this._flushPartial().catch(() => { /* 快照写失败不阻断 run */ });
+    }, 500);
+    // 不因快照挂住进程退出
+    if (typeof this._partialTimer.unref === 'function') this._partialTimer.unref();
+  }
+
+  // 写增量快照：与 finish() 的最终写互斥（同一时刻只允许一个写盘在途）
+  async _flushPartial() {
+    if (this._finished) return;
+    if (this._partialWriting) {
+      // 上一次还在写 → 标记待重试，等它结束再写
+      this._partialPending = true;
+      return;
+    }
+    this._partialPending = false;
+    const doc = await this._buildDoc('running', 0, true);
+    const redact = buildRedactor(this._secrets);
+    if (redact) redactDeep(doc, redact);
+    const tmp = `${this._jsonPath}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
+    this._partialWriting = (async () => {
+      try {
+        await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
+        await fsp.rename(tmp, this._jsonPath);
+      } finally {
+        this._partialWriting = null;
+      }
+    })();
+    await this._partialWriting;
+    if (this._partialPending && !this._finished) {
+      this._schedulePartial();
+    }
   }
 
   get dir() {
@@ -191,6 +238,7 @@ export class RunRecorder {
           step.result = `[REDACTED:${secret.provider}:${secret.key}]`;
           if (secret.value != null) this.registerSecret(secret);
         }
+        this._schedulePartial();
       },
     };
   }
@@ -210,41 +258,37 @@ export class RunRecorder {
 
   addUiDump(relPath) {
     this._uiDumps.push(relPath);
+    this._schedulePartial();
   }
 
   addAssertion({ text, passed, reason = null } = {}) {
     this._assertions.push({ text, passed, reason });
+    this._schedulePartial();
   }
 
   addNetworkEvent({ at, profile } = {}) {
     this._network.push({ at, profile });
+    this._schedulePartial();
   }
 
   addRollback({ stepIndex, reason, recovered } = {}) {
     this._rollbacks.push({ stepIndex, reason, recovered });
+    this._schedulePartial();
   }
 
   setExtracts(obj) {
     this._extracts = obj ?? null;
+    this._schedulePartial();
   }
 
   setContextLayers(layers) {
     if (!Array.isArray(layers)) throw new Error('setContextLayers 需要数组');
     this._contextLayers = layers;
+    this._schedulePartial();
   }
 
-  async finish(status, { exitCode = 0 } = {}) {
-    if (this._finished) throw new Error('finish 不能重复调用');
-    if (!STATUSES.includes(status)) {
-      throw new Error(`finish.status 必须是 ${STATUSES.join('|')}，收到 "${status}"`);
-    }
-    this._finished = true;
-    for (let i = 0; i < this._steps.length; i++) {
-      if (this._steps[i].result === null) {
-        this._steps[i].result = 'unfinished';
-        this._steps[i].durationMs = Date.now() - this._stepStarts[i];
-      }
-    }
+  // 组装 §14.1 形状的 run 文档。partial=true 时为崩溃安全的增量快照。
+  async _buildDoc(status, exitCode, partial = false) {
     const doc = {
       runId: this.runId,
       case: this._caseName,
@@ -265,6 +309,32 @@ export class RunRecorder {
         uiDumps: this._uiDumps,
       },
     };
+    // 增量快照标记：崩溃后据此判断 run 未正常收尾（最终态会覆写去掉该标记）
+    if (partial) doc._partial = true;
+    return doc;
+  }
+
+  async finish(status, { exitCode = 0 } = {}) {
+    if (this._finished) throw new Error('finish 不能重复调用');
+    if (!STATUSES.includes(status)) {
+      throw new Error(`finish.status 必须是 ${STATUSES.join('|')}，收到 "${status}"`);
+    }
+    this._finished = true;
+    // 取消待触发的增量快照，并等在途快照写完，避免与最终写竞争
+    if (this._partialTimer) {
+      clearTimeout(this._partialTimer);
+      this._partialTimer = null;
+    }
+    if (this._partialWriting) {
+      try { await this._partialWriting; } catch { /* 忽略 */ }
+    }
+    for (let i = 0; i < this._steps.length; i++) {
+      if (this._steps[i].result === null) {
+        this._steps[i].result = 'unfinished';
+        this._steps[i].durationMs = Date.now() - this._stepStarts[i];
+      }
+    }
+    const doc = await this._buildDoc(status, exitCode, false);
     const redact = buildRedactor(this._secrets);
     if (redact) redactDeep(doc, redact); // 无 secret 时短路，省一次全树遍历
     // 收尾前排空后台取证截图与写盘，保证 run.json 落盘时截图已在目录中

@@ -1,6 +1,16 @@
 // lint 规则集（§13.4）：行级正则实现，error 阻断 / warn 提示
 // 行内豁免：# ask-lint: allow <rule-id> 理由（须有理由，否则豁免无效）
 
+// 步骤区起始行下标（steps:/flow:）。parser 只认 steps 之前的顶层键，
+// lint 的顶层键判定必须与之一致，否则出现「lint 放行、parser 拒绝」。
+function stepsStartIndex(allLines) {
+  const lines = allLines ?? [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*(?:steps|flow)\s*[:：]?\s*$/.test(lines[i])) return i;
+  }
+  return lines.length;
+}
+
 const RULES = [
   {
     id: 'pixel-coords',
@@ -15,7 +25,13 @@ const RULES = [
       // 逃生口只对"坐标步骤"生效：顶层 allowCoords: true 时放行 `tap: { x, y }`。
       // 其余形态（尤其 ai: 文本里的裸 `input tap 512 760`）仍拦——那是把 adb 命令写进任务描述，
       // 声明 allowCoords 不该把它一起放过。
-      if (isCoordStep && /(?:^|\n)\s*allowCoords\s*[:：]\s*(?:true|yes|on|1)\s*$/im.test((allLines ?? []).join('\n'))) return false;
+      //
+      // allowCoords 必须在 steps:/flow: 之前声明（与 parser 的 !inSteps 判定一致）：
+      // 只在 steps 之前的前缀里找，否则 lint 放行、parser 却拒绝 → 作者按 lint 修完仍跑不起来。
+      if (isCoordStep) {
+        const prefix = (allLines ?? []).slice(0, stepsStartIndex(allLines)).join('\n');
+        if (/(?:^|\n)\s*allowCoords\s*[:：]\s*(?:true|yes|on|1)\s*$/im.test(prefix)) return false;
+      }
       // allLines 是整份文本的行数组（lintCaseText 传 lines）
       return (
         isCoordStep ||

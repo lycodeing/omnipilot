@@ -157,3 +157,29 @@ test('pickDefaultHome：unix 无任何可用目录时回退用户目录', () => 
   });
   assert.equal(home, join('/h', '.local', 'share', 'omni-pilot'));
 });
+
+// ---- 工作区路径逃逸防护（ASK_DATE / ASK_INSTANCE 白名单）----
+
+test('resolveWorkspace：ASK_DATE 含 ".." 时拒绝（不得逃逸工作区根）', () => {
+  // 回归用例：date/instance 会被拼进工作区根，若允许 ".."，
+  // 环境变量（CI 流水线变量常由外部拼接）即可把 run 产物写到工作区之外。
+  assert.throws(
+    () => resolveWorkspace({ env: { ASK_HOME: '/base', ASK_DATE: '../../etc' } }),
+    /工作区日期非法/,
+  );
+});
+
+test('resolveWorkspace：ASK_INSTANCE 含 ".." 或路径分隔符时拒绝', () => {
+  for (const bad of ['../../x', 'a/b', '..', 'x\\y']) {
+    assert.throws(
+      () => resolveWorkspace({ env: { ASK_HOME: '/base', ASK_INSTANCE: bad } }),
+      /工作区实例名非法/,
+      `应拒绝实例名 "${bad}"`,
+    );
+  }
+});
+
+test('resolveWorkspace：合法 date/instance 正常解析', () => {
+  const ws = resolveWorkspace({ env: { ASK_HOME: '/base', ASK_DATE: '2026-10-27', ASK_INSTANCE: 'run-1' } });
+  assert.equal(ws.root, join('/base', '2026-10-27', 'run-1'));
+});

@@ -119,17 +119,25 @@ function validateSchema(schema, row, label) {
   }
 }
 
+// 解析 jsonl：坏行跳过而非抛错。
+// 写盘路径 append 是非原子的（appendFile），进程在写入中途被杀会留下截断的末行；
+// 若此处抛错，整个数据集将永久不可读（只能手工删文件），其余好行也一并丢失。
+// 末行截断尤其常见——视为写入中断，丢弃该行；中间坏行同样跳过并计数。
 function parseLines(text, name) {
   const rows = [];
   const lines = text.split('\n');
+  let bad = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     try {
       rows.push(JSON.parse(line));
     } catch {
-      throw new Error(`${name}.jsonl 第 ${i + 1} 行不是合法 JSON`);
+      bad += 1;
     }
+  }
+  if (bad > 0) {
+    console.warn(`[dataset] ${name}.jsonl 有 ${bad} 行不是合法 JSON（写入中断或损坏），已跳过；建议用 data clear 重建`);
   }
   return rows;
 }

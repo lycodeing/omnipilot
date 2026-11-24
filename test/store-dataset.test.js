@@ -217,3 +217,27 @@ test('并发 clear 与 append：清除后不再有旧数据复活', async (t) =>
   assert.ok(rows.filter((r) => String(r.k).startsWith('old')).length === 0 || rows.length === 0,
     `旧数据不得复活（实际 ${rows.length} 行）`);
 });
+
+test('坏行跳过而非摧毁整个数据集：末行截断（写入中断）时其余行仍可读', async (t) => {
+  // 回归用例：append 走非原子 appendFile，进程中途被杀会留下截断的末行。
+  // 原实现对坏行直接 throw → 该数据集此后永久不可读（只能手工删文件）。
+  const dir = tmpDir(t, 'ask-ds-bad-');
+  const ds = openDataset({ dataDir: dir });
+  await ds.append('t', [{ v: 1 }, { v: 2 }]);
+  // 手工模拟写入中断：追加半行
+  fs.appendFileSync(path.join(dir, 't.jsonl'), '{"v":3,"_id":"x');
+  const rows = await ds.read('t');
+  assert.equal(rows.length, 2, '好行应全部可读');
+  assert.deepEqual(rows.map((r) => r.v), [1, 2]);
+});
+
+test('中间坏行也跳过：不影响前后好行', async (t) => {
+  const dir = tmpDir(t, 'ask-ds-bad2-');
+  const ds = openDataset({ dataDir: dir });
+  await ds.append('t', [{ v: 1 }, { v: 2 }]);
+  const file = path.join(dir, 't.jsonl');
+  const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  fs.writeFileSync(file, [lines[0], '{坏行', lines[1]].join('\n') + '\n');
+  const rows = await ds.read('t');
+  assert.equal(rows.length, 2, '坏行不应摧毁其余行');
+});

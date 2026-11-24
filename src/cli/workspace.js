@@ -106,11 +106,25 @@ export function formatDate(d = new Date()) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+// 工作区路径段白名单：date/instance 会被拼进工作区根，若允许 ".." 或路径分隔符，
+// 环境变量（CI 流水线变量常由外部拼接）即可把 run 产物写到工作区之外。
+// 只校验来自环境变量的值——函数显式入参是内部可信调用（测试用 'd1' 这类占位值）。
+// date 固定为 YYYY-MM-DD；instance 限字母数字与 - _（实测的实例名均为此类）。
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const INSTANCE_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+function assertSafeSegment(value, re, label) {
+  if (!re.test(value)) {
+    throw new Error(`${label}非法："${value}"（期望 ${re.source}）`);
+  }
+  return value;
+}
+
 // 解析工作区路径（纯函数：只有显式传入 ASK_WORKSPACE 时才 resolve 绝对化）
 export function resolveWorkspace({ home, date, instance, env = process.env, now = new Date() } = {}) {
   const base = home || env.ASK_HOME || DEFAULT_HOME;
-  const d = date || env.ASK_DATE || formatDate(now);
-  const inst = instance || env.ASK_INSTANCE || DEFAULT_INSTANCE;
+  const d = date ?? assertSafeSegment(env.ASK_DATE ?? formatDate(now), DATE_RE, '工作区日期');
+  const inst = instance ?? assertSafeSegment(env.ASK_INSTANCE ?? DEFAULT_INSTANCE, INSTANCE_RE, '工作区实例名');
   const root = env.ASK_WORKSPACE ? path.resolve(env.ASK_WORKSPACE) : path.join(base, d, inst);
   return {
     base,
