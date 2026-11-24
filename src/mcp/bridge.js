@@ -46,8 +46,16 @@ function convert(node) {
     case 'boolean': return Type.Boolean(opts);
     case 'array': return Type.Array(node.items ? convert(node.items) : Type.Any(), opts);
     case 'object': {
+      // 必须尊重 JSON Schema 的 required 数组：typebox 会把「非 Optional 的属性」
+      // 一律视为必填。若不按 required 包裹，可选参数会变成必填——Pi 的校验器
+      // 会拒绝合法的调用（缺可选参数的正常请求被拒），且模型也会被告知
+      // 该参数必填而臆造值。
+      const required = new Set(Array.isArray(node.required) ? node.required : []);
       const props = {};
-      for (const [k, v] of Object.entries(node.properties || {})) props[k] = convert(v);
+      for (const [k, v] of Object.entries(node.properties || {})) {
+        const t = convert(v);
+        props[k] = required.has(k) ? t : Type.Optional(t);
+      }
       return Type.Object(props, { ...opts, additionalProperties: node.additionalProperties !== false });
     }
     default:

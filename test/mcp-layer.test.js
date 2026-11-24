@@ -196,3 +196,69 @@ describe('schema bridge', () => {
     assert.equal(r.content[0].text, 'pong');
   });
 });
+
+// —— 写操作确认闸与 schema required 保真 ——
+
+test('MCP 工具走确认闸：用户拒绝时不调用 MCP 服务器', async () => {
+  // 回归用例：MCP 工具此前完全绕过确认钩子——MCP 服务器可暴露任意有副作用的
+  // 工具（删配置/写仓库/跑 SQL），allowlist 是通配符无法区分读写。
+  const bridge = await createMcpBridge({
+    config: { servers: { srv: { name: 'srv', transport: 'stdio', command: 'x' } }, allowTools: ['srv_*'], toolPrefix: true },
+    connectImpl: async () => ({
+      client: { close() {} },
+      tools: [{ name: 'delete_config', description: '删配置', inputSchema: { type: 'object', properties: {} } }],
+    }),
+  });
+  let called = 0;
+  bridge.callByName = async () => { called += 1; return { text: 'DELETED', truncated: false, bytes: 7, tool: {} }; };
+
+  let confirmCalls = 0;
+  const ctx = {
+    mcp: bridge,
+    opts: { yes: false },
+    confirm: async () => { confirmCalls += 1; return false; },   // 用户拒绝
+  };
+  const tools = buildMcpTools(ctx);
+  const r = await tools[0].execute('id', {}, undefined, undefined, {});
+  assert.equal(confirmCalls, 1, 'MCP 调用必须经过确认');
+  assert.equal(called, 0, '用户拒绝后不得调用 MCP 服务器');
+  assert.equal(r.details.denied, true);
+});
+
+test('MCP 工具：--yes 直通确认闸', async () => {
+  const bridge = await createMcpBridge({
+    config: { servers: { srv: { name: 'srv', transport: 'stdio', command: 'x' } }, allowTools: ['srv_*'], toolPrefix: true },
+    connectImpl: async () => ({
+      client: { close() {} },
+      tools: [{ name: 'echo', description: 'x', inputSchema: { type: 'object', properties: {} } }],
+    }),
+  });
+  let called = 0;
+  bridge.callByName = async () => { called += 1; return { text: 'pong', truncated: false, bytes: 4, tool: {} }; };
+  const ctx = { mcp: bridge, opts: { yes: true } };
+  const tools = buildMcpTools(ctx);
+  const r = await tools[0].execute('id', {}, undefined, undefined, {});
+  assert.equal(called, 1, '--yes 应直通');
+  assert.equal(r.content[0].text, 'pong');
+});
+
+test('jsonSchemaToTypeBox 尊重 required：可选参数不得变成必填', () => {
+  // 回归用例：原实现把所有属性转成非 optional，typebox 因而视全部为必填——
+  // Pi 的校验器会拒绝缺可选参数的合法调用，且模型被告知该参数必填而臆造值。
+  const tb = jsonSchemaToTypeBox({
+    type: 'object',
+    properties: { msg: { type: 'string' }, count: { type: 'number' } },
+    required: ['msg'],
+  });
+  assert.deepEqual(tb.required, ['msg'], 'required 只应含 schema 声明的必填字段');
+  assert.ok(!tb.required.includes('count'), '可选参数不得进入 required');
+});
+
+test('jsonSchemaToTypeBox：无 required 声明时全部字段可选', () => {
+  const tb = jsonSchemaToTypeBox({
+    type: 'object',
+    properties: { a: { type: 'string' }, b: { type: 'number' } },
+  });
+  // typebox 在无必填字段时省略 required 键（而非空数组）
+  assert.ok(!tb.required || tb.required.length === 0, '未声明 required 时不应有必填字段');
+});

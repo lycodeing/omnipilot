@@ -678,3 +678,51 @@ test('tap_each_row 视觉形态：合法 profile 通过加载与 strategy 解析
   const r = await tool.execute('id1', { profile: 'questionnaire' }, undefined, undefined, {});
   assert.equal(String(r.details.error), 'screenSize 获取失败，无法视觉定位');
 });
+
+// —— 写操作确认闸（全局安全机制） ——
+
+describe('写操作确认闸', () => {
+  test('data_extract collection 模式走确认闸：用户拒绝时不滚动设备', async () => {
+    // 回归用例：collection 模式会滚动设备（写操作：改变屏幕状态），
+    // 此前完全绕过确认钩子——用户明确拒绝仍执行了 3 次滚动。
+    let scrolls = 0;
+    const device = makeFakeDevice();
+    device.scroll = async () => { scrolls += 1; return { scrolls: 1, changed: true }; };
+    let confirmCalls = 0;
+    const ctx = makeCtx({
+      device,
+      opts: { yes: false },
+      confirm: async () => { confirmCalls += 1; return false; },
+    });
+    const tool = buildTools(ctx).find((t) => t.name === 'data_extract');
+    const r = await tool.execute('id1', { mode: 'collection', fields: [] }, undefined, undefined, {});
+    assert.equal(confirmCalls, 1, 'collection 模式必须经过确认');
+    assert.equal(scrolls, 0, '用户拒绝后不得滚动设备');
+    assert.equal(r.details.denied, true);
+  });
+
+  test('denied 的 details 带 error 原因（记录进 run.json 而非笼统 failed）', async () => {
+    const ctx = makeCtx({ opts: { yes: false }, confirm: async () => false });
+    const tool = buildTools(ctx).find((t) => t.name === 'tap');
+    const r = await tool.execute('id1', { target: '登录' }, undefined, undefined, {});
+    assert.equal(r.details.denied, true);
+    assert.match(r.details.error, /用户拒绝/, '应带明确原因');
+  });
+
+  test('非交互环境（无 confirm、无 --yes）放行但告警一次', async () => {
+    // 告警标志挂在 ctx 上（模块级标志会跨 run 互相抑制）
+    const ctx = makeCtx({ opts: { yes: false }, confirm: null });
+    const tool = buildTools(ctx).find((t) => t.name === 'tap');
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    try {
+      await tool.execute('id1', { target: 'A' }, undefined, undefined, {});
+      await tool.execute('id2', { target: 'B' }, undefined, undefined, {});
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 1, '同一 ctx 只告警一次');
+    assert.match(warnings[0], /未启用写操作确认/);
+  });
+});

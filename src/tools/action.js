@@ -5,17 +5,18 @@ import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 
 // 写操作确认钩子：opts.yes 直通；交互模式由 ctx.confirm 提供扩展点（§13.3）
-let _autoAllowWarned = false;
+// 告警标志挂在 ctx 上（而非模块级）：bin/ask.js 支持多 run 并发，模块级标志会
+// 让先告警的 run 抑制掉其它 run 的告警——后者可能根本没有确认能力。
 export async function confirmWrite(ctx, toolName, targetDesc) {
-  if (ctx.opts.yes) return { allowed: true };
+  if (ctx.opts?.yes) return { allowed: true };
   if (typeof ctx.confirm === 'function') {
     const ok = await ctx.confirm(`调用写操作 ${toolName}（${targetDesc}）`);
     return { allowed: !!ok };
   }
   // 非交互且未提供 confirm（CI/后台/管道）：按设计放行，但必须显式告警一次——
   // 否则"写操作零确认执行"对使用者完全不可见（权限绕过面）
-  if (!_autoAllowWarned) {
-    _autoAllowWarned = true;
+  if (!ctx._autoAllowWarned) {
+    ctx._autoAllowWarned = true;
     console.warn('[warn] 非交互环境未启用写操作确认，所有 tap/input/swipe/launch 等写操作将直接执行（如需门禁请用 --yes 以外的交互模式，或自行注入 ctx.confirm）');
   }
   return { allowed: true };
@@ -24,7 +25,8 @@ export async function confirmWrite(ctx, toolName, targetDesc) {
 export function denied(toolName) {
   return {
     content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `用户拒绝了 ${toolName} 调用` }) }],
-    details: { ok: false, denied: true },
+    // 带 error：withRecording 据此记录被拒原因（否则只记成笼统的 'failed'）
+    details: { ok: false, denied: true, error: `用户拒绝了 ${toolName} 调用` },
   };
 }
 

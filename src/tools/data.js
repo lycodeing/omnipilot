@@ -7,7 +7,7 @@ import path from 'node:path';
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { flattenNodes, findBySelector, findAllBySelector, textResult } from './perception.js';
-import { denied } from './action.js';
+import { denied, confirmWrite } from './action.js';
 import { repairJson } from './ai.js';
 import { compressForContext } from '../image/png.js';
 
@@ -141,6 +141,9 @@ export function buildDataTools(ctx) {
         if (r && r.error) return textResult({ ok: false, error: r.error });
         rows = Array.isArray(r) ? r : [r];
       } else if (params.mode === 'collection') {
+        // collection 模式会滚动设备（写操作：改变屏幕状态），须走确认闸
+        const gate = await confirmWrite(ctx, 'data_extract', `collection 模式将滚动设备采集数据${params.name ? ` 到数据集 ${params.name}` : ''}`);
+        if (!gate.allowed) return denied('data_extract');
         rows = await extractCollection(ctx, params);
       } else {
         return textResult({ ok: false, error: `未知模式 ${params.mode}` });
