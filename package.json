@@ -13,7 +13,7 @@
     "skills:sync": "node scripts/sync-skills.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^1.6.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "typebox": "^1.4.7"
   },
