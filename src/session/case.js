@@ -18,6 +18,8 @@ import {
   ENGINE_TYPES, COORD_TYPES, SPECIAL_TYPES, ALL_TYPES,
   normalizeType, buildToolCall,
 } from './case-steps.js';
+import { waitSelectorFromText, resolveLoopPlan } from './case-loop.js';
+export { waitSelectorFromText, resolveLoopPlan };
 export {
   AGENT_TYPES, ASSERT_TYPES, QUERY_TYPES, WAIT_TYPES,
   ENGINE_TYPES, COORD_TYPES, SPECIAL_TYPES,
@@ -271,60 +273,3 @@ export function interpolate(text, vars) {
 // 注：原 interpolateCase（整例插值）已删除——它无生产消费者（bin/ask.js 在主循环
 // 里自行对每个步骤的字符串字段调 interpolate），且只插 PARAM_KEYS 里的键，与生产
 // 路径"插所有字符串字段"的行为已分叉。两份实现并存即两份语义，留一份即可。
-
-// 从"等待"文本里解析出可定位的元素 selector（§21）：
-//   '热榜列表第一项出现' → 无明确文本 → null（退回等树稳定）
-//   '等「加载完毕」出现' → text=加载完毕
-//   '等 text=提交 出现' → text=提交（显式 selector 原样用）
-// 返回 selector 字符串或 null（null = 无法解析，调用方退回 waitIdle）。
-export function waitSelectorFromText(text) {
-  const t = String(text ?? '').trim();
-  if (!t) return null;
-  // 已是显式 selector（text=/text*=/resourceId=/class=）
-  const explicit = /(?:^|\s)((?:text|resourceId|resource-id|id|class|type|desc|re)=[^\s，。]+)/.exec(t);
-  if (explicit) return explicit[1];
-  // 引号里的文本：「xxx」/'xxx'/“xxx”/直引号 'xxx'（外部框架常用直引号）
-  const quoted = /[「“"']([^」”"']{1,40})[」”"']/.exec(t);
-  if (quoted) return quoted[1]; // 裸文本（device 层 auto 链：精确→包含）
-  // 形如 '等 XXX 出现' / '等 XXX 加载' / 'XXX 可见'
-  const m = /(?:等|等待)\s*([^\s，。]{1,30}?)\s*(?:出现|加载|显示|可见|就绪|完成)/.exec(t);
-  if (m) {
-    const kw = m[1].replace(/^(页面|界面|列表|元素)/, '').trim();
-    if (kw) return kw; // 裸文本（device 层 auto 链）
-  }
-  return null;
-}
-
-// 马拉松续作计划（bin/ask.js ai/aiAct 续作循环用，纯函数）：显式步级参数优先，
-// 散文关键词仅作存量用例兼容——引擎只读字段不猜词（2026-11-10 评审 P1 落地）。
-//
-// 显式形态（推荐）：ai 步挂 until/maxRounds/batch 参数行：
-//   - ai: 逐题作答直到出现提交按钮
-//     until: text=立即提交   # 终止标记：显式 selector 或可见文本（确定性检测，不依赖模型自报）
-//     maxRounds: 8           # 催促轮数上限（缺省 10）
-//     batch: false           # false=逐个处理（显式缺省，防"依次逐个"被催成整屏并行误点）；true=每轮并行
-//
-// 兼容形态（legacy）：步骤文本含 直到/重复/逐题/每一题/依次 触发，批量催促 +
-// "直到…「xxx」"引号提取标记——英文用例静默不触发、"依次"类任务被误催成并行，
-// 均为已知缺陷，仅为不破坏存量用例保留；新用例一律用显式参数。
-export function resolveLoopPlan(step, stepText) {
-  const text = String(stepText ?? '');
-  const s = step || {};
-  const hasExplicit = s.until != null || s.maxRounds != null || s.batch != null;
-  const keyword = /直到|重复|逐题|每一题|依次/.test(text);
-  if (!hasExplicit && !keyword) return null;
-  // 终止标记：显式 until 优先（显式 selector 原样、裸文本直接作 auto 链 selector）；
-  // keyword 路径维持"直到…「xxx」"引号提取。
-  let marker = null;
-  if (s.until != null && String(s.until).trim()) {
-    marker = waitSelectorFromText(String(s.until)) || String(s.until).trim();
-  } else if (!hasExplicit) {
-    marker = waitSelectorFromText((/直到[^，。；]*?[「“"']([^」”"']{1,20})[」”"']/.exec(text) || [null, null])[1] || '');
-  }
-  // batch 缺省：显式声明 → 逐个（保守）；keyword 兼容路径 → 维持历史批量行为（存量语义不变）
-  const batch = s.batch != null
-    ? !/^(false|no|off|0)$/i.test(String(s.batch))
-    : (hasExplicit ? false : true);
-  const maxRounds = Math.max(1, Math.trunc(Number(s.maxRounds ?? 10)) || 10);
-  return { marker, batch, maxRounds, source: hasExplicit ? 'explicit' : 'keyword' };
-}
