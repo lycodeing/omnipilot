@@ -266,15 +266,35 @@ test('directory：dataURL 字符串与 Buffer 均可落盘，重复 id 覆盖', 
 
 // ---------- loadShell ----------
 
-test('loadShell：缺省用仓库自带 viewer/dist；显式坏路径才兜底', () => {
+// 仓库自带的 viewer 构建产物（report/viewer/dist）不在版本库内（.gitignore 忽略 dist/），
+// 需先 `npm --prefix report/viewer ci && npm --prefix report/viewer run build`。
+// 未构建时下面的"真实壳"断言跳过，但纯逻辑断言（兜底 / 内联）始终执行——
+// 否则新克隆或 CI 环境下该用例必然失败。
+const VIEWER_DIST = path.join(__dirname, '..', 'viewer', 'dist', 'index.html');
+const HAS_VIEWER_DIST = fs.existsSync(VIEWER_DIST);
+
+test('loadShell：缺省用仓库自带 viewer/dist；显式坏路径才兜底', (t) => {
   // 缺省 = 开箱即用（真实构建壳内联），兜底壳只在显式路径不存在时出现
   const def = loadShell(null);
-  assert.ok(def.includes('ASK 测试报告'), '应内联仓库自带构建壳');
-  assert.ok(!def.includes('报告壳未构建'));
+  if (HAS_VIEWER_DIST) {
+    assert.ok(def.includes('ASK 测试报告'), '应内联仓库自带构建壳');
+    assert.ok(!def.includes('报告壳未构建'));
+  } else {
+    t.skip('viewer/dist 未构建（先跑 npm --prefix report/viewer run build）');
+  }
   for (const shell of [loadShell(path.join(os.tmpdir(), 'no-such-dist-xyz'))]) {
     assert.ok(shell.includes('<div id="root">报告壳未构建，仅数据可解析</div>'));
     assert.ok(shell.includes('</body>'));
   }
+});
+
+test('loadShell：未构建 viewer 时缺省走兜底壳（构建产物缺失时的确定行为）', () => {
+  // dist 不存在时必须稳定落到兜底壳——报告仍可解析数据，只缺可视化
+  const missing = loadShell(path.join(os.tmpdir(), 'no-such-dist-xyz'));
+  assert.ok(missing.includes('报告壳未构建'));
+  assert.ok(missing.includes('<title>ASK Report</title>'));
+  // 兜底壳必须能被后续标签插入（writeReport 依赖 </body> 锚点）
+  assert.ok(missing.includes('</body>'));
 });
 
 test('loadShell 内联本地 <script src> 与 <link rel=stylesheet>，外链保留', (t) => {

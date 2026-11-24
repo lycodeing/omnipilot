@@ -22,10 +22,13 @@ export ASK_MODEL_KEY=sk-...
 export ASK_MODEL_NAME=glm-5.3-flash
 export ASK_MODEL_FAMILY=glm   # 决定坐标策略族（glm/qwen/deepseek/…）
 
-# 3. 自检
+# 3. 构建报告查看器（一次性；产物不入库，缺失时报告只剩可解析的兜底壳）
+npm --prefix report/viewer ci && npm --prefix report/viewer run build
+
+# 4. 自检
 node bin/ask.js doctor --device --model
 
-# 4. 跑用例：只读问答 / 自然语言任务 / YAML 用例
+# 5. 跑用例：只读问答 / 自然语言任务 / YAML 用例
 node bin/ask.js ask "现在屏幕上是什么页面？"
 node bin/ask.js do "打开掘金看看热榜前3名，把标题存到数据集 hotlist"
 node bin/ask.js run cases/s1-hotlist.yaml --yes
@@ -126,6 +129,9 @@ tmp/                    临时文件（调试取证 tmp/forensics/、一次性�
 npm test              # node --test，需真机的用例自动 skip（ASK_TEST_DEVICE=1 开启）
 npm run docs:check    # 校验 DESIGN.md 的 mermaid 图表可渲染
 ```
+
+> 报告壳相关的用例依赖 `report/viewer/dist`（构建产物，不入库）；未构建时该用例自动 skip，
+> 不影响其余用例。构建见[快速上手](#快速上手)第 3 步。
 
 ## 设备事实而非硬编码
 

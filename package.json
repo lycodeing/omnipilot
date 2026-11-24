@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.4",
-    "@modelcontextprotocol/sdk": "^1.32.2"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "typebox": "^1.4.7"
   },
   "devDependencies": {
     "jsdom": "^25.0.1",
