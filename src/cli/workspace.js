@@ -40,6 +40,11 @@ function exists(p) {
   }
 }
 
+// 可写性探测（探测失败视为不可写）
+function defaultAccessSync(p, mode) {
+  fs.accessSync(p, mode);
+}
+
 // 探测历史工作区（更名前的目录名），存在则返回；不存在返回 null。
 // 只在当前目录名不存在时调用——当前名优先。
 function findLegacyHome(candidates, existsSync) {
@@ -53,13 +58,16 @@ export function pickDefaultHome({
   platform = process.platform,
   env = process.env,
   existsSync = exists,
+  accessSync = defaultAccessSync,
 } = {}) {
   // 平台缺省（2026-11-10 评审 #13）：环境路径不再无条件写死——
   //   win32：沿用既有工作区 **仅当已存在**（兼容历史 run），
   //          探测顺序 C:/opt/omni-pilot → C:/opt/scene-kit（更名前）；
   //          都没有则回退用户目录 ~/.local/share/omni-pilot；全新机器不再往 C:/opt 落盘
-  //   unix：优先 /opt/omni-pilot（存在且可写），其次历史 /opt/scene-kit，
-  //          否则 ~/.local/share/omni-pilot
+  //   unix：同样「新名 → 旧名」——新名存在且可写则用新名；否则旧名存在即沿用；
+  //          两者都不可用才回退用户目录
+  //   （注意：不能把「父目录 /opt 可写」当作新名可用的判据——那会在新名不存在时
+  //    跳过旧名探测，把老用户的工作区孤立掉，导致设备锁目录迁移、互斥失效）
   // ASK_HOME / ASK_WORKSPACE 仍可完全覆盖。
   const home = env.HOME || env.USERPROFILE || '.';
   const fallbackHome = path.join(home, '.local', 'share', CURRENT_DIR_NAME);
@@ -72,15 +80,23 @@ export function pickDefaultHome({
     return fallbackHome;
   }
   const preferred = `/opt/${CURRENT_DIR_NAME}`;
+  // 新名：存在且可写才采用
+  if (existsSync(preferred)) {
+    try {
+      accessSync(preferred, fs.constants.W_OK);
+      return preferred;
+    } catch {
+      // 存在但不可写 → 继续回落
+    }
+  }
+  // 旧名（更名前）：存在即可用，保证老用户 run / 设备锁 / probe 缓存连续
+  const legacy = findLegacyHome([`/opt/${LEGACY_DIR_NAME}`], existsSync);
+  if (legacy) return legacy;
+  // 全新机器：/opt 父目录可写才用新名，否则用户目录
   try {
-    // 父目录可写（或目标已存在且可写）才采用 /opt
-    const target = existsSync(preferred) ? preferred : path.dirname(preferred);
-    fs.accessSync(target, fs.constants.W_OK);
+    accessSync(path.dirname(preferred), fs.constants.W_OK);
     return preferred;
   } catch {
-    // 当前名不可用时回落历史目录（存在即可用），保持老用户数据连续
-    const legacy = findLegacyHome([`/opt/${LEGACY_DIR_NAME}`], existsSync);
-    if (legacy) return legacy;
     return fallbackHome;
   }
 }

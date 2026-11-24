@@ -63,6 +63,11 @@ test('ensureWorkspace：幂等创建所有子目录（含全局锁目录）', ()
 
 // 构造一个"哪些路径存在"的假文件系统
 const fsStub = (existing) => (p) => existing.includes(p);
+// 构造一个"哪些路径可写"的假文件系统；未列出的路径视为不可写（抛错）
+const accessStub = (writable) => (p) => {
+  if (writable.includes(p)) return;
+  throw new Error('EACCES: ' + p);
+};
 
 test('pickDefaultHome：win32 优先用当前目录名 C:/opt/omni-pilot', () => {
   const home = pickDefaultHome({
@@ -101,14 +106,46 @@ test('pickDefaultHome：win32 当前名与历史名同时存在时用当前名',
   assert.equal(home, 'C:/opt/omni-pilot', '新目录优先');
 });
 
-test('pickDefaultHome：unix 当前名不可用时回落历史工作区', () => {
-  // /opt 不可写（无 root 权限）时，若历史目录存在则继续沿用
+test('pickDefaultHome：unix 新名存在且可写时用新名（即便旧名也存在）', () => {
+  const home = pickDefaultHome({
+    platform: 'darwin',
+    env: { HOME: '/h' },
+    existsSync: fsStub(['/opt/omni-pilot', '/opt/scene-kit']),
+    accessSync: accessStub(['/opt/omni-pilot']),
+  });
+  assert.equal(home, '/opt/omni-pilot');
+});
+
+test('pickDefaultHome：unix 新名不存在但 /opt 可写时，仍应回落历史工作区', () => {
+  // 回归用例：曾用「父目录 /opt 可写」当作新名可用的判据，导致新名不存在时
+  // 直接返回新目录、跳过旧名探测 → 老用户工作区被孤立，设备锁目录迁移、互斥失效
   const home = pickDefaultHome({
     platform: 'darwin',
     env: { HOME: '/h' },
     existsSync: fsStub(['/opt/scene-kit']),
+    accessSync: accessStub(['/opt']),          // /opt 可写
+  });
+  assert.equal(home, '/opt/scene-kit', '旧名必须优先于"父目录可写"');
+});
+
+test('pickDefaultHome：unix 新名存在但不可写时回落历史工作区', () => {
+  const home = pickDefaultHome({
+    platform: 'linux',
+    env: { HOME: '/h' },
+    existsSync: fsStub(['/opt/omni-pilot', '/opt/scene-kit']),
+    accessSync: accessStub([]),                // 新名存在但不可写
   });
   assert.equal(home, '/opt/scene-kit');
+});
+
+test('pickDefaultHome：unix 全新机器（无任何历史目录）→ /opt 可写则用新名', () => {
+  const home = pickDefaultHome({
+    platform: 'linux',
+    env: { HOME: '/h' },
+    existsSync: fsStub([]),
+    accessSync: accessStub(['/opt']),
+  });
+  assert.equal(home, '/opt/omni-pilot');
 });
 
 test('pickDefaultHome：unix 无任何可用目录时回退用户目录', () => {
@@ -116,6 +153,7 @@ test('pickDefaultHome：unix 无任何可用目录时回退用户目录', () => 
     platform: 'linux',
     env: { HOME: '/h' },
     existsSync: fsStub([]),
+    accessSync: accessStub([]),
   });
   assert.equal(home, join('/h', '.local', 'share', 'omni-pilot'));
 });
