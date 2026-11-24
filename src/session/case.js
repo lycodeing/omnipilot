@@ -249,13 +249,6 @@ export function caseFromText(text, { source = 'inline' } = {}) {
   return { name: text.slice(0, 40), source, steps: [{ type: 'ai', text: String(text) }] };
 }
 
-// 统一装载入口：文件路径内容 / 纯文本
-export function loadCase(text, { asFile = true, source } = {}) {
-  if (!asFile) return caseFromText(text, { source });
-  return parseCaseText(text, { source });
-}
-
-// 引擎直执行步骤 → 工具调用（纯函数，可单测）：{ tool, params } | null
 
 
 // ${var} 执行期插值：已知变量替换，未知变量原样保留（不抛错，§7.5）

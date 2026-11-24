@@ -17,7 +17,13 @@ export const ASSERT_TYPES = new Set(['aiAssert']);
 export const QUERY_TYPES = new Set(['aiQuery']);
 export const WAIT_TYPES = new Set(['aiWaitFor']);
 export const ENGINE_TYPES = new Set(['aiTap', 'aiInput', 'aiLongPress', 'aiKeyboardPress', 'aiScroll', 'aiTapEach', 'launch', 'terminate', 'uiDump']);
-// 坐标步（tap/swipe）：默认拒绝，需 allowCoords 显式开启（DESIGN.md:449 逃生口）
+// 坐标步（tap 带 {x,y}）：**默认禁用**，需用例顶层 allowCoords: true 或 CLI --allow-coords。
+// 依据 docs/DESIGN.md:978「禁止把坐标写进用例文件」（2026-09-24 裁定）——故这里不是"支持新语法"，
+// 而是把这个裁定早设计好的 allowCoords 逃生口（DESIGN.md:449）落地为**显式、可审计**的开关。
+// 未开启时坐标步报解析错（此前静默降级成 ai 任务，把 "tap: { x: 405, y: 2115 }" 当自然语言喂给模型，
+// 12 条断言因没点到目标而全灭且无任何告警——静默失效是最坏的失败模式）。
+// 仅收 tap：swipe 需要两个点而 DSL 无既定双点语法，与其臆造不如让它落进
+// "未知步骤命令"报错（写清可用形态），避免又一个"看起来能跑其实静默失效"的入口。
 export const COORD_TYPES = new Set(['tap']);
 export const SPECIAL_TYPES = new Set(['net', 'sleep']);
 
