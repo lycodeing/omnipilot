@@ -20,9 +20,11 @@ import {
 } from './case-steps.js';
 import { waitSelectorFromText, resolveLoopPlan } from './case-loop.js';
 export { waitSelectorFromText, resolveLoopPlan };
+// 转口导出：只保留有外部消费者的（bin/ask.js、src/tools/、test/ 引用
+// QUERY_TYPES / ENGINE_TYPES / COORD_TYPES / normalizeType / buildToolCall）。
+// AGENT_TYPES / ASSERT_TYPES / WAIT_TYPES / SPECIAL_TYPES 全仓零外部消费者，不再转口。
 export {
-  AGENT_TYPES, ASSERT_TYPES, QUERY_TYPES, WAIT_TYPES,
-  ENGINE_TYPES, COORD_TYPES, SPECIAL_TYPES,
+  QUERY_TYPES, ENGINE_TYPES, COORD_TYPES,
   normalizeType, buildToolCall,
 };
 
