@@ -68,8 +68,10 @@ function pickModel(model) {
 // 全文兜底：深遍历所有字符串，替换已登记 secret 值。
 // 性能：secrets 为空直接短路（绝大多数 run 无 secret）；非空时把 K 个值合成单个交替
 // 正则一次扫描，避免 O(字符串数 × secret 数) 的重复 replaceAll。
-function buildRedactor(secrets) {
-  const usable = secrets.filter((s) => s && s.value);
+// 导出供 report 侧复用：CLI 的 build 路径也要有同一份全文兜底保证
+// （此前只有 recorder 路径有，CLI 生成的报告可能残留明文 secret）。
+export function buildRedactor(secrets) {
+  const usable = (secrets ?? []).filter((s) => s && s.value);
   if (!usable.length) return null;
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(usable.map((s) => esc(String(s.value))).join('|'), 'g');
@@ -77,7 +79,7 @@ function buildRedactor(secrets) {
   return (s) => s.replace(re, (m) => byValue.get(m) ?? m);
 }
 
-function redactDeep(node, redact) {
+export function redactDeep(node, redact) {
   if (typeof node === 'string') return redact(node);
   if (Array.isArray(node)) {
     for (let i = 0; i < node.length; i++) node[i] = redactDeep(node[i], redact);
@@ -305,7 +307,9 @@ export class RunRecorder {
       networkTimeline: this._network,
       rollbacks: this._rollbacks,
       artifacts: {
-        report: toPosix(path.join(this._runsDir, this.runId, 'index.html')), // 预留
+        // 与 steps[].screenshot 同一基准（相对 runsDir）——同一 artifacts 对象内
+        // 混用绝对/相对路径会让跨机消费方无法用统一规则解析
+        report: toPosix(path.join(this.runId, 'index.html')),
         uiDumps: this._uiDumps,
       },
     };
@@ -347,13 +351,20 @@ export class RunRecorder {
     // 传深拷贝：report 侧 redactDump 会原地改写 assertions.reason，不能污染返回给调用方的 doc。
     try {
       const { writeReport } = await import('../../report/recorder.js');
-      const htmlPath = path.join(this._runsDir, `${this.runId}.html`);
+      // 报告写进 **run 目录**（runs/<runId>/index.html）而非 runs/ 根：
+      // writeReport 的 baseDir 取 dirname(outPath)，报告的截图副本会落到
+      // <baseDir>/screenshots/ —— 若 outPath 在 runs/ 根，全部 run 的截图副本都堆进
+      // 同一个共享的 runs/screenshots/，无上限增长且与 recorder 的原始 PNG 分离。
+      // 放进 run 目录后副本与原始截图同目录，随 run 一起归档。
+      const htmlPath = path.join(this._runsDir, this.runId, 'index.html');
       await writeReport(structuredClone(doc), {
         outPath: htmlPath,
         mode: 'directory',
         groupName: this._caseName,
+        runDir: this._runsDir,
+        secrets: this._secrets,   // 全文兜底脱敏（与 CLI 路径同一份保证）
       });
-      doc.artifacts.report = toPosix(htmlPath);
+      doc.artifacts.report = toPosix(path.join(this.runId, 'index.html'));   // 相对 runsDir（同 steps[].screenshot 基准）
       this._htmlPath = htmlPath;
       // 报告已生成：把 artifacts.report 同步回 JSON（二次写盘，代价可忽略）
       await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');

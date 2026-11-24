@@ -93,7 +93,7 @@ test('to-md：html 走 stdout，dump.json 走 --out 文件，且输出已脱敏'
   assert.equal(r1.status, 0, r1.stderr);
   assert.ok(r1.stdout.includes('# CLI组'));
   assert.ok(r1.stdout.includes('## 断言'));
-  assert.ok(r1.stdout.includes('[REDACTED:secret_get:secret]')); // to-md 输出不泄密
+  assert.ok(r1.stdout.includes('[REDACTED:secret_get:code]')); // to-md 输出不泄密
   assert.ok(!r1.stdout.includes('654321'));
 
   const dumpFile = path.join(cwd, 'dump.json');

@@ -9,7 +9,7 @@ import { splitReport, reportToMarkdown, reportHtmlToMarkdown } from './tools.js'
 
 const USAGE = [
   '用法:',
-  '  node report/cli.js build <run.json> [--out <file|dir>] [--assets] [--group-name <n>] [--shell <distDir>]',
+  '  node report/cli.js build <run.json> [--out <file|dir>] [--assets] [--group-name <n>] [--shell <distDir>] [--secrets <secrets.json>]',
   '  node report/cli.js split <report.html> [--out <dir>]',
   '  node report/cli.js to-md <report.html|dump.json> [--out <file>]',
 ].join('\n');
@@ -20,7 +20,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--assets') {
       args.assets = true;
-    } else if (a === '--out' || a === '--group-name' || a === '--shell') {
+    } else if (a === '--out' || a === '--group-name' || a === '--shell' || a === '--secrets') {
       const v = argv[++i];
       if (v == null) return null;
       args[a.slice(2)] = v;
@@ -54,12 +54,23 @@ async function cmdBuild(args) {
     (fs.existsSync(args.out) && fs.statSync(args.out).isDirectory()));
   if (isDirArg) outPath = path.join(args.out, 'report.html');
   const shell = loadShell(args.shell ?? null);
+  // 全文兜底脱敏：run.json 里只有脱敏标记（[REDACTED:...]），拿不到原值——
+  // 需要调用方提供 secrets 文件（[{ provider, key, value }]）才能扫全文。
+  let secrets = null;
+  if (args.secrets) {
+    try {
+      secrets = JSON.parse(await fsp.readFile(args.secrets, 'utf8'));
+    } catch {
+      fail(`无法读取 secrets 文件: ${args.secrets}`);
+    }
+  }
   const written = await writeReport(runJson, {
     outPath,
     mode: args.assets ? 'directory' : 'single-html',
     shell,
     groupName: args['group-name'],
     runDir,
+    ...(secrets ? { secrets } : {}),
   });
   process.stdout.write(`已生成报告: ${written}\n`);
 }

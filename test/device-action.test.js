@@ -26,7 +26,8 @@ test('centerOf / regionPoint / pickPoint（§5.4.1 中心优先）', () => {
   assert.deepEqual(regionPoint('right', SIZE), [576, 640]);
   assert.throws(() => regionPoint('middle', SIZE), /未知区域/);
   assert.deepEqual(pickPoint([16, 140, 704, 300], SIZE), [360, 220], '中心优先');
-  assert.deepEqual(pickPoint([-100, -100, 50, 50], SIZE), [-25, -25], '全出屏退化为中心');
+  // 全出屏时钳到屏幕内边缘——返回越界中心会让 tap 落在屏幕外（点空）
+  assert.deepEqual(pickPoint([-100, -100, 50, 50], SIZE), [0, 0], '全出屏应钳到屏幕内');
 });
 
 test('resolvePoint：bounds / [x,y] / 区域名 三态', () => {

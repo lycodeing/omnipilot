@@ -281,5 +281,21 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
     resetSession: () => { sessionId = null; },
     source,
     serverPid, // 设备侧进程探测（dumpXmlRaw 用它判定 UiAutomation 槽是否被占用）
+    // 释放资源：设备端会话（DELETE /wd/hub/session/:id）+ host 侧 adb forward。
+    // 必须释放——Android 11 的 UiAutomation 注册槽是**独占**的，泄漏的会话会占住槽位，
+    // 使 legacy `uiautomator dump` 通道以 rc=137 死掉（本模块依赖的兜底路径）；
+    // adb forward 也会在 host 侧累积端口绑定。
+    async dispose() {
+      if (sessionId) {
+        const sid = sessionId;
+        sessionId = null;
+        await httpRaw(hostP, `/wd/hub/session/${sid}`, { method: 'DELETE', timeoutMs: 3000 }).catch(() => {});
+      }
+      if (port == null && bound && typeof adb.host === 'function') {
+        await adb.host(['forward', '--remove', `tcp:${hostP}`], { timeoutMs: 5000 }).catch(() => {});
+        bound = false;
+      }
+      usedPorts.delete(hostP);   // 归还进程内端口槽
+    },
   };
 }

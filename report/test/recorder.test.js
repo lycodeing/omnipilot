@@ -84,7 +84,13 @@ test('buildDump 按 §19.5 映射表逐字段转换', () => {
   assert.equal(t3.errorMessage, 'locate_miss_x3');
   assert.deepEqual(t3.locate, { ...run.steps[3].locate, screenshotId: 'uuid-3' });
 
-  assert.equal(exec.tasks[4].status, 'failed'); // run.json 里 secret 步 result 是 token，非 ok
+  // secret 步的 result 是脱敏标记 [REDACTED:provider:key]（recorder 为防密钥落盘覆写），
+  // 不是失败——旧实现按"未知值→failed"处理，把一次**成功**的 secret_get 报成 failed。
+  // 脱敏标记必须识别为 finished。
+  assert.equal(exec.tasks[4].status, 'finished');
+  // 脱敏标记里的 provider/key 保留到 param（CONTRACT §5.1：param.key ?? param.provider）
+  assert.equal(exec.tasks[4].param.provider, 'mcp-sms');
+  assert.equal(exec.tasks[4].param.key, 'code');
   assert.deepEqual(Object.keys(dump.screenshots).sort(), ['uuid-0', 'uuid-1', 'uuid-3']);
   assert.deepEqual(Object.values(dump.screenshots), ['', '', '']); // single-html 值一律空串
 });
@@ -398,8 +404,8 @@ test('writeReport single-html：嵌图 dataURL、脱敏生效、缺失截图跳�
 
   const [{ groupId, dump }] = extractDumps(html);
   assert.equal(groupId, 'E2E组');
-  assert.equal(dump.executions[0].tasks[4].thought, '[REDACTED:secret_get:secret]'); // 构建即脱敏
-  assert.ok(dump.assertions.every((a) => a.reason === '[REDACTED:secret_get:secret]'));
+  assert.equal(dump.executions[0].tasks[4].thought, '[REDACTED:secret_get:code]'); // 构建即脱敏
+  assert.ok(dump.assertions.every((a) => a.reason === '[REDACTED:secret_get:code]'));
   assert.ok(!html.includes('654321'));
   assert.deepEqual(Object.keys(dump.screenshots).length, 4); // 含缺失文件的占位
 });

@@ -87,9 +87,11 @@ test('finish 产出 §14.1 完整形状，逐字段断言', async (t) => {
   assert.deepEqual(doc.extracts, { date_1: '2025-09-16' });
   assert.deepEqual(doc.networkTimeline, [{ at: 4210, profile: '3g' }]);
   assert.deepEqual(doc.rollbacks, [{ stepIndex: 2, reason: 'locate_miss_x3', recovered: true }]);
-  // 默认产出 HTML 报告（run 收尾自动生成，与 JSON 同目录）
-  assert.equal(doc.artifacts.report, `${toPosix(runsDir)}/${rec.runId}.html`);
-  assert.ok(fs.existsSync(doc.artifacts.report), 'HTML 报告应已生成');
+  // 默认产出 HTML 报告（run 收尾自动生成）。路径相对 runsDir——与 steps[].screenshot
+  // 同一基准（同一 artifacts 对象内混用绝对/相对路径会让消费方无法用统一规则解析）。
+  assert.equal(doc.artifacts.report, `${rec.runId}/index.html`);
+  const reportAbs = path.join(runsDir, doc.artifacts.report);
+  assert.ok(fs.existsSync(reportAbs), 'HTML 报告应已生成');
   assert.deepEqual(doc.artifacts.uiDumps, []);
 
   // 落盘文件与内存 doc 一致；model 白名单字段，密钥明文不出现

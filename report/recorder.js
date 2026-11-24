@@ -132,9 +132,15 @@ export function buildDump(runJson, opts = {}) {
     // result 词表收敛（2026-11-04 评审 P2）：写侧有 'ok'|'failed'|'cancelled'|'error' 四种
     // （withRecording），fixture/旧数据还有 'fail' 拼写；cancelled（用户拒绝确认）与 error
     // （设备异常）此前都被折叠成 failed，报告语义有损。映射为四态 + 未知拼写兜底 failed。
-    const status = step.result === 'ok' ? 'finished'
-      : step.result === 'cancelled' ? 'cancelled'
-      : step.result === 'error' ? 'error'
+    //
+    // 脱敏标记 [REDACTED:provider:key] 也必须识别为成功：recorder 对 secret 类步骤
+    // 会把 result 覆写成脱敏标记（防密钥落盘），若按"未知值→failed"处理，
+    // 一次**成功**的 secret_get 会在报告里显示为 failed——状态信号被脱敏机制毁掉。
+    const rawResult = String(step.result ?? '');
+    const redactedOk = rawResult.startsWith('[REDACTED');
+    const status = rawResult === 'ok' || redactedOk ? 'finished'
+      : rawResult === 'cancelled' ? 'cancelled'
+      : rawResult === 'error' ? 'error'
       : 'failed'; // failed / 旧拼写 fail / 未知值一律按失败显示
     const task = {
       taskId: String(step.index),
@@ -150,6 +156,14 @@ export function buildDump(runJson, opts = {}) {
     };
     if (step.target != null) {
       task.param = step.type === 'assert' ? { text: step.target } : { target: step.target };
+      // secret_get/sms_read 的 provider/key 必须保留：redactDump 按
+      // param.key ?? param.provider ?? 'secret' 生成脱敏 token，缺了就退化成
+      // 通用 'secret'，报告里丢失"脱敏的是哪个凭据"这一信息（CONTRACT §5.1）。
+      const m = /^\[REDACTED:([^:\]]+):([^\]]*)\]$/.exec(rawResult);
+      if (m) {
+        task.param.key = m[2] || undefined;
+        task.param.provider = m[1] || undefined;
+      }
     }
     if (step.locate) task.locate = { ...step.locate };
     if (step.screenshot) {
@@ -403,7 +417,11 @@ function resolveScreenshotFile(rel, outPath, { runDir } = {}) {
   return null;
 }
 
-export async function writeReport(runJson, { outPath, mode = 'single-html', shell, groupName, runDir } = {}) {
+// secrets：可选的 { provider, key, value } 列表——用于**全文兜底脱敏**。
+// recorder 路径在写 run.json 时已做过全文扫描（buildRedactor），但 CLI 的
+// `report/cli.js build` 路径没有：模型在**后续非 secret 任务**的 thought 里
+// 回显密钥时会以明文进报告。传入 secrets 让两条入口共享同一份保证。
+export async function writeReport(runJson, { outPath, mode = 'single-html', shell, groupName, runDir, secrets = null } = {}) {
   if (!outPath) throw new Error('writeReport 需要 outPath');
   const writer = new ReportWriter({ outPath, shell, mode });
   writer._batch = []; // 一次性批量路径：标签攒内存，finalize 只写一次文件
@@ -413,6 +431,12 @@ export async function writeReport(runJson, { outPath, mode = 'single-html', shel
     if (step?.screenshot) screenshotIds[step.index] = crypto.randomUUID();
   }
   const dump = redactDump(buildDump(run, { groupName, screenshotIds }));
+  // 全文兜底：secret 值出现在任何字符串里都替换（不止本任务自己的 thought/param）
+  if (Array.isArray(secrets) && secrets.length) {
+    const { buildRedactor, redactDeep } = await import('../src/recorder/index.js');
+    const redact = buildRedactor(secrets);
+    if (redact) redactDeep(dump, redact);
+  }
   await writer.appendExecution(dump);
   const steps = run.steps ?? [];
   // taskId → step 索引表：免掉逐任务 steps.find 的 O(T²) 线性回查

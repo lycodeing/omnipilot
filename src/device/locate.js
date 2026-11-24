@@ -231,7 +231,11 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
     // ① hint：bounds 命中且 identity 一致才复用（§5.0.5 / §14.2.1）
     if (hintBounds && hintIdentity) {
       const node = nodeAtBounds(flat, hintBounds);
-      if (node && sameIdentity(node, hintIdentity)) {
+      // 必须加 inScreen 检查：其余每条策略都过 inScreen（定位到屏幕外的节点会被
+      // 判定为无效），唯独 hint 路径漏了——hint 来自持久化的 locate_cache（上一
+      // 步或上一轮写入），节点滚出屏幕后 identity 仍匹配 → 返回屏幕外坐标，
+      // 点击落在别处。VLM 路径同样检查 conv.inScreen。
+      if (node && sameIdentity(node, hintIdentity) && inScreen(node.bounds, size)) {
         return { ...result, ok: true, bounds: node.bounds, center: node.center, strategy: 'cache', identity: nodeIdentity(node) };
       }
       // 校验失败 → 弃用 hint，走正常链

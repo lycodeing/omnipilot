@@ -73,7 +73,13 @@ export function pickPoint([l, t, r, b], size) {
     [cx, Math.floor(t + h * 0.75)],
   ];
   const ok = candidates.filter(([x, y]) => x >= 0 && y >= 0 && x < size.w && y < size.h);
-  return ok[0] ?? [cx, cy];
+  // 回退也必须在屏幕内：全部候选越界时直接返回原中心会给出屏幕外坐标
+  // （facade 的 tap(bounds) 是公开方法，不保证调用方已过滤），点击会落在别处。
+  // 越界时钳到屏幕内边缘——宁可点在边缘，也不点空。
+  if (ok.length) return ok[0];
+  const clampedX = Math.min(Math.max(cx, 0), Math.max(0, size.w - 1));
+  const clampedY = Math.min(Math.max(cy, 0), Math.max(0, size.h - 1));
+  return [clampedX, clampedY];
 }
 
 // bounds([l,t,r,b]) | [x,y] | 区域名 → [x,y]

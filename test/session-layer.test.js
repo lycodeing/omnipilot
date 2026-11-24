@@ -472,3 +472,28 @@ test('interpolate：数组/对象值 JSON 序列化（data_extract rows）', () 
       assert.equal(both.marker, 'text=提交');
     });
   });
+
+// ---- 未知命令必须报错 / 参数不得被静默吞掉 ----
+
+test('未知步骤命令抛错，不静默降级为自然语言任务', () => {
+  // 回归用例："aiTapp: 点击登录"（拼写错误）曾被整行当任务喂给 agent，
+  // 命令语义消失、断言全灭且无任何告警。
+  assert.throws(() => parseCaseText('steps:\n  - aiTapp: 点击登录'), /未知步骤命令/);
+});
+
+test('纯文本任务（不含冒号）仍正常解析', () => {
+  const c = parseCaseText('steps:\n  - 打开掘金看看热榜');
+  assert.equal(c.steps.length, 1);
+  assert.equal(c.steps[0].type, 'ai');
+  assert.equal(c.steps[0].text, '打开掘金看看热榜');
+});
+
+test('aiInput 的 clear 参数被正确解析并转发（此前被拼进 text 且不生效）', () => {
+  const c = parseCaseText('steps:\n  - aiInput: 输入框\n    clear: true\n    value: hello');
+  assert.equal(c.steps[0].clear, true, 'clear 应解析为布尔');
+  assert.equal(c.steps[0].text, '输入框', 'clear 不得被拼进 text');
+  assert.equal(c.steps[0].value, 'hello');
+  const call = buildToolCall(c.steps[0]);
+  assert.equal(call.tool, 'input');
+  assert.equal(call.params.clear, true, 'clear 必须转发给 input 工具');
+});

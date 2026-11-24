@@ -116,7 +116,9 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   // 免掉一次 38-55s 的慢 dump（动画不改 a11y 树，跨时间复用安全；换 App 的动作清空）
   let lastTreeHash = null;
   let timeoutSupported = null; // 设备侧 timeout 可用性（null=未探测，false=降级无包裹）
-  async function dumpXmlRaw() {
+  // budgetMs：本次 dump 的总预算（毫秒）。waitFor* 传入剩余预算，避免单次 dump
+  // 远超调用方的"最多等 N 毫秒"契约。
+  async function dumpXmlRaw({ budgetMs = null } = {}) {
     // 两级策略（实测 busy 弹窗态成功 dump 需 38-39s——uiautomator idle 等待本身很长）：
     // ① tty 快通道：设备侧 timeout 10s 快速失败（健康屏 ~2s 出结果；busy 屏不留孤儿——
     //    客户端超时只杀 adb，设备侧 uiautomator 会变孤儿继续持有 a11y 锁，毒化后续尝试）；
@@ -133,7 +135,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     let uia2FailedTransiently = false; // （保留供退避分类）本轮 uia2 是否因超时/断连失败
     if (uia2 && Date.now() >= uia2DeadUntil) {
       try {
-        const xml = await uia2.source();
+        // uia2 的 source 超时同样受本次 dump 预算约束（默认走 SDK 内部超时）
+        const xml = await uia2.source(budgetMs != null ? { timeoutMs: budgetMs } : undefined);
         if (xml.includes('</hierarchy>')) return xml;
         throw new Error('uia2 无 hierarchy');
       } catch (e) {
@@ -177,14 +180,23 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         // 等过退避期，然后给一次 60s 的 uia2 重试（页面在退避期间继续渲染，往往能出树）
         const remain = Math.max(0, uia2DeadUntil - Date.now());
         if (remain > 0) await new Promise((r) => setTimeout(r, Math.min(remain, 10_000)));
-        uia2DeadUntil = 0;
+        // 重试前不清零退避：清零后若重试仍失败，uia2DeadUntil 会停在 0，
+        // 下次 dumpTree 直接跳过退避（Date.now() >= 0 恒真）→ 立刻再付
+        // 10s 等待 + 60s source 超时，正是这段退避本要避免的 ≈140s/次成本。
         try {
           const xml = await uia2.source({ timeoutMs: 60_000 });
-          if (xml.includes('</hierarchy>')) return xml;
+          if (xml.includes('</hierarchy>')) {
+            uia2DeadUntil = 0;   // 成功才解除退避
+            return xml;
+          }
+          throw new Error('重试无 hierarchy');
         } catch (e) {
+          // 重试失败：恢复退避期并记录错误类型，下一轮据 lastUia2Error 继续守卫
+          uia2DeadUntil = Date.now() + UIA2_BACKOFF.fatalMs;
+          lastUia2Error = `uia2 busy 重试失败: ${String(e?.message ?? e).slice(0, 120)}`;
+          lastUia2SlotFree = false;
           throw new Error(`uia2 busy（重试仍失败: ${String(e?.message ?? e).slice(0, 80)}）；legacy 因 UiAutomation 槽被 uia2 占用不可用（Android 11 排他注册）`);
         }
-        throw new Error('uia2 busy 且重试无 hierarchy；legacy 因 UiAutomation 槽被 uia2 占用不可用（Android 11 排他注册）');
       }
     }
     // 设备侧 timeout 可用性探测（旧镜像/redroid 老底可能无 toybox timeout）：
@@ -198,24 +210,27 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     }
     // timeout 前缀（含秒数）：`timeout 10 <cmd>`；降级时为空串 → 直接 <cmd>
     const tw = (sec) => (timeoutSupported ? `timeout ${sec} ` : '');
+    // 预算裁剪：各通道的客户端超时不得超过本次 dump 的总预算（budgetMs）。
+    // 否则 waitForElement({timeoutMs:10000}) 可能被单通道的 55s 拖成 165s。
+    const cap = (ms) => (budgetMs != null ? Math.max(1000, Math.min(ms, budgetMs)) : ms);
     const tryExecOut = async () => {
       const cmd = timeoutSupported
         ? ['exec-out', 'timeout', '10', 'uiautomator', 'dump', '/dev/tty']
         : ['exec-out', 'uiautomator', 'dump', '/dev/tty'];
-      const buf = await adb.execOut(cmd, { timeoutMs: 15000, binary: false });
+      const buf = await adb.execOut(cmd, { timeoutMs: cap(15000), binary: false });
       const xml = buf.toString('utf8');
       if (!xml.includes('</hierarchy>')) throw new Error('exec-out 无 hierarchy');
       return xml;
     };
     const tryShell = async () => {
-      const xml = await adb.shell(`${tw(10)}uiautomator dump /dev/tty`, { timeoutMs: 15000 });
+      const xml = await adb.shell(`${tw(10)}uiautomator dump /dev/tty`, { timeoutMs: cap(15000) });
       if (!String(xml).includes('</hierarchy>')) throw new Error('shell 无 hierarchy');
       return xml;
     };
     const tryFile = async () => {
       // 前置 rm -f：实测 `uiautomator dump <不可写路径>` 仍打印成功且 exit 0，
       // 此时 && 不生效、cat 会吐上一轮残留的合法 XML（被当当前树用）——必须清旧文件
-      const xml = await adb.shell(`rm -f /sdcard/ask-uidump.xml; ${tw(50)}uiautomator dump /sdcard/ask-uidump.xml && cat /sdcard/ask-uidump.xml`, { timeoutMs: 55000 });
+      const xml = await adb.shell(`rm -f /sdcard/ask-uidump.xml; ${tw(50)}uiautomator dump /sdcard/ask-uidump.xml && cat /sdcard/ask-uidump.xml`, { timeoutMs: cap(55000) });
       if (!String(xml).includes('</hierarchy>')) throw new Error('file 无 hierarchy');
       return String(xml);
     };
@@ -250,7 +265,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     throw new Error('uiautomator dump 三通道（exec-out/shell/file）均无 hierarchy');
   }
 
-  async function dumpTree({ fresh = false } = {}) {
+  // timeoutMs：本次 dump 的预算上限（毫秒）。waitFor* 用它把"剩余预算"传下来——
+  // 一次 fresh dump 可能耗时 4-155s（uia2 退避/重试路径），不设上限会让
+  // waitForElement({timeoutMs:10000}) 实际跑 165s，超出调用方契约。
+  async function dumpTree({ fresh = false, timeoutMs = null } = {}) {
     if (!fresh) {
       const hit = cache.peek();
       if (hit) {
@@ -261,7 +279,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     }
     cache.recordMiss();
     const t0 = Date.now();
-    const xml = await dumpXmlRaw();
+    const xml = await dumpXmlRaw(timeoutMs != null ? { timeoutMs } : undefined);
     const dumpMs = Date.now() - t0;
     cache.recordDump();
     const text = truncateAtHierarchyEnd(xml);
@@ -846,7 +864,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       while (Date.now() - t0 < timeoutMs) {
         let flat = [];
         try {
-          const tree = await dumpTree({ fresh: true }); // 强制新树（缓存命中会让"等待"失去意义）
+          // 剩余预算传给 dump：一次 fresh dump 可能耗时 4-155s（uia2 退避/重试路径），
+          // 不设上限时 waitForElement({timeoutMs:10000}) 实际能跑 165s——超出调用方
+          // 的"最多等 N 毫秒"契约，且会白耗 run 级超时预算。
+          const remain = timeoutMs - (Date.now() - t0);
+          const tree = await dumpTree({ fresh: true, timeoutMs: Math.max(1000, remain) }); // 强制新树（缓存命中会让"等待"失去意义）
           flat = flattenNodes(tree.nodes);
           failStreak = 0;
         } catch { failStreak++; /* dump 失败（转场中）→ 继续等 */ }
@@ -855,6 +877,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           const m = await matchOnScreen(flat, sel);   // 返回 { node, value } | null
           if (m?.node) return { appeared: true, dumps, matched: m.value || sel, inWebView: !!m.inWebView };
         }
+        // dump 之后重新检查 deadline：单次 dump 可能已超出预算，不该再睡一轮
+        if (Date.now() - t0 >= timeoutMs) break;
         const sleepMs = failStreak > 0 ? Math.min(500, 200 * failStreak) : intervalMs;
         await new Promise((r) => setTimeout(r, sleepMs));
       }
@@ -929,7 +953,14 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       await writeFile(path, text, 'utf8');
       return path;
     },
-    async close() {},
+    // 释放 uia2 资源：设备端会话（DELETE /wd/hub/session/:id）+ host 侧 adb forward。
+    // 不释放会占住 Android 11 独占的 UiAutomation 注册槽，使 legacy dump 通道以
+    // rc=137 死掉（本模块依赖的兜底路径）；adb forward 也会在 host 侧累积绑定。
+    async close() {
+      if (uia2 && typeof uia2.dispose === 'function') {
+        await uia2.dispose().catch(() => {});
+      }
+    },
 
     // —— 附加（非契约方法，B 可选用；不影响 §1.1 既定签名） ——
     // preflight 用（§2.7）：读包信息 / 授予权限；失败返回 ''/ok:false，不抛错
