@@ -22,7 +22,12 @@ export async function netStatus(adb, { timeoutMs } = {}) {
   try {
     const out = await adb.shell('net status', { timeoutMs }).catch(() => '');
     const m = /(?:current|profile|mode)\s*[:=]\s*(\S+)/i.exec(out) ?? /^(\S+)/.exec(String(out).trim());
-    return { profile: m ? m[1].toLowerCase() : 'unknown' };
+    const token = m ? String(m[1]).toLowerCase() : '';
+    // 提取到的 token 必须是合法档位：net 不存在时输出 "error: net: not found" /
+    // "usage: net [2g|3g|…]"——原实现直接把首词当档位返回（'error:' / 'usage:'），
+    // 'unknown' 这条兜底分支形同虚设。
+    if (!NET_PROFILES.includes(token)) return { profile: 'unknown' };
+    return { profile: token };
   } catch {
     return { profile: 'unknown' };
   }

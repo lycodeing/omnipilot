@@ -322,6 +322,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     const store = openDataset({ dataDir: WORKSPACE.datasetDir });
     const recorder = new RunRecorder({
       runsDir: WORKSPACE.runDir,
+      reportDir: WORKSPACE.reportDir,   // HTML 报告落 <instance>/report/（与布局承诺一致）
       caseName: caseObj.name,
       device,
       model: { family: modelCfg.family || 'unknown', name: modelCfg.name || 'unknown', baseUrlHash: modelCfg.url ? hashUrl(modelCfg.url) : '' },

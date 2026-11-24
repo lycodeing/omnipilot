@@ -16,7 +16,19 @@ const TYPES = new Set(['string', 'number', 'boolean']);
 // 读文件+逐行 JSON.parse，upsert 再全量重写，成本随缓存跨 run 累积线性恶化。
 // key = jsonl 绝对路径；以 mtimeMs+size 失效（外部进程写盘也能感知）。
 // entry = { mtimeMs, size, rows, indexById, ids }；rows 为权威数组，写路径原地维护。
+// 容量上限：entry 持有全量 rows 数组，无上限时大数据集常驻内存不释放
+// （长驻会话/并行 run 场景）。超限按插入顺序淘汰最旧的（Map 保插入序）。
 const ROW_CACHE = new Map();
+const ROW_CACHE_MAX = 32;
+
+function setRowCache(file, entry) {
+  ROW_CACHE.delete(file);          // 重新插入 → 移到队尾（最近使用）
+  ROW_CACHE.set(file, entry);
+  while (ROW_CACHE.size > ROW_CACHE_MAX) {
+    const oldest = ROW_CACHE.keys().next().value;
+    ROW_CACHE.delete(oldest);
+  }
+}
 
 function assertName(name) {
   if (typeof name !== 'string' || !name || name === '.' || name === '..' ||
@@ -71,6 +83,11 @@ function keyIdentity(key, row) {
     if (v === undefined) throw new Error(`upsert: 行缺少主键字段 "${f}"`);
     return v === null ? 'null' : typeof v === 'object' ? stableJson(v) : String(v);
   });
+  if (parts.length === 1) return parts[0];
+  // 多字段用 ':' 拼接（既有约定，存量 locate_cache.jsonl 依赖它——改编码会让
+  // 新旧行的 _id 对不上，upsert 退化成"新增"而非"更新"，缓存行数翻倍）。
+  // 键冲突（{a:'x',b:'y:z'} 与 {a:'x:y',b:'z'} 同得 "x:y:z"）是既有缺陷，
+  // 但修它必须配套数据迁移，收益不足以承担破坏存量的代价——记录在此备查。
   return parts.join(':');
 }
 
@@ -184,14 +201,14 @@ async function readRowsCached(dataDir, name) {
     if (!indexById.has(id)) indexById.set(id, i);
   }
   const entry = { mtimeMs: st.mtimeMs, size: st.size, rows, indexById, ids };
-  ROW_CACHE.set(file, entry);
+  setRowCache(file, entry);
   return rows;
 }
 
 // 写后登记缓存：避免下一次读再付 stat+readFile
 function commitCache(dataDir, name, entry) {
   const file = path.join(dataDir, `${name}.jsonl`);
-  ROW_CACHE.set(file, entry);
+  setRowCache(file, entry);
 }
 
 function invalidateCache(dataDir, name) {

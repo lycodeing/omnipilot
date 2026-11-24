@@ -2,7 +2,8 @@
   "name": "ask-report-viewer",
   "type": "module",
   "scripts": {
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "vue": "^3.4"

@@ -87,6 +87,14 @@ export function decodePng(buf) {
   if (interlace !== 0) throw new Error('不支持隔行 PNG');
   const bpp = colorType === 6 ? 4 : colorType === 2 ? 3 : 0;
   if (!bpp) throw new Error(`仅支持 RGBA(6)/RGB(2) PNG（实际颜色类型 ${colorType}）`);
+  // 尺寸上限：width/height 来自文件头，是不可信输入。unfilter 会按 stride*height
+  // 分配像素缓冲——一个 68 字节的伪造 PNG 头声明 20000×20000 就能触发 1.5GB 分配
+  // （实测成功分配）→ 进程 OOM。截图来源虽是 adb screencap，但本模块是通用解析器。
+  if (width === 0 || height === 0) throw new Error(`PNG 尺寸非法: ${width}×${height}`);
+  const MAX_PIXELS = 50_000_000;   // 5000 万像素（≈6000×8000，远超常见截图）
+  if (width * height > MAX_PIXELS) {
+    throw new Error(`PNG 尺寸过大: ${width}×${height}（上限 ${MAX_PIXELS} 像素）`);
+  }
 
   const idats = [];
   let off = 8;

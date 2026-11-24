@@ -93,12 +93,17 @@ export function redactDeep(node, redact) {
 }
 
 export class RunRecorder {
-  constructor({ runsDir = 'runs', caseName = null, device = null, model = null } = {}) {
+  // reportDir：HTML 报告的落点（工作区布局下的 <instance>/report/）。
+  // 缺省与 runsDir 同级（历史行为：报告落在 run 目录内）。传入时报告写到该目录——
+  // 与 README/工作区布局承诺的 "report/ 生成 HTML 报告" 一致。
+  constructor({ runsDir = 'runs', reportDir = null, caseName = null, device = null, model = null } = {}) {
     this.runId = `run-${stamp(new Date())}-${crypto.randomBytes(2).toString('hex')}`;
     this._runsDir = runsDir;
+    this._reportDir = reportDir ?? runsDir;
     this._dir = path.join(runsDir, this.runId);
     this._jsonPath = path.join(runsDir, `${this.runId}.json`);
     fs.mkdirSync(this._dir, { recursive: true });
+    fs.mkdirSync(this._reportDir, { recursive: true });
     this._startMs = Date.now();
     this._startedAt = localIso(this._startMs);
     this._caseName = caseName ?? null;
@@ -351,12 +356,12 @@ export class RunRecorder {
     // 传深拷贝：report 侧 redactDump 会原地改写 assertions.reason，不能污染返回给调用方的 doc。
     try {
       const { writeReport } = await import('../../report/recorder.js');
-      // 报告写进 **run 目录**（runs/<runId>/index.html）而非 runs/ 根：
+      // 报告写进 **report 目录**（工作区布局：<instance>/report/<runId>/index.html）。
       // writeReport 的 baseDir 取 dirname(outPath)，报告的截图副本会落到
-      // <baseDir>/screenshots/ —— 若 outPath 在 runs/ 根，全部 run 的截图副本都堆进
-      // 同一个共享的 runs/screenshots/，无上限增长且与 recorder 的原始 PNG 分离。
-      // 放进 run 目录后副本与原始截图同目录，随 run 一起归档。
-      const htmlPath = path.join(this._runsDir, this.runId, 'index.html');
+      // <baseDir>/screenshots/ —— 若 outPath 在共享的 runs/ 根，全部 run 的截图副本都
+      // 堆进同一个 runs/screenshots/，无上限增长且与 recorder 的原始 PNG 分离。
+      // 放进 run 专属子目录后副本与原始截图同目录，随 run 一起归档。
+      const htmlPath = path.join(this._reportDir, this.runId, 'index.html');
       await writeReport(structuredClone(doc), {
         outPath: htmlPath,
         mode: 'directory',
@@ -364,7 +369,8 @@ export class RunRecorder {
         runDir: this._runsDir,
         secrets: this._secrets,   // 全文兜底脱敏（与 CLI 路径同一份保证）
       });
-      doc.artifacts.report = toPosix(path.join(this.runId, 'index.html'));   // 相对 runsDir（同 steps[].screenshot 基准）
+      // 报告路径相对 runsDir（与 steps[].screenshot 同基准）
+      doc.artifacts.report = toPosix(path.relative(this._runsDir, htmlPath));
       this._htmlPath = htmlPath;
       // 报告已生成：把 artifacts.report 同步回 JSON（二次写盘，代价可忽略）
       await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');

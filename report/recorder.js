@@ -74,8 +74,21 @@ export function makeDumpTag(groupId, dump) {
   return `<script type="${DUMP_TAG_TYPE}" data-group-id="${attrEscape(groupId ?? 'default')}">${json}</script>`;
 }
 
+// 图片标签的 src 也要防注入：data: URL 里若含 "</script>" 会提前闭合 script 元素。
+// writeReport 走 Buffer→base64 路径（天然安全），但 appendScreenshot 是公开 API，
+// 调用方可能直接传字符串——必须校验格式。
+const DATA_URL_RE = /^data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]*$/i;
 export function makeImageTag(id, src) {
-  return `<script type="${IMAGE_TAG_TYPE}" data-id="${attrEscape(id)}">${src ?? ''}</script>`;
+  const raw = String(src ?? '');
+  // 非 data: URL（如相对路径，directory 模式）直接原样；data: URL 必须匹配
+  // base64 形态——否则 "</script>" 之类能注入。
+  if (/^data:/i.test(raw) && !DATA_URL_RE.test(raw)) {
+    throw new Error('makeImageTag：data URL 格式非法（须为 data:image/<type>;base64,<payload>）');
+  }
+  if (/<\/script/i.test(raw)) {
+    throw new Error('makeImageTag：src 含 </script，会提前闭合标签');
+  }
+  return `<script type="${IMAGE_TAG_TYPE}" data-id="${attrEscape(id)}">${raw}</script>`;
 }
 
 // ---------- 脱敏（§19.7 安全边界） ----------
@@ -339,7 +352,9 @@ export class ReportWriter {
     for (const [iid, [start, end]] of images) tags.push(makeImageTag(iid, content.slice(start, end)));
     let doc = insertBeforeBody(this._shell, tags.map((t) => `${t}\n`).join(''));
     if (this.mode === 'directory') doc = ensureBaseTag(doc);
-    const tmp = `${this.outPath}.tmp`;
+    // tmp 名带 pid+随机后缀：固定名会让两个并发 writer 写同一 outPath 时互相踩
+    // （一方 rename 后另一方再 rename → ENOENT，或读到对方的半截内容）。
+    const tmp = `${this.outPath}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
     await fsp.writeFile(tmp, doc);
     await fsp.rename(tmp, this.outPath);
     this._batch = null;
