@@ -7,32 +7,53 @@ import { createHash } from 'node:crypto';
 
 function readUInt32(buf, off) { return buf.readUInt32BE(off); }
 
+// PNG 完整签名（8 字节）：只查前 4 字节魔数会放过大量非 PNG 数据。
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+// 尺寸上限：width/height 来自文件头（不可信输入），解码按 stride*height 分配像素
+// 缓冲——一个几十字节的伪造头声明 20000×20000 就能触发 GB 级分配。
+// 5000 万像素（≈6000×8000）远超常见截图（1080×2400 = 2.6M）。
+const MAX_PIXELS = 50_000_000;
+
 // 返回 { width, height, channels, data }，data 为按行的原始 RGBA/RGB 像素（未去滤波前的 IDAT 已解压）
 export function decodePng(buf) {
-  if (!buf || buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) throw new Error('不是 PNG 文件');
+  if (!buf || buf.length < 8 || !buf.subarray(0, 8).equals(PNG_SIG)) throw new Error('不是 PNG 文件');
   let off = 8;
   let width = 0; let height = 0; let bitDepth = 0; let colorType = 0; let interlace = 0;
+  let sawIhdr = false;
   const idat = [];
   while (off + 8 <= buf.length) {
     const len = readUInt32(buf, off);
     const type = buf.toString('ascii', off + 4, off + 8);
+    // chunk 长度校验：不校验时 subarray 越界会静默截断（读到不完整的 chunk 数据）
+    if (off + 12 + len > buf.length) throw new Error(`PNG chunk 越界: ${type}（声明长度 ${len}）`);
     const data = buf.subarray(off + 8, off + 8 + len);
     if (type === 'IHDR') {
+      if (len < 13) throw new Error('PNG IHDR 长度非法');
       width = readUInt32(data, 0);
       height = readUInt32(data, 4);
       bitDepth = data[8];
       colorType = data[9];
       interlace = data[12];
+      sawIhdr = true;
+      if (width === 0 || height === 0) throw new Error(`PNG 尺寸非法: ${width}×${height}`);
+      if (width * height > MAX_PIXELS) {
+        throw new Error(`PNG 尺寸过大: ${width}×${height}（上限 ${MAX_PIXELS} 像素）`);
+      }
     } else if (type === 'IDAT') {
       idat.push(data);
     } else if (type === 'IEND') break;
     off += 12 + len;
   }
+  if (!sawIhdr) throw new Error('PNG 缺少 IHDR');
   if (bitDepth !== 8 || interlace !== 0) throw new Error(`不支持的 PNG: bitDepth=${bitDepth} interlace=${interlace}`);
   const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : null;
   if (!channels) throw new Error(`不支持的 PNG 色彩类型: ${colorType}`);
   const raw = zlib.inflateSync(Buffer.concat(idat));
   const stride = width * channels;
+  // 解压后长度必须够：否则下面的 raw[pos + x] 会读到 undefined（NaN 传播）
+  if (raw.length < height * (stride + 1)) {
+    throw new Error(`PNG 数据不完整: 解压后 ${raw.length} 字节 < 期望 ${height * (stride + 1)}`);
+  }
   const out = Buffer.alloc(height * stride);
   let pos = 0;
   for (let y = 0; y < height; y++) {

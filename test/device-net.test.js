@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Adb } from '../src/device/adb.js';
-import { NET_PROFILES, setNetProfile, netStatus } from '../src/net/profile.js';
+import { NET_PROFILES, setNetProfile, netStatus } from '../src/device/net-profile.js';
 
 test('档位清单（§10）', () => {
   assert.deepEqual(NET_PROFILES, ['off', '2g', '3g', '4g', '5g', 'airplane', 'cut', 'custom']);

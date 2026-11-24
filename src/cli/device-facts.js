@@ -4,7 +4,7 @@
 // 'unknown'/null 视为本设备不支持 net 命令（net_profile 会返回 ok=false，属预期）。
 // 从 bin/ask.js 抽出以便单测（不依赖真机：device 门面可注入 mock）。
 
-import { NET_PROFILES } from '../net/profile.js';
+import { NET_PROFILES } from '../device/net-profile.js';
 
 // 静态事实（分辨率/型号/系统版本）按 serial 进程内缓存：多用例 run 中这些值不变，
 // 每 case 重采是纯浪费（旧实现每 case 4 次串行 adb）。netProfile 不缓存——

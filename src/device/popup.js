@@ -20,6 +20,20 @@ export const SYSTEM_DIALOG_PACKAGES = new Set([
   'com.android.systemui',
 ]);
 
+// 常驻系统窗口包：这些包**始终**有窗口在屏（状态栏/导航栏），App 前台时也会
+// 作为 dump 的根出现。它们出现在根列表里**不能**判定"前台是系统弹窗"——
+// 否则 App 正常前台时会被误判为弹窗 → dismissDialog 兜底盲按 back 键
+// （popup.js 的 blind-back 分支）→ 把目标 App 顶出去，用例失败。
+// 真正的权限/安装弹窗由 permissioncontroller / packageinstaller 承担。
+export const RESIDENT_SYSTEM_PACKAGES = new Set([
+  'com.android.systemui',
+]);
+
+// 该根是否代表"真正的系统弹窗"（排除常驻窗口包）
+export function isDialogRootPkg(pkg) {
+  return SYSTEM_DIALOG_PACKAGES.has(pkg) && !RESIDENT_SYSTEM_PACKAGES.has(pkg);
+}
+
 // —— locale 文案包 ——
 // allowTexts：dismiss 点按候选，按优先级排列（同意类 > 确定类 > 不点"拒绝"）。
 // detectTexts：内嵌权限框检测用严格子集——'确定/继续/好的'（OK/Continue）是普通 App 按钮
@@ -133,9 +147,9 @@ export async function detectDialog(device) {
     const rootPkgs = (tree?.nodes ?? []).map((n) => n?.pkg).filter(Boolean);
     const freshEnough = !tree?.fromCache || (Date.now() - (tree.cachedAt ?? 0)) <= MAX_TREE_STALE_MS;
     if (rootPkgs.length && freshEnough) {
-      // 存在系统弹窗根 → 前台即该弹窗（弹窗在顶层）
-      const dialogPkg = rootPkgs.find((p) => SYSTEM_DIALOG_PACKAGES.has(p));
-      // 否则取应用包（排除系统弹窗包）
+      // 真正的系统弹窗根（排除 systemui 等常驻窗口）→ 前台即该弹窗（弹窗在顶层）
+      const dialogPkg = rootPkgs.find((p) => isDialogRootPkg(p));
+      // 否则取应用包（排除系统包，含常驻窗口包）
       const appPkg = rootPkgs.find((p) => !SYSTEM_DIALOG_PACKAGES.has(p)) ?? null;
       fg = { package: dialogPkg ?? appPkg, activity: null, resumedActivity: null };
     }

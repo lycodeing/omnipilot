@@ -10,7 +10,7 @@ import * as action from './action.js';
 import { Yadb, readTextAt } from './input.js';
 import { withLocateRetry, StepRollout } from './rollout.js';
 import * as state from './state.js';
-import * as net from '../net/profile.js';
+import * as net from './net-profile.js';
 import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor, screenSignature } from './png.js';
 import { resolveTiming } from './profiles/index.js';
 import { classifyTransportError } from './errors.js';
@@ -71,8 +71,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   const yadb = new Yadb(adb);
   let sizeCache = bootSize; // waitForBoot 已探测过 wm size 时直接复用（省一次往返）
   let sizeFailedAt = 0; // 上次探测失败的时刻（负缓存冷却，避免每个工具立刻重复撞墙）
-  let pendingPreHash = null; // 懒校验（§5.4.3）：上次动作前的树 hash
-  let lastActionChanged = null;
+  // 注：原 pendingPreHash / lastActionChanged（"动作后画面是否变化"的懒校验）已删除——
+  // 全仓零消费者（device.lastActionChanged getter 无人读），是死代码。
 
   const SIZE_RETRY = { attempts: 3, delayMs: 500, cooldownMs: 1500 };
 
@@ -298,16 +298,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     const hash = treeHash(nodes);
     lastTreeHash = hash;
     cache.set({ nodes, hash });
-    if (pendingPreHash != null) {
-      lastActionChanged = hash !== pendingPreHash; // 懒校验：动作后画面是否变化
-      pendingPreHash = null;
-    }
     return { nodes, hash, dumpMs, fromCache: false };
   }
 
   function beforeAction() {
-    pendingPreHash = cache.peek()?.hash ?? null;
-    cache.markDirty();
+    cache.markDirty();   // 动作后强制下次 dump 取新树（缓存失效）
   }
 
   const locate = createLocator({ getTree: dumpTree, getSize, screencap: () => screen.screencap(adb, { timeoutMs: adb.timeouts.screencap }), vlmCache, ...(probeFile ? { probeFile } : {}) });
@@ -625,7 +620,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         if (ok) {
           result.verified++;
           hangRounds = 0;
-          if (p.rowText) answered.add(p.rowText);
+          if (p.rowText) answered.add(p.rowKey || p.rowText);
         } else {
           result.unverified++;
           hangRounds++;
@@ -684,6 +679,16 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
             clusters.push({ cy: n.center[1], nodes: [n], text: String(n.text || n.contentDesc || '') });
           }
         }
+        // 行身份（key）：文本 + **同文本出现序号**。
+        // 记账若只用文本，多题问卷里重复的行文本（多道"满意度"、多组"是/否"）会被
+        // 误判为同一行——答完第一道，所有同文本行都被跳过，整组静默丢失
+        // （result.skipped/done 无任何异常标记）。故按"第 N 个该文本的行"区分。
+        const textSeen = new Map();
+        for (const cl of clusters) {
+          const n = (textSeen.get(cl.text) ?? 0) + 1;
+          textSeen.set(cl.text, n);
+          cl.key = n === 1 ? cl.text : `${cl.text}#${n}`;
+        }
         // 选项带下界 = 下一行的 cy（下一行的选项必在其行 cy 之下，天然不含邻行选项）；
         // 末行/无下一行时回退屏高比例（实测标定 1080×2340 上为 400px，按比例适配其它分辨率，评审 #7）
         const bandFallback = Math.round((size?.h ?? 2340) * (400 / 2340));
@@ -710,7 +715,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           result.rounds--; // 就绪等待不计入"轮次"（调用方看到的轮次应只统计真实作答轮）
           continue;
         }
-        const pending = clusters.filter((c) => !(c.text && (answered.has(c.text) || skipped.has(c.text))));
+        const pending = clusters.filter((c) => !(c.text && (answered.has(c.key) || skipped.has(c.key))));
         if (stopWhen) {
           // matchNode 与 rows/tap 同方言（支持 text*=）；find 已含在屏过滤（vis），返回的是节点本身
           const stop = flat.find((n) => matchNode(n, stopWhen) && vis(n));
@@ -730,7 +735,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           if (firstUn) {
             const opts = optsFor(firstUn);
             if (!opts.length && firstUn.cy >= 0 && (!size || firstUn.cy <= size.h)) {
-              skipped.add(firstUn.text); // 在屏但选项集不匹配：记跳过，避免死循环
+              skipped.add(firstUn.key ?? firstUn.text); // 在屏但选项集不匹配：记跳过，避免死循环
               continue;
             }
             const lastOpt = opts.reduce((a, b) => (!a || b.center[1] > a.center[1] ? b : a), null); // 最低选项（非最右）
@@ -762,6 +767,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           center: target.pick.center,
           bounds: Array.isArray(target.pick.bounds) ? target.pick.bounds : null,
           rowText: target.cl.text ?? '',
+          rowKey: target.cl.key ?? target.cl.text ?? '',   // 行身份（文本+同文本序号），记账用
           optionText: String(target.pick.text || target.pick.contentDesc || ''),
         };
       }
@@ -1029,10 +1035,6 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       } catch {
         return list.map(() => '');
       }
-    },
-    // 懒校验结果：最近一次动作后画面是否变化（true/false，null=无基准可比）
-    get lastActionChanged() {
-      return lastActionChanged;
     },
     rollout: {
       withRetry: (opts) => withLocateRetry({ device, ...opts }),

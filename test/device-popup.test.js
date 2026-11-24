@@ -225,3 +225,31 @@ test('detectDialog：多窗口树（应用 + 权限弹窗）应识别出系统�
   assert.equal(r.detected, true, '多窗口时应识别出系统弹窗');
   assert.equal(r.reason, 'foreground-is-system-dialog');
 });
+
+test('detectDialog：systemui 常驻窗口根不误判为系统弹窗', async () => {
+  // 回归用例：uiautomator dump 的多根来自多窗口，systemui（状态栏/导航栏）是
+  // **常驻**窗口，App 前台时也会作为根出现。原实现把"任一系统包根"判为弹窗
+  // → dismissDialog 盲按 back 键 → 把目标 App 顶出去，用例失败。
+  const device = {
+    foreground: async () => ({ package: 'com.daimajia.gold' }),
+    dumpTree: async () => ({ nodes: [
+      { index: 0, text: '', cls: 'Frame', pkg: 'com.daimajia.gold', resourceId: '', contentDesc: '', clickable: false, bounds: [0,0,10,10], children: [] },
+      { index: 1, text: '', cls: 'Frame', pkg: 'com.android.systemui', resourceId: '', contentDesc: '', clickable: false, bounds: [0,0,10,10], children: [] },
+    ] }),
+  };
+  const r = await detectDialog(device);
+  assert.notEqual(r.reason, 'foreground-is-system-dialog', 'systemui 常驻窗口不应被判为弹窗');
+});
+
+test('detectDialog：权限控制器根仍正确判为系统弹窗', async () => {
+  const device = {
+    foreground: async () => ({ package: 'com.daimajia.gold' }),
+    dumpTree: async () => ({ nodes: [
+      { index: 0, text: '', cls: 'Frame', pkg: 'com.daimajia.gold', resourceId: '', contentDesc: '', clickable: false, bounds: [0,0,10,10], children: [] },
+      { index: 1, text: '', cls: 'Frame', pkg: 'com.android.permissioncontroller', resourceId: '', contentDesc: '', clickable: false, bounds: [0,0,10,10], children: [] },
+    ] }),
+  };
+  const r = await detectDialog(device);
+  assert.equal(r.detected, true, '权限弹窗根应被识别');
+  assert.equal(r.reason, 'foreground-is-system-dialog');
+});

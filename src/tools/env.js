@@ -4,7 +4,7 @@
 import path from 'node:path';
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
-import { NET_PROFILES } from '../net/profile.js';
+import { NET_PROFILES } from '../device/net-profile.js';
 import { confirmWrite, denied } from './action.js';
 
 export function buildEnvTools(ctx) {
