@@ -63,13 +63,13 @@ async function blueAt(device, pt, expect) {
   } catch { return true; } // 截图失败放行（不阻断作答）
 }
 
-function buildPrompt(coordHint) {
+function buildPrompt(coordHint, doneDesc) {
   return [
     '你是问卷自动作答引擎的视觉定位器。这是一张问卷页面截图。',
     '任务：找出第一道【未作答】的题目——它的选项组中没有任何被选中/高亮/变色的选项。',
     '若找到：只输出一个 JSON 对象 {"done":false,"scroll":false,"row":"<题干前20字>","option":"<你选定的选项文字>","bbox":[x1,y1,x2,y2]}，',
     `bbox 是该选项的矩形框（${coordHint}），必须框住选项本身的可点击区域。`,
-    '若屏幕上所有题目都已作答、且能看到提交/下一页按钮（如"立即提交"）：{"done":true,"scroll":false,"row":"","option":"","bbox":null}',
+    `若屏幕上所有题目都已作答、且能看到${doneDesc}：{"done":true,"scroll":false,"row":"","option":"","bbox":null}`,
     '若所有题目都已作答但没看到提交按钮、或屏幕上没有题目（需要滚动加载）：{"done":false,"scroll":true,"row":"","option":"","bbox":null}',
     '判定"未作答"看选项外观（无高亮/无填充色）；不要把题号"1/27"当成进度条。只输出 JSON，不要解释。',
   ].join('\n');
@@ -79,7 +79,7 @@ function buildPrompt(coordHint) {
 // strategy：coord registry 的 resolveStrategy(modelCfg.family) 结果（toPixels/describeForPrompt）。
 // 返回与 device.tapEachRow 同构：{ rounds, taps, verified, unverified, done, bottom, error, answers }
 export async function runVisualAnswer(deps) {
-  const { device, chat, strategy, maxRounds = 60, verify = true, verifyColor = 'auto', settleMs = 700, onQuestion = null, log = () => {} } = deps;
+  const { device, chat, strategy, maxRounds = 60, verify = true, verifyColor = 'auto', settleMs = 700, doneTexts = null, onQuestion = null, log = () => {} } = deps;
   const result = { rounds: 0, taps: 0, verified: 0, unverified: 0, done: false, bottom: false, error: null, skipped: [], answers: [] };
   if (!chat) { result.error = '视觉模式需要模型配置（ASK_MODEL_*）'; return result; }
   if (!strategy) { result.error = '坐标策略缺失（modelCfg.family 无法识别），无法视觉定位'; return result; }
@@ -91,7 +91,10 @@ export async function runVisualAnswer(deps) {
   const coordHint = strategy?.describeForPrompt?.() ?? 'bbox 归一化到 0-1000（左上角为原点）';
   // toPixels 是策略对象的方法（内部读 this 状态），必须 method 调用——解构会丢 this
   const toPixels = (bboxStr, sz) => (strategy ? strategy.toPixels(bboxStr, sz ?? size) : null);
-  const prompt = buildPrompt(coordHint);
+  // 完成判定参考按钮（评审 #1②）：profile.doneTexts 可注入（如英文问卷 Submit/Next），
+  // 缺省维持内置中文措辞——场景类型知识走 profile 数据，不焊死在 prompt 里
+  const doneDesc = doneTexts?.length ? `完成判定参考按钮：${doneTexts.join('、')}` : '提交/下一页按钮（如"立即提交"）';
+  const prompt = buildPrompt(coordHint, doneDesc);
   const size = await device.screenSize().catch(() => null);
   if (!size) { result.error = 'screenSize 获取失败，无法视觉定位'; return result; }
   let lastRow = '';

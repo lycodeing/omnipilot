@@ -24,7 +24,19 @@ export const DEFAULT_HOME = pickDefaultHome();
 export const DEFAULT_INSTANCE = 'instance';
 
 function pickDefaultHome() {
-  if (process.platform === 'win32') return 'C:/opt/scene-kit';
+  // 平台缺省（2026-11-10 评审 #13）：环境路径不再无条件写死——
+  //   win32：沿用历史 C:/opt/scene-kit **仅当已存在**（兼容既有工作区与历史 run），
+  //          否则回退用户目录 ~/.local/share/scene-kit；全新机器不再往 C:/opt 落盘
+  //   unix：优先 /opt/scene-kit（存在且可写），否则 ~/.local/share/scene-kit
+  // ASK_HOME / ASK_WORKSPACE 仍可完全覆盖。
+  const fallbackHome = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share', 'scene-kit');
+  if (process.platform === 'win32') {
+    const legacy = 'C:/opt/scene-kit';
+    try {
+      if (fs.existsSync(legacy)) return legacy;
+    } catch { /* 探测失败走回退 */ }
+    return fallbackHome;
+  }
   const preferred = '/opt/scene-kit';
   try {
     // 父目录可写（或目标已存在且可写）才采用 /opt
@@ -32,7 +44,7 @@ function pickDefaultHome() {
     fs.accessSync(target, fs.constants.W_OK);
     return preferred;
   } catch {
-    return path.join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share', 'scene-kit');
+    return fallbackHome;
   }
 }
 

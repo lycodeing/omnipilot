@@ -52,7 +52,11 @@ function onSelect(execIndex, taskId) {
   <div class="side-bar">
     <p v-if="!groups.length" class="side-empty">（无执行记录）</p>
     <section v-for="g in groups" :key="g.index" class="execution-group">
-      <header class="execution-header" @click="toggle(g.index)">
+      <header
+        class="execution-header"
+        :class="{ clickable: !singleMode }"
+        @click="toggle(g.index)"
+      >
         <svg
           v-if="!singleMode"
           class="group-caret"
@@ -92,24 +96,26 @@ function onSelect(execIndex, taskId) {
   min-width: 0;
 }
 .execution-group {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .execution-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 10px;
+  padding: 8px 9px;
   border-radius: var(--radius-ctl);
-  cursor: pointer;
   user-select: none;
   transition: background 0.15s ease;
 }
-.execution-header:hover {
-  background: rgba(255, 255, 255, 0.85);
+.execution-header.clickable {
+  cursor: pointer;
+}
+.execution-header.clickable:hover {
+  background: var(--bg-hover);
 }
 .group-caret {
   flex: none;
-  color: var(--text-3);
+  color: var(--text-4);
   transition: transform 0.18s ease;
 }
 .group-caret.open {
@@ -121,29 +127,26 @@ function onSelect(execIndex, taskId) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text-1);
 }
+/* 右侧元数据：纯文字层级（通过数着色、耗时弱化），去胶囊底 */
 .group-stat {
   flex: none;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 650;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   color: var(--pass);
-  background: var(--pass-weak);
-  padding: 0 7px;
-  border-radius: var(--radius-chip);
-  line-height: 18px;
 }
 .group-stat.stat-bad {
   color: var(--fail);
-  background: var(--fail-weak);
 }
 .group-duration {
   flex: none;
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-4);
 }
 .task-list {
   margin-top: 2px;

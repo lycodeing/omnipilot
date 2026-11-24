@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
-import { flattenNodes, findBySelector, textResult } from './perception.js';
+import { flattenNodes, findBySelector, findAllBySelector, textResult } from './perception.js';
 import { denied } from './action.js';
 import { repairJson } from './ai.js';
 import { compressForContext } from '../image/png.js';
@@ -28,13 +28,9 @@ async function extractUi(device, params) {
       const n = findBySelector(flat, params.container);
       if (n) scopes.push(n);
     } else {
-      const clsMatch = params.container.startsWith('class=');
-      for (const n of flat) {
-        const hit = clsMatch
-          ? n.cls === params.container.slice(6).split('#index=')[0]
-          : false;
-        if (hit) scopes.push(n);
-      }
+      // 统一走 selector 匹配器（评审 #14）：此前自造 class= 相等比较，除 class= 外的
+      // 选择器方言（text=、resourceId=、re:）全部静默失配，'#index=' 语义也被忽略
+      scopes.push(...findAllBySelector(flat, params.container));
     }
   }
 

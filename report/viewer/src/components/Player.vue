@@ -1,10 +1,12 @@
 <script setup>
 // 播放器：buildReplayScripts → layoutScripts → createFramePlayer，逐帧 deriveFrameState 下发；
-// 控制条：seek（100% = lastEffectiveFrame）/ 章节标记 / 倍速 / 空格 / 全屏（契约 §4 / §19.8.5）
+// 控制条：seek（100% = lastEffectiveFrame）/ 章节刻度 / 倍速 / 空格 / 全屏（契约 §4 / §19.8.5）
+// 视觉（2026-11-06 回归 Midscene 式简洁）：截图铺满舞台、无黑边无叠层 HUD；
+// 控制条用主题令牌（浅色白条 / 深色暗条），时间码 mm:ss.ff（30fps）。
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { createFramePlayer } from '../composables/useFramePlayer.js'
 import { buildReplayScripts } from '../utils/buildReplayScripts.js'
-import { layoutScripts } from '../utils/playback-math.js'
+import { layoutScripts, FPS } from '../utils/playback-math.js'
 import { deriveFrameState } from '../utils/derive-frame-state.js'
 import StepScene from './StepScene.vue'
 
@@ -60,6 +62,18 @@ function prewarmUpcoming(segmentIndex) {
 
 const totalFrames = computed(() => layoutRef.value.totalFrames)
 const lastEffective = computed(() => layoutRef.value.lastEffectiveFrame)
+
+// 时间码 mm:ss.ff（FPS=30）：控制条显示
+function timecode(frame) {
+  const f = Math.max(0, Math.round(Number(frame) || 0))
+  const totalSec = f / FPS
+  const mm = String(Math.floor(totalSec / 60)).padStart(2, '0')
+  const ss = String(Math.floor(totalSec % 60)).padStart(2, '0')
+  const ff = String(f % FPS).padStart(2, '0')
+  return `${mm}:${ss}.${ff}`
+}
+const tcNow = computed(() => timecode(currentFrame.value))
+const tcEnd = computed(() => timecode(lastEffective.value))
 
 function handleFrame(frame) {
   currentFrame.value = frame
@@ -130,7 +144,7 @@ function setRate(r) {
   if (engine) engine.setRate(r)
 }
 
-// 章节标记直达（原模板引用了 seekToFrame 但脚本未定义，此处补齐）
+// 章节标记直达
 function seekToFrame(frame) {
   if (!engine || !Number.isFinite(Number(frame))) return
   engine.seekTo(Number(frame))
@@ -147,7 +161,7 @@ function applySeekEvent(e) {
 
 function onSeekDown(e) {
   const bar = seekBarRef.value
-  if (!engine || !bar || lastEffective.value <= 0) return
+  if (!bar || lastEffective.value <= 0) return
   applySeekEvent(e)
   try {
     bar.setPointerCapture(e.pointerId)
@@ -206,11 +220,16 @@ onBeforeUnmount(() => {
       <StepScene :state="state" :screenshots="screenshots" />
     </div>
     <div class="player-controls">
-      <button class="play-btn" :disabled="totalFrames === 0" :aria-label="playing ? '暂停' : '播放'" @click="togglePlay">
-        <svg v-if="!playing" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <button
+        class="play-btn"
+        :disabled="totalFrames === 0"
+        :aria-label="playing ? '暂停' : '播放'"
+        @click="togglePlay"
+      >
+        <svg v-if="!playing" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
           <path d="M5 3.2v9.6c0 .5.55.8.97.53l7.2-4.8a.63.63 0 000-1.06l-7.2-4.8A.63.63 0 005 3.2z" fill="currentColor" />
         </svg>
-        <svg v-else viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <svg v-else viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
           <path d="M4.5 3.5h2.2v9H4.5zM9.3 3.5h2.2v9H9.3z" fill="currentColor" />
         </svg>
       </button>
@@ -223,12 +242,13 @@ onBeforeUnmount(() => {
             class="chapter-mark"
             :style="{ left: c.pct + '%' }"
             :title="c.title"
+            :aria-label="'跳转到 ' + c.title"
             @pointerdown.stop
             @click="seekToFrame(c.frame)"
           ></button>
         </div>
       </div>
-      <span class="frame-label mono">{{ currentFrame }}/{{ lastEffective }}f</span>
+      <span class="frame-label mono">{{ tcNow }}<i class="frame-dim"> / {{ tcEnd }}</i></span>
       <span class="rate-group">
         <button
           v-for="r in RATES"
@@ -263,6 +283,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-width: 0;
 }
+/* 舞台：截图铺满，无内边距无黑边；浅色下就是干净纸面 */
 .player-stage {
   flex: 1;
   min-height: 0;
@@ -281,13 +302,16 @@ onBeforeUnmount(() => {
     height: clamp(240px, 46vh, 420px);
   }
 }
+
+/* 控制条：随主题（浅色白 / 深色暗），Midscene 式一行排布 */
 .player-controls {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: 12px;
+  padding: 10px 16px;
   background: var(--bg-card);
+  border-top: 1px solid var(--divider);
   user-select: none;
 }
 .play-btn {
@@ -299,7 +323,7 @@ onBeforeUnmount(() => {
   height: 34px;
   border: none;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--play-bg);
   color: var(--on-accent);
   box-shadow: var(--glow-accent);
   cursor: pointer;
@@ -317,15 +341,15 @@ onBeforeUnmount(() => {
 }
 .seek-bar {
   flex: 1;
-  min-width: 100px;
+  min-width: 90px;
   padding: 12px 0;
   cursor: pointer;
   touch-action: none;
 }
 .seek-track {
   position: relative;
-  height: 4px;
-  border-radius: 2px;
+  height: 5px;
+  border-radius: 3px;
   background: var(--bg-track);
 }
 .seek-fill {
@@ -333,32 +357,41 @@ onBeforeUnmount(() => {
   left: 0;
   top: 0;
   bottom: 0;
-  border-radius: 2px;
-  background: var(--accent);
+  border-radius: 3px;
+  background: var(--play-bg);
+  box-shadow: var(--glow-accent);
 }
+/* 章节刻度：贴轨道顶部的细竖线（圆点连排会成珠链噪声） */
 .chapter-mark {
   position: absolute;
-  top: 50%;
-  width: 9px;
-  height: 9px;
-  margin: -4.5px 0 0 -4.5px;
+  top: -3px;
+  width: 2px;
+  height: 11px;
+  margin-left: -1px;
   padding: 0;
-  border: 1.5px solid var(--accent);
-  border-radius: 50%;
-  background: var(--bg-card);
+  border: none;
+  border-radius: 1px;
+  background: var(--text-4);
+  opacity: 0.7;
   cursor: pointer;
-  transition: transform 0.12s ease, background 0.12s ease;
+  transition: transform 0.12s ease, background 0.12s ease, opacity 0.12s ease;
 }
 .chapter-mark:hover {
-  transform: scale(1.35);
+  transform: scaleY(1.35);
   background: var(--accent);
+  opacity: 1;
 }
 .frame-label {
   flex: none;
-  min-width: 72px;
-  text-align: center;
-  color: var(--text-3);
-  font-size: 11px;
+  min-width: 104px;
+  text-align: right;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.frame-dim {
+  font-style: normal;
+  color: var(--text-4);
 }
 .rate-group {
   flex: none;
@@ -370,7 +403,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--divider);
 }
 .rate-btn {
-  padding: 2px 7px;
+  padding: 2px 8px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -379,6 +412,9 @@ onBeforeUnmount(() => {
   font-family: inherit;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
+}
+.rate-btn:hover {
+  color: var(--text-2);
 }
 .rate-btn.on {
   background: var(--bg-card);
@@ -402,6 +438,45 @@ onBeforeUnmount(() => {
 .ghost-btn:hover {
   background: var(--bg-hover);
   color: var(--text-1);
+}
+
+/* 桌面窄柱档：控制条两行（进度整行在上，其余一行放下），间距收紧 */
+@media (min-width: 1280px) {
+  .player-controls {
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    padding: 8px 12px;
+  }
+  .seek-bar {
+    order: 1;
+    flex: 1 1 100%;
+    min-width: 0;
+    padding: 3px 0 1px;
+  }
+  .play-btn {
+    order: 2;
+    width: 28px;
+    height: 28px;
+  }
+  .frame-label {
+    order: 3;
+    min-width: 0;
+    text-align: left;
+    font-size: 10.5px;
+  }
+  .rate-group {
+    order: 4;
+    margin-left: auto;
+    gap: 1px;
+  }
+  .rate-btn {
+    padding: 2px 5px;
+  }
+  .ghost-btn {
+    order: 5;
+    width: 24px;
+    height: 24px;
+  }
 }
 @media (max-width: 480px) {
   .frame-label {

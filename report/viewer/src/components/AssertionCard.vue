@@ -31,11 +31,32 @@ const list = computed(() =>
         class="assertion-row"
         :class="a.passed ? 'pass' : 'fail'"
       >
-        <span class="assertion-flag">{{ a.passed ? '通过' : '失败' }}</span>
+        <span class="assertion-icon" aria-hidden="true">
+          <svg v-if="a.passed" viewBox="0 0 16 16" width="12" height="12">
+            <path
+              d="M3.6 8.4l2.9 2.9 5.9-6.4"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <svg v-else viewBox="0 0 16 16" width="12" height="12">
+            <path
+              d="M4.5 4.5l7 7M11.5 4.5l-7 7"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            />
+          </svg>
+        </span>
         <div class="assertion-body">
           <p class="assertion-text">{{ a.text || '（未命名断言）' }}</p>
           <p v-if="a.reason" class="assertion-reason">{{ a.reason }}</p>
         </div>
+        <span class="assertion-flag">{{ a.passed ? '通过' : '失败' }}</span>
       </div>
     </div>
   </div>
@@ -48,27 +69,6 @@ const list = computed(() =>
   min-height: 0;
   flex: 1;
   overflow: auto;
-}
-.panel-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.panel-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-.panel-count {
-  padding: 0 7px;
-  border-radius: var(--radius-chip);
-  background: var(--neutral-weak);
-  color: var(--text-2);
-  font-size: 11px;
-  font-family: var(--font-mono);
-  line-height: 18px;
 }
 .panel-summary {
   margin-left: auto;
@@ -95,47 +95,52 @@ const list = computed(() =>
   flex-direction: column;
   gap: 6px;
 }
-.panel-empty {
-  margin: 0;
-  padding: 14px 0;
-  text-align: center;
-  color: var(--text-3);
-  font-size: 12px;
-}
 .assertion-row {
   display: flex;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 9px;
   padding: 8px 10px;
   border-radius: var(--radius-ctl);
   background: var(--bg-subtle);
   border: 1px solid var(--divider);
-  border-left: 3px solid var(--neutral);
 }
-.assertion-row.pass {
-  border-left-color: var(--pass);
+.assertion-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--pass-weak);
+  color: var(--pass);
+}
+.assertion-row.fail .assertion-icon {
+  background: var(--fail-weak);
+  color: var(--fail);
 }
 .assertion-row.fail {
-  border-left-color: var(--fail);
   background: var(--fail-weak);
-  border-color: var(--fail-weak);
+  border-color: transparent;
 }
 .assertion-flag {
   flex: none;
+  margin-left: auto;
   font-size: 11px;
   font-weight: 600;
   padding: 1px 8px;
-  height: fit-content;
   border-radius: var(--radius-chip);
   background: var(--pass-weak);
   color: var(--pass);
 }
 .assertion-row.fail .assertion-flag {
   background: var(--fail);
-  color: #2a070d;
-  box-shadow: var(--glow-fail);
+  color: #fff;
 }
 .assertion-body {
   min-width: 0;
+  flex: 1;
 }
 .assertion-text {
   margin: 0;

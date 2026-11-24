@@ -6,25 +6,41 @@
 // 写动作成功后自动留一张"动作后截图"），报告与定位统计的数据源都在这里。
 
 import { buildPerceptionTools } from './perception.js';
-import { buildActionTools } from './action.js';
+import { buildActionTools, ENGINE_ONLY_TOOLS } from './action.js';
 import { buildEnvTools } from './env.js';
 import { buildDataTools } from './data.js';
 import { buildMcpTools } from './mcp.js';
 import { createCachedLocate } from './locate-cache.js';
 
-export function buildTools(ctx) {
+function ensureLocateCache(ctx) {
   // 带缓存的定位在工具层共享一份（§1.5）：locate/tap/long_press/input/swipe 统一入口，
   // 避免动作工具绕过缓存（曾导致 cache 命中率仅 3%）
   if (!ctx.locateWithCache) {
     ctx.locateWithCache = createCachedLocate({ device: ctx.device, store: ctx.store, opts: ctx.opts, ctx });
   }
+}
+
+// 契约工具（25 个，§10 清单）：模型工具面 = 契约工具面。
+// 引擎专用工具（point_tap，坐标点击）**不在此列**——它只服务 allowCoords 用例的引擎直执行步，
+// 注册给模型等于把"禁止像素坐标"（2026-09-24 裁定）在模型侧作废。见 buildEngineTools。
+export function buildTools(ctx) {
+  ensureLocateCache(ctx);
   return [
     ...buildPerceptionTools(ctx),
     ...buildActionTools(ctx),
     ...buildEnvTools(ctx),
     ...buildDataTools(ctx),
     ...buildMcpTools(ctx),
-  ].map((t) => withRecording(t, ctx));
+  ].filter((t) => !ENGINE_ONLY_TOOLS.has(t.name)).map((t) => withRecording(t, ctx));
+}
+
+// 引擎专用工具（不在 EXPECTED_TOOLS / 模型工具面）：仅由 buildToolCall 产出的调用命中。
+// 与契约工具同款记账包装（坐标步在报告里也要有 step + 动作后截图）。
+export function buildEngineTools(ctx) {
+  ensureLocateCache(ctx);
+  return buildActionTools(ctx)
+    .filter((t) => ENGINE_ONLY_TOOLS.has(t.name))
+    .map((t) => withRecording(t, ctx));
 }
 
 // §10 工具清单（25 个：感知5 + 操作9 + 环境6 + 数据扩展5；操作含 tap_each_row 逐行批量点击）

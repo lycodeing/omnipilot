@@ -101,6 +101,8 @@ const usage = `ask — 安卓场景测试 agent
   --prompt <t> --prompt-file <f> --prompt-mode append|replace|none
   --vlm-locate --yes --timeout <sec> --fresh-locate --json --quiet --pregrant
                       （--timeout：整 run 时间预算秒数，主循环/马拉松/重试各处生效；缺省不限）
+  --allow-coords      放行坐标步骤（tap: { x, y }）。默认禁止把坐标写进用例（2026-09-24 裁定）；
+                      用例顶层 allowCoords: true 等效，CLI 优先级更高
   --keep-images <n>   会话历史保留最近 n 张截图（默认 3；断言密集用例可设 2 省 token）
   --context-steps <n|all> 步骤上下文窗口：保留最近 n 步原文 + 整体描述（默认 3；all=全部保留；
                       优先级高于用例 YAML 顶层 context: 键）
@@ -217,7 +219,7 @@ async function cmdRun({ positional, flags }) {
       const resolved = resolveCasePath(t);
       let text;
       try { text = fs.readFileSync(resolved, 'utf8'); } catch { fail(`用例文件不可读：${t}（已尝试 ${resolved}）`); }
-      const parsed = parseCaseText(text, { source: t });
+      const parsed = parseCaseText(text, { source: t, allowCoords: flags['allow-coords'] ? true : null });
       // 装载期告警（外部框架兼容提示：sleep 毫秒换算、被忽略的 timeout 等）
       for (const w of parsed.warnings || []) console.warn(`[warn] ${w}`);
       cases.push(parsed);
@@ -286,7 +288,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
   const { assemblePrompt } = await import('../src/session/prompt.js');
   const { resolveModelConfig, createModel, baseUrlHash: hashUrl } = await import('../src/session/model.js');
   const { resolveStrategy, createSessionManager } = await import('../src/session/persist.js');
-  const { interpolate, buildToolCall, ENGINE_TYPES, waitSelectorFromText } = await import('../src/session/case.js');
+  const { interpolate, buildToolCall, ENGINE_TYPES, COORD_TYPES, waitSelectorFromText, resolveLoopPlan } = await import('../src/session/case.js');
+  const { LOCATE_DEGRADE_POLICY, MARATHON_MARKER_WAIT_MS } = await import('../src/device/locate-policy.js');
   const { loadMcpConfig } = await import('../src/mcp/config.js');
   const { createMcpBridge } = await import('../src/mcp/bridge.js');
   const { createChatClient } = await import('../src/tools/ai.js');
@@ -349,8 +352,18 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     //    **正在运行**的 App。故默认不启用；确需消灭授权框时用 --pregrant（并先停止 App）。
     if (flags.pregrant === true) {
       try {
-        const caseText = JSON.stringify(caseObj.steps || []);
-        const pkg = (caseText.match(/com\.[a-zA-Z][\w]*(?:\.[\w]+)+/) || [])[0] || null;
+        // 目标包名解析（评审 #4）：顶层 targetPackage > launch 步 appId > 正则兜底（历史
+        // 行为——断言/URL 里任何 com.* 都可能抢先误中；兜底命中时显式 warn 提示声明）
+        let pkg = caseObj.targetPackage || null;
+        if (!pkg) {
+          const launchStep = (caseObj.steps || []).find((s) => s.type === 'launch' && (s.appId || s.text));
+          if (launchStep) pkg = String(launchStep.appId || launchStep.text).split('/')[0];
+        }
+        if (!pkg) {
+          const caseText = JSON.stringify(caseObj.steps || []);
+          pkg = (caseText.match(/com\.[a-zA-Z][\w]*(?:\.[\w]+)+/) || [])[0] || null;
+          if (pkg) console.warn(`[warn] pregrant 未声明 targetPackage，从步骤文本提取到 "${pkg}"（可能误中；建议用例顶层声明 targetPackage）`);
+        }
         if (pkg) {
           const { pregrantPackage } = await import('../src/cli/pregrant.js');
           await device.terminate(pkg).catch(() => {});   // 先在停止态（grant 会杀运行进程）
@@ -413,18 +426,21 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
 
     // 工具实例只建一次（性能+一致性）：旧实现 createAskSession 内建一套、toolMap 又建一套，
     // screen_diff 的基线 hash 等闭包状态会分裂成两份。同一数组同时给 agent 与引擎直执行。
-    const { buildTools } = await import('../src/tools/index.js');
+    const { buildTools, buildEngineTools } = await import('../src/tools/index.js');
     const runTools = buildTools(ctx);
     const session = await createAskSession(ctx, {
       systemPrompt: prompt.systemPrompt,
       sessionManager,
       model,
       modelRuntime,
+      // buildTools 只含契约工具（25 个）；引擎专用工具（point_tap）不进模型面——
+      // 模型仍被禁止给像素坐标（tap.description 即 2026-09-24 裁定原文）
       tools: runTools,
     });
 
-    // 引擎直执行步骤用：工具名 → 工具（与 agent 共用同一批实例）
-    const toolMap = new Map(runTools.map((t) => [t.name, t]));
+    // 引擎直执行步骤用：工具名 → 工具。契约工具与引擎专用工具（point_tap）合并，
+    // 使 buildToolCall 产出的坐标调用也能命中有记账包装的实例。
+    const toolMap = new Map([...runTools, ...buildEngineTools(ctx)].map((t) => [t.name, t]));
 
     // —— 动作计划缓存（业界调研落地，Midscene caching 同款）——
     // 包装工具 execute 记录"本步实际使用的工具调用序列"（仅统计，不改行为）；ai/aiAct 步
@@ -463,7 +479,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     async function batchGround(fromIdx) {
       if (!ctx.vlm || !ctx.chat || !device?.vlmCache) return 0;
       const targets = [];
-      for (let k = fromIdx; k < steps.length && targets.length < 6; k++) {
+      for (let k = fromIdx; k < steps.length && targets.length < LOCATE_DEGRADE_POLICY.batchGroundMaxTargets; k++) {
         const s = steps[k];
         if (s.type === 'sleep') continue; // sleep 不改屏幕，可跨过收集
         if (s.type !== 'aiTap' && s.type !== 'aiLongPress') break; // 遇改屏步骤即停
@@ -605,7 +621,17 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         }
         // 引擎直执行步骤（§2.4 混合执行）：aiTap/aiInput/aiLongPress/aiKeyboardPress/aiScroll/launch/terminate
         // 直接调对应工具（复用工具层记账），不经 agent 选工具；执行后把结果注入上下文，保持 agent 不失忆。
-        if (ENGINE_TYPES.has(step.type)) {
+        if (ENGINE_TYPES.has(step.type) || COORD_TYPES.has(step.type)) {
+          // 坐标步运行期门控（装载期已按 YAML allowCoords 拒绝过；此处兜住 --allow-coords 与
+          // 手改 caseObj 的路径）：未开启则拒绝执行，绝不让坐标点击"悄悄发生/悄悄不发生"。
+          if (COORD_TYPES.has(step.type) && !(caseObj.allowCoords || flags['allow-coords'])) {
+            const msg = `坐标步骤 ${step.type}: { x: ${step.x}, y: ${step.y} } 被拒绝执行：未开启 allowCoords（用例顶层加 allowCoords: true，或传 --allow-coords）`;
+            console.warn(`[warn] ${msg}`);
+            const h = recorder.startStep(step.type, `(${step.x},${step.y})`);
+            h.end({ result: 'failed', error: msg });
+            attachStepShot(h.index);
+            continue;
+          }
           // 引擎步全部字符串参数做 ${var} 插值（此前仅 text/value，rows/tap/until 里的
           // 变量引用会原样进 selector 静默 MISS）
           const interpStep = { ...step };
@@ -633,7 +659,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                 // busy 态（提交动画/转场）下 WebView a11y 会把目标元素拒之门外，且 dump 单次
                 // 40-55s——与其立刻 VLM/视觉轮盲试（实测 6×380s 全 MISS），先等 idle 窗口过去
                 // （有界 90s），树稳定后目标自然出现在 a11y 树里
-                try { await device.waitIdle({ quiet: 1, timeoutMs: 90_000 }); } catch { /* 等待失败不阻断降级 */ }
+                try { await device.waitIdle({ quiet: 1, timeoutMs: LOCATE_DEGRADE_POLICY.busyWaitIdleMs }); } catch { /* 等待失败不阻断降级 */ }
               }
               if (isLocateMiss && isTapFamily && ctx.vlm) {
                 // 先批量接地：一次看图为当前步+后续连续 tap 步预取坐标（写 vlmCache，
@@ -687,7 +713,10 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           const handle = recorder.startStep('aiWaitFor', stepText ? stepText.slice(0, 40) : '');
           const timeout = Number(step.timeout) || 10000;
           const quiet = step.quiet != null ? Number(step.quiet) : 2;
-          const sel = waitSelectorFromText(stepText);
+          // 显式 selector 参数行优先（评审 #10）；散文解析仅作未声明时的兜底
+          const sel = (step.selector && String(step.selector).trim())
+            ? (waitSelectorFromText(String(step.selector)) || String(step.selector).trim())
+            : waitSelectorFromText(stepText);
           let r;
           if (sel) {
             // 有具体元素 → 等它出现（比等树不变更语义、通常更快）。
@@ -806,30 +835,32 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         const stepsBefore = recorder.stepCount;
         await session.prompt(text, { images: step.type === 'aiAssert' ? promptImages : aiImages });
         let answer = lastAssistantText(session);
-        // 续作循环（ai/aiAct 步）：长任务步（如"逐题作答直到出现提交按钮"）模型常做一两个
-        // 马拉松步续作循环：步骤文本含终止条件（直到/重复/逐题/每一题）时，模型每轮只做部分
-        // 动作就收尾（如 27 题只答 1 题）。每轮结束后若未自报完成/受阻，就催它继续，最多 6 轮。
-        const marathon = /直到|重复|逐题|每一题|依次/.test(stepText);
-        // 终止标记：步骤文本"直到…"后的引号文本（确定性验证，不依赖模型自报）
-        const marathonMarker = marathon ? waitSelectorFromText((/直到[^，。；]*?[「“"']([^」”"']{1,20})[」”"']/.exec(stepText) || [null, null])[1] || '') : null;
+        // 续作循环（ai/aiAct 步）：长任务步模型常做一两个动作就收尾（如 27 题只答 1 题）。
+        // 触发与参数见 case.js resolveLoopPlan：步级显式 until/maxRounds/batch 优先，
+        // 散文关键词（直到/重复/逐题/每一题/依次）为存量用例兼容路径。每轮先查完成自报
+        // （短回复含”完成”/BLOCKED）与终止标记确定性检测，最多 plan.maxRounds 轮。
+        const loopPlan = (step.type === 'ai' || step.type === 'aiAct')
+          ? resolveLoopPlan(step, stepText)
+          : null;
         let marathonRan = false; // 是否发生过续作催促（发生了则该步不写计划缓存）
-        if ((step.type === 'ai' || step.type === 'aiAct') && marathon) {
-          for (let resume = 0; resume < 10; resume++) {
+        if (loopPlan) {
+          const { marker: marathonMarker, batch: loopBatch, maxRounds: loopMaxRounds } = loopPlan;
+          for (let resume = 0; resume < loopMaxRounds; resume++) {
             if (runDeadline && Date.now() > runDeadline) { console.warn('[timeout] 步内催促超 --timeout 预算，提前收束'); break; }
-            // 完成自报（2026-11-04 评审修复）：催促词让模型"终止条件已满足回复'完成'"，但旧
-            // 循环从不检查 answer——模型每轮回"完成"仍被逼答满 10 轮（实测单步空耗 24-88 分钟）。
-            // 仅认"短回复含完成"（防长篇散文里 incidental 完成二字误判）；BLOCKED 同义结束。
+            // 完成自报（2026-11-04 评审修复）：催促词让模型”终止条件已满足回复'完成'”，但旧
+            // 循环从不检查 answer——模型每轮回”完成”仍被逼答满轮数上限（实测单步空耗 24-88 分钟）。
+            // 仅认”短回复含完成”（防长篇散文里 incidental 完成二字误判）；BLOCKED 同义结束。
             const selfDone = answer && answer.length <= 20 && /完成/i.test(answer);
             if (answer && (/BLOCKED/i.test(answer) || selfDone)) break;
             // 确定性终止检测：终止标记元素已可见 → 任务完成，结束循环
             if (marathonMarker) {
               try {
-                const done = await device.waitForElement(marathonMarker, { timeoutMs: 3000 });
+                const done = await device.waitForElement(marathonMarker, { timeoutMs: MARATHON_MARKER_WAIT_MS });
                 if (done?.appeared) break;
               } catch { /* 检测失败继续催 */ }
             }
             marathonRan = true;
-            if (!flags.quiet) console.warn(`[warn] 马拉松步未完成（无完成标记），催促继续 ${resume + 1}/10`);
+            if (!flags.quiet) console.warn(`[warn] 马拉松步未完成（终止标记未满足），催促继续 ${resume + 1}/${loopMaxRounds}`);
             // 每轮取新截图：题目推进后屏幕已变，步首旧图会误导模型
             let freshImgs = [];
             try {
@@ -839,10 +870,12 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               freshImgs = [{ type: 'image', data: c5.buffer.toString('base64'), mimeType: c5.mimeType }];
             } catch { /* 取图失败不阻断 */ }
             foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
-            await session.prompt(
-              `任务尚未完成（终止条件未满足）。继续执行：${text}\n（高效做法：一次 uitree 看清当前屏全部待处理项，然后**一轮并行 tap** 处理完本屏所有项，再滚动看下一屏；若终止条件已满足回复"完成"，无法继续回复"BLOCKED: 原因"）`,
-              { images: freshImgs },
-            );
+            // 催促话术按形态分流（评审 #1①：批量话术曾把”依次逐个”类任务催成整屏并行点击）：
+            // batch=true 维持历史并行话术；false（显式缺省）= 逐个处理。
+            const nudge = loopBatch
+              ? `任务尚未完成（终止条件未满足）。继续执行：${text}\n（高效做法：一次 uitree 看清当前屏全部待处理项，然后**一轮并行 tap** 处理完本屏所有项，再滚动看下一屏；若终止条件已满足回复”完成”，无法继续回复”BLOCKED: 原因”）`
+              : `任务尚未完成（终止条件未满足）。继续执行：${text}\n（逐个处理：每轮只处理**一个**待办项——先 uitree 看清当前屏，定位并操作下一项，完成即结束本轮回复；需要看更多内容就滚动后下一轮再处理；若终止条件已满足回复”完成”，无法继续回复”BLOCKED: 原因”）`;
+            await session.prompt(nudge, { images: freshImgs });
             answer = lastAssistantText(session);
           }
         }
@@ -990,8 +1023,21 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     // 收尾：报告（网络还原已移至 finally，保证异常/中断路径也执行，§2.6.2 ①）
     await recorder.finish(status === 'pass' ? 'pass' : status, { exitCode: status === 'pass' ? 0 : status === 'fail' ? 1 : 2 });
     session.dispose?.();
-    if (!flags.quiet) console.log(`run ${caseObj.name} → ${status}（报告: ${recorder.jsonPath}）`);
-    if (flags.json) out(flags, { case: caseObj.name, status, runId: recorder.runId, report: recorder.jsonPath });
+    if (!flags.quiet) {
+      const html = recorder.htmlPath;
+      console.log(
+        `run ${caseObj.name} → ${status}（报告: ${html ?? recorder.jsonPath}${html ? '；数据: ' + recorder.jsonPath : ''}）`,
+      );
+    }
+    if (flags.json) {
+      out(flags, {
+        case: caseObj.name,
+        status,
+        runId: recorder.runId,
+        report: recorder.htmlPath ?? recorder.jsonPath,
+        data: recorder.jsonPath,
+      });
+    }
     return status === 'pass' ? 0 : status === 'fail' ? 1 : 2;
   } finally {
   // 网络还原（§2.6.2 ① + ③）：无条件执行；失败要 warn + 记 rollback，不静默。

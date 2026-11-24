@@ -4,28 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#f2f4f7" />
+    <meta name="theme-color" content="#f1f3f6" />
     <title>ASK 测试报告</title>
     <style>
       html,
       body {
         margin: 0;
         padding: 0;
-        background: #f2f4f7;
+        background: #f1f3f6;
       }
-      /* 深色主题（用户上次选择）：挂载前即生效，避免白闪 */
+      /* 深色 HUD（用户上次选择）：挂载前即生效，避免闪色 */
       html[data-theme='dark'],
       html[data-theme='dark'] body {
-        background: #070b14;
+        background: #0a0e17;
       }
     </style>
     <script>
-      // 主题持久化：缺省浅色；用户切到 dark 后记住（与 global.css 的 :root[data-theme] 对应）
+      // 主题持久化：缺省白色（科技感做在浅色上）；用户切到深色后记住
       try {
         var t = localStorage.getItem('ask-report-theme');
         if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
       } catch (e) {
-        /* localStorage 不可用（file:// 隐私模式等）→ 保持浅色默认 */
+        /* localStorage 不可用（file:// 隐私模式等）→ 保持白色默认 */
       }
     </script>
   </head>

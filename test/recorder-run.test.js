@@ -87,7 +87,9 @@ test('finish 产出 §14.1 完整形状，逐字段断言', async (t) => {
   assert.deepEqual(doc.extracts, { date_1: '2025-09-16' });
   assert.deepEqual(doc.networkTimeline, [{ at: 4210, profile: '3g' }]);
   assert.deepEqual(doc.rollbacks, [{ stepIndex: 2, reason: 'locate_miss_x3', recovered: true }]);
-  assert.equal(doc.artifacts.report, `${toPosix(runsDir)}/${rec.runId}/index.html`); // 预留
+  // 默认产出 HTML 报告（run 收尾自动生成，与 JSON 同目录）
+  assert.equal(doc.artifacts.report, `${toPosix(runsDir)}/${rec.runId}.html`);
+  assert.ok(fs.existsSync(doc.artifacts.report), 'HTML 报告应已生成');
   assert.deepEqual(doc.artifacts.uiDumps, []);
 
   // 落盘文件与内存 doc 一致；model 白名单字段，密钥明文不出现

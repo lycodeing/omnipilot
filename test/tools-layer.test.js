@@ -3,7 +3,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-import { buildTools, EXPECTED_TOOLS } from '../src/tools/index.js';
+import { buildTools, buildEngineTools, EXPECTED_TOOLS } from '../src/tools/index.js';
 import { flattenNodes, matchSelector } from '../src/tools/perception.js';
 import { repairJson, createChatClient, extractJson } from '../src/tools/ai.js';
 
@@ -153,6 +153,42 @@ describe('tools registry', () => {
 
 // —— 主链路 1：tap 成功 / 定位失败回退 ——
 describe('action tools', () => {
+  // —— 坐标点击（allowCoords 逃生口）：只在引擎专用工具面，模型侧不可见 ——
+  test('point_tap 不进契约工具面（模型仍禁止像素坐标，2026-09-24 裁定）', () => {
+    const ctx = makeCtx();
+    const names = buildTools(ctx).map((t) => t.name);
+    assert.ok(!names.includes('point_tap'), 'buildTools 不应含引擎专用工具');
+    assert.ok(!EXPECTED_TOOLS.includes('point_tap'), 'point_tap 不在契约清单');
+    assert.deepEqual(buildEngineTools(ctx).map((t) => t.name), ['point_tap'], '引擎工具面只有 point_tap');
+  });
+
+  test('point_tap：跳过定位直点坐标，locate.strategy=coords', async () => {
+    const device = makeFakeDevice();
+    const calls = [];
+    device.tap = async (b) => { calls.push(b); return { ok: true, latencyMs: 7, error: null }; };
+    let located = 0;
+    device.locate = async () => { located++; return { ok: true, bounds: [0, 0, 1, 1] }; };
+    const ctx = makeCtx({ device });
+    const pt = buildEngineTools(ctx).find((t) => t.name === 'point_tap');
+    const body = getContent(await pt.execute('id1', { x: 405, y: 2115 }, undefined, undefined, {}));
+    assert.equal(body.ok, true);
+    assert.equal(body.strategy, 'coords');
+    assert.deepEqual(body.center, [405, 2115]);
+    assert.deepEqual(calls, [[405, 2115]], '直接把坐标交给 device.tap');
+    assert.equal(located, 0, '坐标步不做语义定位');
+  });
+
+  test('point_tap：设备 tap 失败时透传错误（不静默成功）', async () => {
+    const device = makeFakeDevice();
+    device.tap = async () => ({ ok: false, latencyMs: 1, error: 'adb 命令超时' });
+    const ctx = makeCtx({ device });
+    const pt = buildEngineTools(ctx).find((t) => t.name === 'point_tap');
+    const r = await pt.execute('id1', { x: 1, y: 2 }, undefined, undefined, {});
+    assert.equal(getContent(r).ok, false);
+    assert.equal(r.details.locate.strategy, 'coords');
+    assert.equal(r.details.locate.error, 'adb 命令超时');
+  });
+
   test('tap 成功：定位 → 点击，返回策略与 bounds', async () => {
     const device = makeFakeDevice();
     const calls = [];
@@ -618,4 +654,27 @@ test('tap_each_row 工具：参数透传 + maxRounds 交由设备层/profile 兜
   const body = JSON.parse(r.content[0].text);
   assert.equal(body.ok, false);
   assert.match(body.error, /屏幕尺寸未就绪/);
+});
+
+// —— 视觉形态接 profile（回归：此前 profile 只在 selector 形态生效，
+// visual-answer.js 另写一份缺省与 profiles/questionnaire 数值分叉） ——
+test('tap_each_row 视觉形态：未知 profile 报结构化错误（不静默忽略拼写）', async () => {
+  const ctx = makeCtx({ chat: async () => '' });
+  ctx.modelCfg = { family: 'deepseek' };
+  const tool = buildTools(ctx).find((t) => t.name === 'tap_each_row');
+  const r = await tool.execute('id1', { profile: 'questinnaire' }, undefined, undefined, {});
+  assert.equal(r.details.ok, false);
+  assert.match(String(r.details.error), /未知 profile/);
+});
+
+test('tap_each_row 视觉形态：合法 profile 通过加载与 strategy 解析（进入主循环前置）', async () => {
+  // screenSize 置 null → runVisualAnswer 在 profile 加载/timing 解析之后、首轮截图前
+  // 以确定性错误返回；以此证明 profile 接线通路完好（此前该通路不存在）。
+  const device = makeFakeDevice();
+  device.screenSize = async () => null;
+  const ctx = makeCtx({ device, chat: async () => '' });
+  ctx.modelCfg = { family: 'deepseek' };
+  const tool = buildTools(ctx).find((t) => t.name === 'tap_each_row');
+  const r = await tool.execute('id1', { profile: 'questionnaire' }, undefined, undefined, {});
+  assert.equal(String(r.details.error), 'screenSize 获取失败，无法视觉定位');
 });

@@ -8,20 +8,31 @@ import { DUR } from '../src/utils/playback-math.js';
 const fixturePath = fileURLToPath(new URL('../fixtures/sample-dump.json', import.meta.url));
 const dump = JSON.parse(readFileSync(fixturePath, 'utf8'));
 
-test('ACTION_TYPES 覆盖八类动作', () => {
-  assert.deepEqual(ACTION_TYPES, ['tap', 'input', 'swipe', 'long_press', 'key', 'back', 'home', 'scroll']);
+test('ACTION_TYPES：从引擎词表派生（REPLAY_ACTION_TYPES），覆盖全部设备写动作', () => {
+  // 词表单一来源 src/tools/vocab.js；此处显式列出以锁定编排语义（改动须经由词表 + 引擎同步测试）
+  assert.deepEqual(ACTION_TYPES, [
+    'tap', 'point_tap', 'long_press', 'input', 'swipe', 'scroll',
+    'key', 'launch', 'terminate', 'tap_each_row',
+  ]);
+  // 历史旧名（实测 0 次落盘）不再混入
+  assert.ok(!ACTION_TYPES.includes('back'));
+  assert.ok(!ACTION_TYPES.includes('home'));
 });
 
-test('typeLabel：七类中文标签，其余原样', () => {
+test('typeLabel：词表标签；未收录类型（如 MCP 动态工具名）原样回退', () => {
   assert.equal(typeLabel('tap'), '点击');
   assert.equal(typeLabel('input'), '输入');
   assert.equal(typeLabel('swipe'), '滑动');
-  assert.equal(typeLabel('assert'), '断言');
-  assert.equal(typeLabel('screenshot'), '截图');
+  assert.equal(typeLabel('point_tap'), '坐标点击'); // 引擎专用工具也落 run.json，须有标签
+  assert.equal(typeLabel('tap_each_row'), '逐行点击');
+  assert.equal(typeLabel('assert'), '断言'); // 历史兼容（旧版引擎出现过 1 次）
+  assert.equal(typeLabel('screen'), '截图');
   assert.equal(typeLabel('sleep'), '等待');
-  assert.equal(typeLabel('extract'), '提取');
-  assert.equal(typeLabel('key'), 'key');
-  assert.equal(typeLabel('long_press'), 'long_press');
+  assert.equal(typeLabel('data_extract'), '提取');
+  assert.equal(typeLabel('key'), '按键');
+  assert.equal(typeLabel('long_press'), '长按');
+  assert.equal(typeLabel('answer_row'), '作答');
+  assert.equal(typeLabel('mcp__some__dynamic_tool'), 'mcp__some__dynamic_tool');
 });
 
 test('夹具编排：tap+bounds → [img, insight, img(pointer)]', () => {
@@ -53,7 +64,7 @@ test('夹具编排：key 无 bounds → 仅 spinning-pointer（无图 img 被跳
   assert.equal(s3.kind, 'spinning-pointer');
   assert.equal(s3.durationMs, DUR.spinningPointer);
   assert.equal(s3.screenshotId, null);
-  assert.equal(s3.title, 'key'); // 不在标签表，原样
+  assert.equal(s3.title, '按键'); // 词表标签（此前词表缺 key，裸回退）
   assert.equal(s3.subTitle, 'back');
   assert.equal(s3.pointer, undefined);
 });

@@ -1,88 +1,88 @@
-/* 设计令牌 + 基础样式（2026-11-05 双主题）
-   默认浅色（Midscene 报告风：#f2f4f7 页面底、白色圆角主卡、antd 蓝交互色）；
+/* 设计令牌 + 基础样式（2026-11-05 双主题 · 视觉精修）
+   默认浅色（Midscene 报告风：冷灰纸面、白色圆角主卡、antd 蓝交互色）；
    可选深色"任务控制台 / HUD"风（html[data-theme="dark"]：深空底 + 玻璃卡 + 霓虹青 + 网格底纹）。
    主题切换按钮在顶栏，选择持久化到 localStorage（ask-report-theme）；缺省浅色。
    组件 95% 走 var(--*) 令牌，换肤零组件逻辑改动；StepScene 手机舞台保持独立暗场。 */
 
 :root {
   /* —— 浅色（默认）—— */
-  --bg-page: #f2f4f7;
+  --bg-page: #f1f3f6;
   --bg-card: #ffffff;
   --bg-subtle: #f7f8fa;
-  --bg-hover: #eef1f5;
-  --bg-active: #e9f2ff;
-  --bg-track: #e8ebf0;
+  --bg-hover: #edf0f4;
+  --bg-active: #e8f1ff;
+  --bg-track: #e4e8ee;
 
-  --border: #e5e8ec;
-  --border-strong: #d4d9e0;
+  --border: #e2e6ec;
+  --border-strong: #cfd6df;
   --divider: #eceff3;
 
-  --text-1: #1b2430;
-  --text-2: #4e5969;
-  --text-3: #86909c;
-  --text-4: #b4bcc6;
+  --text-1: #17202b;
+  --text-2: #4d5a6a;
+  --text-3: #7f8b99;
+  --text-4: #aeb7c2;
 
   --accent: #1677ff;
-  --accent-hover: #3c8dff;
-  --accent-weak: #e9f3ff;
-  --accent-border: #b8dcff;
+  --accent-hover: #3d8bff;
+  --accent-weak: #e8f1ff;
+  --accent-border: #b3d6ff;
   --on-accent: #ffffff;
 
-  --pass: #16a34a;
-  --pass-weak: #e9f8ef;
-  --fail: #e5484d;
-  --fail-weak: #feeff0;
-  --warn: #d97706;
-  --warn-weak: #fdf4e3;
-  --neutral: #64748b;
-  --neutral-weak: #eef1f5;
+  --pass: #15803d;
+  --pass-weak: #e8f6ee;
+  --fail: #d92d20;
+  --fail-weak: #feecea;
+  --warn: #b45309;
+  --warn-weak: #fdf3e2;
+  --neutral: #5b6b7f;
+  --neutral-weak: #edf0f4;
 
-  --stage: #15171c;
+  --stage: #f7f8fa;
 
   --radius-card: 12px;
   --radius-ctl: 8px;
   --radius-chip: 999px;
-  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.05), 0 2px 8px -2px rgba(16, 24, 40, 0.06);
   --shadow-pop: 0 8px 28px rgba(16, 24, 40, 0.16);
-  /* 浅色下不发光（发光只在深色 HUD 有意义） */
-  --glow-accent: none;
-  --glow-pass: none;
-  --glow-fail: none;
+  /* 白色科技感：蓝→青渐变交互面 + 克制的蓝色微辉光（状态语义色不发光） */
+  --glow-accent: 0 0 12px rgba(22, 119, 255, 0.22);
   --dot-glow: none;
-  --title-glow: none;
-  --nav-bg: rgba(242, 244, 247, 0.88);
+  --nav-bg: rgba(241, 243, 246, 0.86);
+  --nav-line: linear-gradient(90deg, transparent 4%, rgba(22, 119, 255, 0.4) 50%, transparent 96%);
+  --card-hover-border: var(--accent-border);
+  --play-bg: linear-gradient(135deg, #1677ff, #0ea5e9);
 
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', 'Noto Sans SC', sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, Menlo, monospace;
 
-  --nav-h: 56px;
-  --sidebar-w: 288px;
+  --nav-h: 60px;
+  --sidebar-w: 292px;
 }
 
 /* —— 深色 HUD（任务控制台风）—— */
 :root[data-theme='dark'] {
-  --bg-page: #070b14;
-  --bg-card: rgba(15, 22, 38, 0.72);
-  --bg-subtle: #0d1526;
-  --bg-hover: #16203a;
-  --bg-active: rgba(34, 211, 238, 0.12);
-  --bg-track: #101a2e;
+  --bg-page: #0a0e17;
+  --bg-card: rgba(16, 23, 38, 0.82);
+  --bg-subtle: #0e1524;
+  --bg-hover: #182238;
+  --bg-active: rgba(34, 211, 238, 0.14);
+  --bg-track: #131c30;
 
-  --border: rgba(120, 160, 220, 0.16);
-  --border-strong: rgba(120, 160, 220, 0.3);
-  --divider: rgba(120, 160, 220, 0.1);
+  --border: rgba(126, 164, 220, 0.15);
+  --border-strong: rgba(126, 164, 220, 0.28);
+  --divider: rgba(126, 164, 220, 0.1);
 
-  --text-1: #e8eef8;
-  --text-2: #a8b6cc;
-  --text-3: #6d7f9b;
-  --text-4: #465670;
+  --text-1: #e6edf7;
+  --text-2: #a6b4ca;
+  --text-3: #6e809c;
+  --text-4: #47566e;
 
   --accent: #22d3ee;
   --accent-hover: #67e3f6;
   --accent-weak: rgba(34, 211, 238, 0.14);
-  --accent-border: rgba(34, 211, 238, 0.45);
+  --accent-border: rgba(34, 211, 238, 0.42);
   --on-accent: #04121f;
 
   --pass: #34d399;
@@ -94,17 +94,18 @@
   --neutral: #8fa3c0;
   --neutral-weak: rgba(143, 163, 192, 0.14);
 
-  --stage: #05080f;
+  --stage: #0b1119;
 
   --radius-card: 14px;
   --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
   --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.55);
-  --glow-accent: 0 0 12px rgba(34, 211, 238, 0.35);
-  --glow-pass: 0 0 10px rgba(52, 211, 153, 0.4);
-  --glow-fail: 0 0 10px rgba(251, 113, 133, 0.4);
-  --dot-glow: 0 0 8px currentColor;
-  --title-glow: 0 0 18px rgba(34, 211, 238, 0.25);
-  --nav-bg: rgba(7, 11, 20, 0.78);
+  --glow-accent: 0 0 10px rgba(34, 211, 238, 0.28);
+  --dot-glow: 0 0 6px currentColor;
+  --nav-bg: rgba(10, 14, 23, 0.8);
+  /* 深色 HUD：DataV/GoView 语汇——青色霓虹、辉光描边、渐变交互面 */
+  --nav-line: linear-gradient(90deg, transparent 4%, rgba(34, 211, 238, 0.55) 50%, transparent 96%);
+  --card-hover-border: rgba(34, 211, 238, 0.5);
+  --play-bg: linear-gradient(135deg, #22d3ee, #3b82f6);
 }
 
 * {
@@ -125,15 +126,25 @@ body {
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-size-adjust: 100%;
+  caret-color: var(--accent);
+}
+
+/* 白色科技感：极淡蓝色网格底纹（5% 不到，纸面上若隐若现） */
+body {
+  background-image:
+    linear-gradient(rgba(22, 119, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(22, 119, 255, 0.045) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-attachment: fixed;
 }
 
 /* 深色专属：HUD 网格底纹 + 顶部青色氛围光（浅色保持干净纸面） */
 :root[data-theme='dark'] body {
   background-image:
-    radial-gradient(1100px 380px at 50% -120px, rgba(34, 211, 238, 0.1), transparent 70%),
-    linear-gradient(rgba(120, 160, 220, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(120, 160, 220, 0.045) 1px, transparent 1px);
-  background-size: auto, 44px 44px, 44px 44px;
+    radial-gradient(1100px 380px at 50% -120px, rgba(34, 211, 238, 0.07), transparent 70%),
+    linear-gradient(rgba(126, 164, 220, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(126, 164, 220, 0.035) 1px, transparent 1px);
+  background-size: auto, 48px 48px, 48px 48px;
   background-attachment: fixed;
 }
 
@@ -141,6 +152,44 @@ body {
 .mono {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* 详情卡面板外壳（四张详情卡共用：标题行 + 计数徽章 + 空态） */
+.panel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.panel-title {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+}
+.panel-count {
+  padding: 0 7px;
+  border-radius: var(--radius-chip);
+  background: var(--neutral-weak);
+  color: var(--text-2);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 18px;
+}
+.panel-empty {
+  margin: 0;
+  padding: 14px 0;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* 键盘焦点环（随主题）：所有可交互元素的统一可见焦点 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 /* 细滚动条（随主题） */
@@ -171,4 +220,34 @@ body {
 :root[data-theme='dark'] ::selection {
   background: rgba(34, 211, 238, 0.28);
   color: #eafcff;
+}
+
+/* 启动期错误卡（main.js 无 ask-dump 数据时）：与令牌同源的纸面卡片 */
+.boot-error {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--bg-page);
+}
+.boot-error-card {
+  max-width: 420px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 28px 32px;
+}
+.boot-error-card h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+.boot-error-card p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.6;
 }

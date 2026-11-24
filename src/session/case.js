@@ -24,15 +24,46 @@ export const ASSERT_TYPES = new Set(['aiAssert']);
 export const QUERY_TYPES = new Set(['aiQuery']);
 export const WAIT_TYPES = new Set(['aiWaitFor']);
 export const ENGINE_TYPES = new Set(['aiTap', 'aiInput', 'aiLongPress', 'aiKeyboardPress', 'aiScroll', 'aiTapEach', 'launch', 'terminate', 'uiDump']);
+// 坐标步（tap 带 {x,y}）：**默认禁用**，需用例顶层 allowCoords: true 或 CLI --allow-coords。
+// 依据 docs/DESIGN.md:978「禁止把坐标写进用例文件」（2026-09-24 裁定）——故这里不是"支持新语法"，
+// 而是把这个裁定早设计好的 allowCoords 逃生口（DESIGN.md:449）落地为**显式、可审计**的开关。
+// 未开启时坐标步报解析错（此前静默降级成 ai 任务，把 "tap: { x: 405, y: 2115 }" 当自然语言喂给模型，
+// 12 条断言因没点到目标而全灭且无任何告警——静默失效是最坏的失败模式）。
+// 仅收 tap：swipe 需要两个点而 DSL 无既定双点语法，与其臆造不如让它落进
+// "未知步骤命令"报错（写清可用形态），避免又一个"看起来能跑其实静默失效"的入口。
+export const COORD_TYPES = new Set(['tap']);
 export const SPECIAL_TYPES = new Set(['net', 'sleep']);
 
-const ALL_TYPES = new Set([...AGENT_TYPES, ...ASSERT_TYPES, ...QUERY_TYPES, ...WAIT_TYPES, ...ENGINE_TYPES, ...SPECIAL_TYPES]);
+const ALL_TYPES = new Set([
+  ...AGENT_TYPES, ...ASSERT_TYPES, ...QUERY_TYPES, ...WAIT_TYPES,
+  ...ENGINE_TYPES, ...COORD_TYPES, ...SPECIAL_TYPES,
+]);
+
+// 坐标字面量：`{ x: 135, y: 2115 }` / `{x:135,y:2115}` / `135, 2115` / `135 2115`
+// 反引号包裹的 JSON 形态也认（`{"x":135,"y":2115}`）。返回 {x,y} 或 null。
+export function parseCoords(text) {
+  const s = String(text ?? '').trim();
+  if (!s) return null;
+  // 显式键名形态（x/y 或缺省 w/h 混写都不认，只要 x 与 y）
+  const kx = /["']?x["']?\s*[:：]\s*(-?\d+(?:\.\d+)?)/i.exec(s);
+  const ky = /["']?y["']?\s*[:：]\s*(-?\d+(?:\.\d+)?)/i.exec(s);
+  if (kx && ky) return { x: Math.round(Number(kx[1])), y: Math.round(Number(ky[1])) };
+  // 裸数字对形态（"135, 2115" / "135 2115"）
+  const bare = /^\s*\{?\s*(-?\d+(?:\.\d+)?)\s*[,，]?\s+(-?\d+(?:\.\d+)?)\s*\}?\s*$/.exec(s.replace(/["']/g, ''));
+  if (bare) return { x: Math.round(Number(bare[1])), y: Math.round(Number(bare[2])) };
+  return null;
+}
 
 // 步骤字段收哪些"参数行"（缩进续行）；不在表内且非命令名的续行仍按旧行为拼进 text
 const PARAM_KEYS = new Set([
   'value', 'direction', 'distancePct', 'until', 'keyName', 'name', 'timeout',
   'max', 'maxScrolls', 'durationMs', 'appId', 'package', 'packageName', 'mode', 'path', 'quiet',
   'rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile',
+  // batch：ai/aiAct 长任务步的续作形态（false=逐个处理 / true=每轮并行处理本屏全部项），
+  // 与 until/maxRounds 一起构成显式 loop 声明（见 resolveLoopPlan）
+  'batch',
+  // selector：aiWaitFor 的显式等待 selector（评审 #10：散文解析只作未声明时的兜底）
+  'selector',
 ]);
 const NUMBER_KEYS = new Set(['seconds', 'max', 'timeout', 'maxScrolls', 'durationMs', 'distancePct']);
 
@@ -89,9 +120,11 @@ function coerce(key, val) {
   return v;
 }
 
-export function parseCaseText(text, { source = 'text' } = {}) {
+export function parseCaseText(text, { source = 'text', allowCoords = null } = {}) {
   const lines = String(text ?? '').split(/\r?\n/);
   const caseObj = { name: source, source, steps: [], warnings: [] };
+  // CLI --allow-coords 覆盖（true=强制放行 / false=强制拒绝 / null=按 YAML 顶层键）
+  if (allowCoords === true) caseObj.allowCoords = true;
   let inSteps = false;
   let current = null;
 
@@ -114,6 +147,20 @@ export function parseCaseText(text, { source = 'text' } = {}) {
       else caseObj.warnings.push(`${source}:${i + 1} context 值 "${v}" 无法解析（应为正整数或 all），忽略`);
       continue;
     }
+    // 顶层 allowCoords 键：坐标步开关（DESIGN.md:449 的逃生口）。必须先于 steps: 声明。
+    // CLI --allow-coords（allowCoords===true）优先，YAML 里的 false 不能把它关掉。
+    if (!inSteps && /^allowCoords\s*[:：]/i.test(trimmed)) {
+      if (allowCoords === true) continue; // CLI 已强制开启，忽略 YAML 值
+      const v = unquote(trimmed.replace(/^allowCoords\s*[:：]/i, '')).trim();
+      caseObj.allowCoords = /^(true|yes|on|1)$/i.test(v);
+      continue;
+    }
+    // 顶层 targetPackage：目标 App 显式声明（评审 #4）。--pregrant 此前从步骤 JSON 正则抓
+    // 第一个 com.*，断言/URL 文本可能抢先误中——声明后精确授权。
+    if (!inSteps && /^targetPackage\s*[:：]/.test(trimmed)) {
+      caseObj.targetPackage = unquote(trimmed.replace(/^targetPackage\s*[:：]/, '')).trim();
+      continue;
+    }
     // 步骤区起始：steps: 或 flow:（外部框架别名，兼容健康自测类用例）
     if (/^(?:steps|flow)\s*[:：]?\s*$/.test(trimmed)) { inSteps = true; continue; }
     if (!inSteps) continue;
@@ -127,6 +174,27 @@ export function parseCaseText(text, { source = 'text' } = {}) {
         if (cls.error) throw new CaseParseError(`${source}:${i + 1} ${cls.error}`);
         if (cls.ok) {
           const type = normalizeType(kv[1]);
+          // —— 坐标步（tap/swipe）：默认拒绝，需 allowCoords 显式开启 ——
+          if (COORD_TYPES.has(type)) {
+            const raw = unquote(kv[2]);
+            const pt = parseCoords(raw);
+            if (!pt) {
+              throw new CaseParseError(
+                `${source}:${i + 1} 步骤命令 "${type}:" 只接受坐标（如 { x: 135, y: 2115 }）；` +
+                `语义点击请用 "aiTap: <可见文本>"（DESIGN.md 禁止把坐标写进用例，除 allowCoords 逃生口）`,
+              );
+            }
+            if (!caseObj.allowCoords) {
+              throw new CaseParseError(
+                `${source}:${i + 1} 坐标步骤 "${type}: { x: ${pt.x}, y: ${pt.y} }" 被拒绝：` +
+                '把坐标写进用例违反 2026-09-24 裁定（DESIGN.md:978）。' +
+                '如确有需要，在用例顶层（steps: 之前）加 "allowCoords: true"，或运行时传 --allow-coords',
+              );
+            }
+            current = { type, x: pt.x, y: pt.y };
+            caseObj.steps.push(current);
+            continue;
+          }
           current = { type };
           if (type === 'sleep') {
             // 兼容毫秒写法（外部框架 sleep: 3000 = 3s）：>100 一律视为毫秒换算，
@@ -144,6 +212,17 @@ export function parseCaseText(text, { source = 'text' } = {}) {
           continue;
         }
         // 已知参数名（如误缩进的 value:）不当作步骤；其余未知 "key: value" 视为任务文本
+        // —— 但**坐标形态**的未知命令必须报错**：
+        // 旧行为把 "tap: { x: 405, y: 2115 }" 整行当自然语言任务喂给 agent（静默失效），
+        // 点击从未发生，下游断言全灭且无任何告警。命令名是 ASCII 标识符 + 值是坐标/对象字面量
+        // 时，几乎必然是"写了个不受支持的步骤命令"，必须响亮报错。
+        if (/^[A-Za-z][\w-]*$/.test(kv[1]) && (parseCoords(kv[2]) || /^\{.*\}$/.test(String(kv[2]).trim()))) {
+          throw new CaseParseError(
+            `${source}:${i + 1} 未知步骤命令 "${kv[1]}: ${unquote(kv[2])}"：看起来是坐标/对象形态的步骤，` +
+            `但 DSL 只支持坐标 "tap: { x, y }"（且需顶层 allowCoords: true）。` +
+            `语义操作请用 aiTap/aiScroll/aiLongPress 等（见 cases/README.md 步骤命令表）`,
+          );
+        }
       }
       if (body) {
         // 纯文本任务行 "- <文本>" → agent 任务
@@ -171,7 +250,43 @@ export function parseCaseText(text, { source = 'text' } = {}) {
       current.text = (current.text ? current.text + ' ' : '') + trimmed;
     }
   }
+  warnUnknownParams(caseObj, source);
   return caseObj;
+}
+
+// 每命令消费的参数表（2026-11-10 评审 #12）：全局 PARAM_KEYS 收集保持宽容，但装载期对
+// "该命令不认的参数"显式 warn——写错位的参数（aiScroll 挂 value:）此前被静默收下、毫无
+// 作用。校准依据：bin/ask.js 与 buildToolCall 的实际消费点 + 全部存量用例（0 误报）。
+const PARAM_KEYS_BY_TYPE = {
+  ai: ['timeout', 'until', 'maxRounds', 'batch', 'name'],
+  aiAct: ['timeout', 'until', 'maxRounds', 'batch', 'name'],
+  aiTap: ['timeout'],
+  aiInput: ['value', 'clear', 'timeout'],
+  aiLongPress: ['durationMs', 'timeout'],
+  aiKeyboardPress: ['keyName', 'timeout'],
+  aiScroll: ['direction', 'distancePct', 'until', 'max', 'timeout'],
+  aiTapEach: ['rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile', 'timeout'],
+  uiDump: ['path', 'timeout'],
+  launch: ['appId', 'timeout'],
+  terminate: ['package', 'packageName', 'timeout'],
+  aiWaitFor: ['timeout', 'quiet', 'selector'],
+  aiQuery: ['name', 'mode', 'quiet', 'timeout'],
+  aiAssert: ['timeout'],
+  sleep: [],
+  net: ['profile'],
+};
+
+function warnUnknownParams(caseObj, source) {
+  caseObj.steps.forEach((s, i) => {
+    const known = PARAM_KEYS_BY_TYPE[s.type];
+    if (!known) return;
+    for (const k of Object.keys(s)) {
+      if (k === 'type' || k === 'text' || k === 'seconds') continue;
+      if (!known.includes(k)) {
+        caseObj.warnings.push(`${source}: 步骤 ${i + 1}（${s.type}）的参数 "${k}" 不被该命令消费（已忽略），检查是否拼写错位`);
+      }
+    }
+  });
 }
 
 // 自然语言任务文本 → 单步 Case（run "<文本>" / do "<文本>"）
@@ -189,6 +304,10 @@ export function loadCase(text, { asFile = true, source } = {}) {
 export function buildToolCall(step) {
   const t = step?.type;
   const num = (v) => (v == null || v === '' ? undefined : Number(v));
+  // 坐标步（需 allowCoords 已在装载期放行）：直连坐标工具，跳过语义定位
+  if (t === 'tap' && Number.isFinite(Number(step.x)) && Number.isFinite(Number(step.y))) {
+    return { tool: 'point_tap', params: { x: Number(step.x), y: Number(step.y) } };
+  }
   if (t === 'aiTap') return { tool: 'tap', params: { target: step.text } };
   if (t === 'aiInput') return { tool: 'input', params: { target: step.text, value: step.value ?? '' } };
   if (t === 'aiLongPress') return { tool: 'long_press', params: { target: step.text, ...(num(step.durationMs) != null ? { durationMs: num(step.durationMs) } : {}) } };
@@ -261,4 +380,38 @@ export function waitSelectorFromText(text) {
     if (kw) return kw; // 裸文本（device 层 auto 链）
   }
   return null;
+}
+
+// 马拉松续作计划（bin/ask.js ai/aiAct 续作循环用，纯函数）：显式步级参数优先，
+// 散文关键词仅作存量用例兼容——引擎只读字段不猜词（2026-11-10 评审 P1 落地）。
+//
+// 显式形态（推荐）：ai 步挂 until/maxRounds/batch 参数行：
+//   - ai: 逐题作答直到出现提交按钮
+//     until: text=立即提交   # 终止标记：显式 selector 或可见文本（确定性检测，不依赖模型自报）
+//     maxRounds: 8           # 催促轮数上限（缺省 10）
+//     batch: false           # false=逐个处理（显式缺省，防"依次逐个"被催成整屏并行误点）；true=每轮并行
+//
+// 兼容形态（legacy）：步骤文本含 直到/重复/逐题/每一题/依次 触发，批量催促 +
+// "直到…「xxx」"引号提取标记——英文用例静默不触发、"依次"类任务被误催成并行，
+// 均为已知缺陷，仅为不破坏存量用例保留；新用例一律用显式参数。
+export function resolveLoopPlan(step, stepText) {
+  const text = String(stepText ?? '');
+  const s = step || {};
+  const hasExplicit = s.until != null || s.maxRounds != null || s.batch != null;
+  const keyword = /直到|重复|逐题|每一题|依次/.test(text);
+  if (!hasExplicit && !keyword) return null;
+  // 终止标记：显式 until 优先（显式 selector 原样、裸文本直接作 auto 链 selector）；
+  // keyword 路径维持"直到…「xxx」"引号提取。
+  let marker = null;
+  if (s.until != null && String(s.until).trim()) {
+    marker = waitSelectorFromText(String(s.until)) || String(s.until).trim();
+  } else if (!hasExplicit) {
+    marker = waitSelectorFromText((/直到[^，。；]*?[「“"']([^」”"']{1,20})[」”"']/.exec(text) || [null, null])[1] || '');
+  }
+  // batch 缺省：显式声明 → 逐个（保守）；keyword 兼容路径 → 维持历史批量行为（存量语义不变）
+  const batch = s.batch != null
+    ? !/^(false|no|off|0)$/i.test(String(s.batch))
+    : (hasExplicit ? false : true);
+  const maxRounds = Math.max(1, Math.trunc(Number(s.maxRounds ?? 10)) || 10);
+  return { marker, batch, maxRounds, source: hasExplicit ? 'explicit' : 'keyword' };
 }

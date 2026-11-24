@@ -5,6 +5,8 @@
 export const BOOL_FLAGS = [
   'yes', 'json', 'quiet', 'vlm-locate', 'fresh-locate', 'fresh', 'keep', 'continue',
   'keep-data', 'strict', 'pregrant', 'help', 'version',
+  // allow-coords：坐标步逃生口（DESIGN.md:449）。默认禁止把坐标写进用例（2026-09-24 裁定）
+  'allow-coords',
 ];
 
 // 可选值 flag：后面紧跟非 -- 参数则取其值，否则为 true（供 doctor 的"检查默认设备/模型"用法）

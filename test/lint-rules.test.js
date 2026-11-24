@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { lintCaseText, ruleIds } from '../src/lint/rules.js';
 
 describe('lint rules', () => {
-  test('规则集恰好八条', () => {
-    assert.equal(ruleIds.length, 8);
+  test('规则集恰好九条（评审 #4 新增 target-package-missing）', () => {
+    assert.equal(ruleIds.length, 9);
   });
 
   // —— error 1：像素坐标 ——
@@ -14,6 +14,27 @@ describe('lint rules', () => {
     const r = lintCaseText('steps:\n  - ai: input tap 512 760\n  - ai: 点击坐标 608,820');
     assert.ok(r.some((i) => i.rule === 'pixel-coords' && i.level === 'error' && i.line === 2));
     assert.ok(r.some((i) => i.rule === 'pixel-coords' && i.level === 'error' && i.line === 3));
+  });
+
+  // 回归：步骤命令对象形态 { x: N, y: N } 此前漏网（两个数之间隔着 "y:"，裸数字对正则不命中），
+  // 导致 learning-daily-recommend.yaml 的坐标点击 lint 报 0 error 却静默失效。
+  test('E1b pixel-coords：坐标步 { x, y } 被拦（旧写法漏网回归）', () => {
+    const r = lintCaseText('steps:\n  - tap: { x: 135, y: 2115 }');
+    assert.ok(r.some((i) => i.rule === 'pixel-coords' && i.level === 'error' && i.line === 2));
+    // 紧凑与引号形态同样拦
+    assert.ok(lintCaseText('steps:\n  - tap: {x:1,y:2}').some((i) => i.rule === 'pixel-coords'));
+    assert.ok(lintCaseText('steps:\n  - tap: { "x": 10, "y": 20 }').some((i) => i.rule === 'pixel-coords'));
+  });
+
+  // 逃生口（DESIGN.md:449）：顶层 allowCoords: true 时坐标行放行；未声明/写 false 仍拦。
+  test('E1c pixel-coords：顶层 allowCoords 才放行坐标步', () => {
+    const allowed = lintCaseText('allowCoords: true\nsteps:\n  - tap: { x: 135, y: 2115 }');
+    assert.equal(allowed.filter((i) => i.rule === 'pixel-coords').length, 0, '声明后放行');
+    assert.ok(lintCaseText('allowCoords: false\nsteps:\n  - tap: { x: 1, y: 2 }').some((i) => i.rule === 'pixel-coords'), 'false 不放行');
+    assert.ok(lintCaseText('steps:\n  - tap: { x: 1, y: 2 }').some((i) => i.rule === 'pixel-coords'), '未声明不放行');
+    // 逃生口只覆盖"坐标步骤"：ai: 文本里的裸 adb 命令仍拦（声明 allowCoords 不该放过它）
+    const still = lintCaseText('allowCoords: true\nsteps:\n  - ai: input tap 512 760');
+    assert.ok(still.some((i) => i.rule === 'pixel-coords' && i.level === 'error'), '裸 adb 命令不受逃生口豁免');
   });
 
   // —— error 2：平台片段模式 ——

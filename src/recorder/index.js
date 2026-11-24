@@ -272,6 +272,29 @@ export class RunRecorder {
     const tmp = `${this._jsonPath}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
     await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
     await fsp.rename(tmp, this._jsonPath);
+    // 默认产出 HTML 报告（与 JSON 同目录 report.html）：失败不阻断 run，只告警。
+    // 截图以 assets 目录形态落盘（run 目录已有 png，无需再内联成 MB 级 base64）。
+    // 传深拷贝：report 侧 redactDump 会原地改写 assertions.reason，不能污染返回给调用方的 doc。
+    try {
+      const { writeReport } = await import('../../report/recorder.js');
+      const htmlPath = path.join(this._runsDir, `${this.runId}.html`);
+      await writeReport(structuredClone(doc), {
+        outPath: htmlPath,
+        mode: 'directory',
+        groupName: this._caseName,
+      });
+      doc.artifacts.report = toPosix(htmlPath);
+      this._htmlPath = htmlPath;
+      // 报告已生成：把 artifacts.report 同步回 JSON（二次写盘，代价可忽略）
+      await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
+      await fsp.rename(tmp, this._jsonPath);
+    } catch (e) {
+      console.warn(`[report] HTML 报告生成失败（run.json 已保存）：${e?.message ?? e}`);
+    }
     return doc;
+  }
+
+  get htmlPath() {
+    return this._htmlPath ?? null;
   }
 }

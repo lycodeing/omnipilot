@@ -61,10 +61,20 @@ function runToDump(run, runId) {
   for (const step of run.steps ?? []) {
     if (!step?.screenshot || step?.index == null) continue
     const id = screenshotIds[step.index]
-    // run.json 内为项目根相对路径；dev 经 /runs/ 中间件读文件
-    dump.screenshots[id] = `/${String(step.screenshot).replace(/\\/g, '/')}`
+    // run.json 内为相对 run 目录或绝对路径；dev 统一经 /runs/ 中间件读文件
+    dump.screenshots[id] = toRunsUrl(step.screenshot, runsRoot)
   }
   return dump
+}
+
+// 截图路径 → /runs/ URL：相对路径按 run 目录解析；绝对路径若落在 runsRoot 内则转相对，
+// 否则直连 file 系统路径不可行（浏览器沙箱）→ 回退为 run 目录相对同名文件
+function toRunsUrl(raw, runsDir) {
+  const norm = String(raw).replace(/\\/g, '/')
+  if (!path.isAbsolute(norm)) return `/runs/${norm}`
+  const rel = path.relative(runsDir, norm).replace(/\\/g, '/')
+  if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return `/runs/${rel}`
+  return `/runs/${path.basename(norm)}`
 }
 
 // mtime 缓存：Map<绝对路径, { mtimeMs, size, dump }>；未变更直接复用（P2-9）
@@ -141,6 +151,8 @@ function devDataPlugin() {
 }
 
 // base './' 便于 C 端 loadShell 单文件内联（契约 §4）
+// 注：步骤类型词表（src/tools/vocab.js）经相对路径 import（见 utils/buildReplayScripts.js），
+// 不走 vite 别名——同一份 import 还要被根 npm test 的 node --test 解析，别名只覆盖 vite。
 export default defineConfig({
   base: './',
   plugins: [vue(), devDataPlugin()],

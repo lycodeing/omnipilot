@@ -86,6 +86,31 @@ export function buildActionTools(ctx) {
     },
   });
 
+  // 坐标点击（allowCoords 逃生口）：**不注册给模型**（见 buildActionTools 末尾与 index.js 过滤）。
+  // 语义：跳过定位，直接点 (x,y)。仅由引擎直执行坐标步（buildToolCall → point_tap）调用，
+  // 模型侧工具面保持"禁止像素坐标"（tap 的 description 仍是原话）。
+  const pointTap = defineTool({
+    name: 'point_tap',
+    label: 'point_tap',
+    description: '按坐标点击（仅 allowCoords 用例的引擎直执行步调用；模型侧不可用）。',
+    parameters: Type.Object({
+      x: Type.Number({ description: '屏幕 x 像素' }),
+      y: Type.Number({ description: '屏幕 y 像素' }),
+    }),
+    execute: async (_id, params) => {
+      const gate = await confirmWrite(ctx, 'point_tap', `${params.x},${params.y}`);
+      if (!gate.allowed) return denied('point_tap');
+      await handlePopupBeforeAction(ctx, device);
+      const r = await device.tap([Number(params.x), Number(params.y)]);
+      // locate 记账：坐标步没有定位过程，但报告/定位统计需要一条可渲染的记录
+      const loc = { ok: r.ok, bounds: null, center: [Number(params.x), Number(params.y)], strategy: 'coords', treeCacheHit: false, vlmCacheHit: false, dumpMs: 0, identity: null, error: r.error ?? null };
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ ok: r.ok, target: `(${params.x},${params.y})`, strategy: 'coords', center: loc.center, latencyMs: r.latencyMs, error: r.error }) }],
+        details: { ok: r.ok, locate: loc },
+      };
+    },
+  });
+
   const longPress = defineTool({
     name: 'long_press',
     label: 'long_press',
@@ -230,6 +255,16 @@ export function buildActionTools(ctx) {
             return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: msg }) }], details: { ok: false, error: msg } };
           }
           // —— 视觉模式（缺省）：VLM 看图逐题定位，不依赖 a11y 树（busy 态免疫）——
+          // 场景 profile 与 selector 形态同款分类点。此前视觉模式没接 profile，
+          // settle/maxRounds/verifyColor 在 visual-answer.js 另写一份缺省，与本文件
+          // profiles/questionnaire 预设数值分叉——现统一走 profiles.resolveTiming。
+          let prof = null;
+          if (params.profile) {
+            const { loadProfile } = await import('../device/profiles/index.js');
+            prof = await loadProfile(params.profile); // 未知名抛错 → 外层 catch 转结构化失败（与 selector 形态 device 层报错同款 UX）
+          }
+          const { resolveTiming } = await import('../device/profiles/index.js');
+          const timing = resolveTiming({ maxRounds: params.maxRounds, verifyColor: params.verifyColor }, prof);
           const { runVisualAnswer } = await import('./visual-answer.js');
           const { resolveStrategy } = await import('../device/coord/registry.js');
           const strategy = resolveStrategy(ctx.modelCfg?.family);
@@ -237,9 +272,11 @@ export function buildActionTools(ctx) {
             device: ctx.device,
             chat: ctx.chat,
             strategy,
-            maxRounds: params.maxRounds ?? 60,
+            maxRounds: timing.maxRounds,
             verify: params.verify !== false,
-            verifyColor: params.verifyColor ?? 'auto',
+            verifyColor: timing.verifyColor,
+            settleMs: timing.settleMs,
+            ...(prof?.doneTexts?.length ? { doneTexts: prof.doneTexts } : {}),
             onQuestion: ctx.recorder
               ? async (info) => {
                   const handle = ctx.recorder.startStep('answer_row', `${String(info.row).slice(0, 24)} → ${info.option}`);
@@ -329,5 +366,10 @@ export function buildActionTools(ctx) {
     },
   });
 
-  return [tap, longPress, input, swipe, scroll, tapEachRow, key, launch, terminate];
+  return [tap, pointTap, longPress, input, swipe, scroll, tapEachRow, key, launch, terminate];
 }
+
+// 引擎专用工具：只给引擎直执行（buildToolCall）用，**不进模型工具面**。
+// point_tap 存在的前提正是"模型不许给像素坐标"（tap.description 原话）——
+// 若把它注册给模型，等于把 2026-09-24 裁定在模型侧作废。buildTools 据此过滤。
+export const ENGINE_ONLY_TOOLS = new Set(['point_tap']);

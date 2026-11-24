@@ -1,6 +1,14 @@
 // 系统弹窗侦测与自适应关闭（§2.7）：权限授权 / 包安装器 / systemui 弹窗不能打断用例。
 // 只做"恢复现场"：不计入 run 的 steps、不产生断言（§2.7.4）。
-// 依赖：device 门面（foreground/dumpTree/locate/tap/key/waitIdle）。
+// 依赖：device 门面（foreground/dumpTree/locate/tap/key/waitIdle/getProp）。
+//
+// 类型分类（2026-11-10 通用性评审落地）：「Android 系统弹窗」是一个设备类型，其知识
+// 按两个正交维度收敛为数据，引擎逻辑只认接口——
+//   ① 弹窗族（谁在弹）：SYSTEM_DIALOG_PACKAGES，权限控制器/安装器/systemui；
+//   ② locale 文案包（按钮长什么样）：POPUP_WORD_PACKS，zh/en 两包。
+// 此前两份中文词表内联：英文设备上检测永不命中、dismiss 退化盲按 back 且无任何告警。
+// 新增 locale = 加一个词表键；新增弹窗族 = 包集合加一项；引擎逻辑零改。
+// 自定义 locale 可用环境变量 ASK_POPUP_LOCALE 强制（CI/测试/多语言真机）。
 import { flattenNodes } from './uitree.js';
 
 // 已知会弹框的系统包（Android 通用）
@@ -12,26 +20,82 @@ export const SYSTEM_DIALOG_PACKAGES = new Set([
   'com.android.systemui',
 ]);
 
-// 按钮文本按优先级：同意类 > 确定类 > （不点"拒绝"）
-export const ALLOW_TEXTS = ['始终允许', '仅在使用时允许', '允许', '同意', '确定', '知道了', '好的', '继续'];
+// —— locale 文案包 ——
+// allowTexts：dismiss 点按候选，按优先级排列（同意类 > 确定类 > 不点"拒绝"）。
+// detectTexts：内嵌权限框检测用严格子集——'确定/继续/好的'（OK/Continue）是普通 App 按钮
+// 常见文案，用于"前台是目标 App 时的内嵌权限框"检测会误判（详见 treeScan 复合判据）。
+// 真实权限框必然含 允许/同意（Allow/Agree）类短语之一，检测子集足够。
+export const POPUP_WORD_PACKS = {
+  zh: {
+    allowTexts: ['始终允许', '仅在使用时允许', '允许', '同意', '确定', '知道了', '好的', '继续'],
+    detectTexts: ['始终允许', '仅在使用时允许', '允许', '同意'],
+  },
+  en: {
+    // 长语在前：'Allow only while using the app' 含 'Allow'，优先精确长词避免语义含混
+    allowTexts: ['Allow only while using the app', 'While using the app', 'Allow', 'Agree', 'OK', 'Got it', 'Continue'],
+    detectTexts: ['Allow only while using the app', 'While using the app', 'Allow', 'Agree'],
+  },
+};
 
-// 检测用严格子集（仅权限专用短语）：'确定/继续/好的' 等是普通 App 按钮常见文案，
-// 若用于"前台是目标 App 时的内嵌权限框"检测会误判，导致误点/误按 back 退出页面。
-// 真实权限框必然含 允许/始终允许/仅在使用时允许/同意 之一，故检测子集足够且安全。
-const DETECT_TEXTS = ['始终允许', '仅在使用时允许', '允许', '同意'];
+function mergeAllPacks() {
+  const uniq = (arrs) => [...new Set(arrs.flat())];
+  return {
+    allowTexts: uniq(Object.values(POPUP_WORD_PACKS).map((p) => p.allowTexts)),
+    detectTexts: uniq(Object.values(POPUP_WORD_PACKS).map((p) => p.detectTexts)),
+  };
+}
+
+// locale tag → 文案包。匹配链：完整 tag（zh-cn）→ 语言前缀（zh）→ 未识别 locale 取**全部包并集**
+//（如 fr-FR：没有 fr 包时，并集保证至少 zh/en 弹窗仍可被关——宁可多候选，不可静默全盲）。
+// 词表键为语言前缀小写（'zh'/'en'），按 tag 归一后匹配。
+export function resolvePopupTexts(locale) {
+  const tag = String(locale ?? '').trim().toLowerCase();
+  if (!tag) return mergeAllPacks();
+  const lang = tag.split(/[-_]/)[0];
+  if (POPUP_WORD_PACKS[tag]) return POPUP_WORD_PACKS[tag];
+  if (POPUP_WORD_PACKS[lang]) return POPUP_WORD_PACKS[lang];
+  return mergeAllPacks();
+}
+
+// —— device locale 解析（带缓存）——
+// 写动作路径上 detectDialog 高频调用：locale 一次 getprop ~0.3-0.5s，必须缓存。
+// 三种结果（含失败 ''）都缓存——失败不缓存会让每次写动作多付一次 getprop。
+// 按 device 分键（WeakMap）：--parallel 多设备并发互不串用。
+const localeCacheByDevice = new WeakMap();
+const LOCALE_TTL_MS = 60_000;
+
+async function devicePopupTexts(device) {
+  const forced = String(process.env.ASK_POPUP_LOCALE ?? '').trim();
+  if (forced) return resolvePopupTexts(forced);
+  const now = Date.now();
+  const hit = localeCacheByDevice.get(device);
+  if (hit && now - hit.at < LOCALE_TTL_MS) return hit.texts;
+  let locale = '';
+  try {
+    if (typeof device.getProp === 'function') {
+      locale = await device.getProp('persist.sys.locale');
+    }
+  } catch { /* 读不到按未知识别（并集兜底） */ }
+  const texts = resolvePopupTexts(locale);
+  localeCacheByDevice.set(device, { at: now, texts });
+  return texts;
+}
 
 export function isSystemDialogForeground(fg) {
   if (!fg || !fg.package) return false;
   return SYSTEM_DIALOG_PACKAGES.has(String(fg.package));
 }
 
-// dumpTree 返回的是嵌套根数组（实测根节点 1 个、text 为空），只扫根层永远不命中——
-// 必须先 flatten 成深度优先扁平数组再匹配授权按钮文本。
-function hasAllowText(nodes, texts) {
-  const flat = Array.isArray(nodes) ? flattenNodes(nodes) : [];
-  for (const n of flat) {
+// —— 内嵌权限框检测的复合判据 ——
+// 文本命中（严格子集）**且**该节点自身或其祖先可点击——真实按钮在 a11y 树里叶子文本常
+// clickable=false、可点的是父容器（两侧都要认）；而纯静态文案（"您需同意…才能继续"段落）
+// 整条链都不可点，旧实现会被 includes 误判为权限框、写动作前被自动点掉（用户协议页/
+// 支付确认等合法步骤遭殃）。WebView 整屏容器 clickable=true 时判据退化回旧行为（不劣于旧）。
+function hasClickableAllowText(nodes, texts, ancestorClickable = false) {
+  for (const n of nodes || []) {
     const t = String(n.text || n.contentDesc || '').trim();
-    if (t && texts.some((a) => t === a || t.includes(a))) return true;
+    if (t && (ancestorClickable || n.clickable === true) && texts.some((a) => t === a || t.includes(a))) return true;
+    if (hasClickableAllowText(n.children, texts, ancestorClickable || n.clickable === true)) return true;
   }
   return false;
 }
@@ -39,8 +103,8 @@ function hasAllowText(nodes, texts) {
 // foreground() 负向 TTL 缓存（性能）：写动作前的弹窗预检每次付一次 dumpsys（~0.3-0.5s）。
 // 只缓存"前台不是系统弹窗"的负向结果（1s）；正向（系统弹窗在前台）**永不缓存**——
 // 否则弹窗刚被关掉后的下一次预检会用陈旧的正向结果误触发 dismissDialog（误按 back）。
-// 负向陈旧的风险有界：真弹出权限框时树扫描分支（DETECT_TEXTS）仍会命中。
-// 按 device 分键（WeakMap）：--parallel 多设备并发时互不串用。
+// 负向陈旧的风险有界：真弹出权限框时树扫描分支（detectTexts）仍会命中。
+// 按设备分键（WeakMap）：--parallel 多设备并发时互不串用。
 const negCacheByDevice = new WeakMap();
 const NEG_TTL_MS = 1000;
 // 树派生前台的新鲜度上限（终审 Important #1）：缓存树超过此龄不用来判前台，
@@ -78,24 +142,27 @@ export async function detectDialog(device) {
   return treeScan(device, fg, tree);
 }
 
-// App 内嵌权限框检测：查授权按钮文本（严格子集防误判）。tree 可复用调用方已 dump 的树。
+// App 内嵌权限框检测：locale 文案包（严格子集）+ 复合判据（文本命中且可点链成立）。
+// tree 可复用调用方已 dump 的树。
 async function treeScan(device, fg, tree = null) {
   try {
     const t = tree ?? (await device.dumpTree());
-    if (hasAllowText(t?.nodes, DETECT_TEXTS)) {
+    const { detectTexts } = await devicePopupTexts(device);
+    if (hasClickableAllowText(t?.nodes, detectTexts)) {
       return { detected: true, reason: 'allow-button-visible', pkg: fg?.package ?? null };
     }
   } catch { /* dump 失败不阻断 */ }
   return { detected: false, reason: null, pkg: fg?.package ?? null };
 }
 
-// 按优先级点按钮；全不中 → back 键兜底。返回 { ok, clicked, error }
+// 按优先级点按钮（locale 文案包）；全不中 → back 键兜底。返回 { ok, clicked, error }
 // 取舍说明：detectDialog 的 allow-button-visible 分支在前台是目标 App 时也会触发（防 App 内嵌权限框），
-// 此时 locate(ALLOW_TEXTS) 扫的是整棵树，理论上可能点到目标 App 自己的同名按钮（如"确定"）。
+// 此时 locate(allowTexts) 扫的是整棵树，理论上可能点到目标 App 自己的同名按钮（如"确定/OK"）。
 // 接受该风险：误点后仍有 waitIdle + 后续步骤的 locate 兜底，且弹窗打断用例的代价更高（§2.7）。
-// 成本说明：弹窗上没有任何候选文本时最坏要试 ALLOW_TEXTS.length 次 locate（每次 dump ≈2.2s）。
+// 成本说明：弹窗上没有任何候选文本时最坏要试 allowTexts.length 次 locate（每次 dump ≈2.2s）。
 export async function dismissDialog(device) {
-  for (const text of ALLOW_TEXTS) {
+  const { allowTexts } = await devicePopupTexts(device);
+  for (const text of allowTexts) {
     const loc = await device.locate(text).catch(() => ({ ok: false, bounds: null }));
     if (loc?.ok && loc.bounds) {
       const r = await device.tap(loc.bounds).catch((e) => ({ ok: false, error: String(e?.message ?? e) }));

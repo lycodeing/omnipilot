@@ -58,7 +58,7 @@
         },
         {
           "taskId": "3",
-          "type": "screenshot",
+          "type": "screen",
           "status": "finished",
           "thought": "",
           "param": { "target": "留档截图" },

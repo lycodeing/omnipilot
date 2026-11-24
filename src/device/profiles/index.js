@@ -45,6 +45,11 @@ function normalize(raw, source) {
   if (raw.maxRounds != null) out.maxRounds = clamp('maxRounds', Number(raw.maxRounds));
   if (raw.verifyColor != null) out.verifyColor = String(raw.verifyColor);
   if (raw.readyTimeoutMs != null) out.readyTimeoutMs = clamp('readyTimeoutMs', Number(raw.readyTimeoutMs));
+  // doneTexts：视觉作答"已完成"判定的参考按钮词（喂给 VLM 的提示，非选择器）。
+  // 缺省（内置 profile 未设）用 visual-answer 内置中文缺省；英文/其它形态问卷经自定义 profile 注入。
+  if (raw.doneTexts != null) {
+    out.doneTexts = (Array.isArray(raw.doneTexts) ? raw.doneTexts : [raw.doneTexts]).map((s) => String(s)).filter(Boolean).slice(0, 8);
+  }
   return out;
 }
 
@@ -68,3 +73,16 @@ export async function loadProfile(name, { dir = process.env.ASK_PROFILE_DIR || n
 }
 
 export const PROFILE_NAMES = Object.keys(BUILTIN);
+
+// tap_each_row 两形态（selector / 视觉）共用的时序优先级：显式参数 > profile > 内置缺省。
+// 此前视觉形态没接 profile，settle/maxRounds/verifyColor 在 visual-answer.js 另写一份缺省，
+// 与本文件 questionnaire 预设数值分叉——分类点已建、知识未下沉的典型。收敛到这一个函数。
+// settleMs 不暴露为工具参数（点击后停留时长属场景预设职责，用例作者不该逐用例调），
+// 只认 profile 与缺省；maxRounds / verifyColor 允许用例显式覆盖。
+export function resolveTiming({ maxRounds = null, verifyColor = null } = {}, prof = null) {
+  return {
+    maxRounds: Math.max(1, Math.trunc(Number(maxRounds ?? prof?.maxRounds ?? 60)) || 60),
+    verifyColor: verifyColor ?? prof?.verifyColor ?? 'auto',
+    settleMs: Number.isFinite(prof?.settleMs) ? prof.settleMs : 700,
+  };
+}

@@ -7,7 +7,7 @@ import path from 'node:path';
 
 import { assemblePrompt, PROJECT_ROOT } from '../src/session/prompt.js';
 import { resolveStrategy, createSessionManager } from '../src/session/persist.js';
-import { parseCaseText, caseFromText, interpolate, interpolateCase, buildToolCall, normalizeType, QUERY_TYPES } from '../src/session/case.js';
+import { parseCaseText, caseFromText, interpolate, interpolateCase, buildToolCall, normalizeType, parseCoords, resolveLoopPlan, QUERY_TYPES } from '../src/session/case.js';
 import { resolveModelConfig, validateModelConfig, baseUrlHash, ModelConfigError } from '../src/session/model.js';
 
 // —— prompt 三层装配（§6.1/6.2） ——
@@ -276,6 +276,62 @@ describe('midscene naming', () => {
     assert.equal(normalizeType('aiAssert'), 'aiAssert');
   });
 
+  // —— 坐标步 + allowCoords 逃生口（DESIGN.md:449 / 2026-09-24 裁定） ——
+  describe('坐标步与 allowCoords', () => {
+    test('parseCoords：对象/裸数字对/引号形态都认，语义文本返回 null', () => {
+      assert.deepEqual(parseCoords('{ x: 135, y: 2115 }'), { x: 135, y: 2115 });
+      assert.deepEqual(parseCoords('{x:135,y:2115}'), { x: 135, y: 2115 });
+      assert.deepEqual(parseCoords('135, 2115'), { x: 135, y: 2115 });
+      assert.deepEqual(parseCoords('135 2115'), { x: 135, y: 2115 });
+      assert.deepEqual(parseCoords('{ "x": 1, "y": 2 }'), { x: 1, y: 2 });
+      assert.equal(parseCoords('热榜'), null);
+      assert.equal(parseCoords(''), null);
+    });
+
+    test('未声明 allowCoords：坐标步报解析错，不再静默降级为 ai', () => {
+      // 回归：旧行为把 "tap: { x, y }" 整行当 ai 任务文本喂模型，点击从未发生且无告警
+      assert.throws(() => parseCaseText('steps:\n  - tap: { x: 135, y: 2115 }\n'), /坐标步骤[\s\S]*allowCoords/);
+      const src = 'steps:\n  - tap: { x: 135, y: 2115 }\n';
+      assert.throws(() => parseCaseText(src), (e) => e.name === 'CaseParseError');
+    });
+
+    test('声明 allowCoords: true：解析出 {type:tap,x,y}，不再被当任务文本', () => {
+      const c = parseCaseText('allowCoords: true\nsteps:\n  - tap: { x: 135, y: 2115 }\n  - sleep: 1\n');
+      assert.equal(c.allowCoords, true);
+      assert.equal(c.steps.length, 2);
+      assert.deepEqual(c.steps[0], { type: 'tap', x: 135, y: 2115 });
+      assert.equal(c.steps[1].type, 'sleep');
+    });
+
+    test('allowCoords 写 false 等同未声明（仍拒绝）', () => {
+      assert.throws(() => parseCaseText('allowCoords: false\nsteps:\n  - tap: { x: 1, y: 2 }\n'), /坐标步骤/);
+    });
+
+    test('CLI --allow-coords 覆盖：无 YAML 声明也放行，且优先级高于 YAML false', () => {
+      const a = parseCaseText('steps:\n  - tap: { x: 1, y: 2 }\n', { source: 'cli.yaml', allowCoords: true });
+      assert.equal(a.allowCoords, true);
+      assert.deepEqual(a.steps[0], { type: 'tap', x: 1, y: 2 });
+      const b = parseCaseText('allowCoords: false\nsteps:\n  - tap: { x: 1, y: 2 }\n', { source: 'y.yaml', allowCoords: true });
+      assert.equal(b.allowCoords, true, 'CLI true 压过 YAML false');
+    });
+
+    test('tap 传语义文本：报错并指引用 aiTap（该命令只收坐标）', () => {
+      assert.throws(() => parseCaseText('allowCoords: true\nsteps:\n  - tap: 热榜\n'), /只接受坐标[\s\S]*aiTap/);
+    });
+
+    test('未知命令 + 坐标形态：响亮报错（不静默当任务文本）', () => {
+      assert.throws(() => parseCaseText('steps:\n  - longpress: { x: 10, y: 20 }\n'), /未知步骤命令/);
+    });
+
+    test('buildToolCall：坐标 tap → point_tap（坐标为 number）', () => {
+      assert.deepEqual(buildToolCall({ type: 'tap', x: 135, y: 2115 }), { tool: 'point_tap', params: { x: 135, y: 2115 } });
+      // 字符串数值也归一为 number
+      assert.deepEqual(buildToolCall({ type: 'tap', x: '10', y: '20' }), { tool: 'point_tap', params: { x: 10, y: 20 } });
+      // 坐标缺失的 tap 不产出调用（不应悄悄点到 0,0）
+      assert.equal(buildToolCall({ type: 'tap' }), null);
+    });
+  });
+
   test('buildToolCall：引擎直执行步骤 → 工具调用', () => {
     assert.deepEqual(buildToolCall({ type: 'aiTap', text: '热榜' }), { tool: 'tap', params: { target: '热榜' } });
     assert.deepEqual(buildToolCall({ type: 'aiInput', text: '搜索框', value: 'Android' }),
@@ -372,3 +428,47 @@ test('interpolate：数组/对象值 JSON 序列化（data_extract rows）', () 
   assert.equal(interpolate('${rows}', vars), '[{"title":"a"},{"title":"b"}]');
   assert.equal(interpolate('${n}', vars), '3');
 });
+
+  // —— 显式 loop 参数（resolveLoopPlan，评审 #1①：引擎只读字段不猜词） ——
+  describe('显式 loop 参数与 resolveLoopPlan', () => {
+    test('解析：ai 步的 until/maxRounds/batch 参数行被收集（batch 新增 PARAM_KEYS）', () => {
+      const c = parseCaseText('steps:\n  - ai: 逐题作答\n    until: text=提交\n    maxRounds: 4\n    batch: false\n');
+      assert.equal(c.steps[0].type, 'ai');
+      assert.equal(c.steps[0].until, 'text=提交');
+      assert.equal(c.steps[0].maxRounds, '4', '装载期保持字符串（NUMBER_KEYS 不含 maxRounds，兼容 ${var} 插值）；数值归一在 resolveLoopPlan/引擎层');
+      assert.equal(c.steps[0].batch, 'false');
+    });
+
+    test('resolveLoopPlan：无信号 → null（不猜词即不循环）', () => {
+      assert.equal(resolveLoopPlan({ type: 'ai', text: '打开设置' }, '打开设置'), null);
+    });
+
+    test('resolveLoopPlan：显式参数优先——until 作终止标记、batch 缺省 false、maxRounds 生效', () => {
+      const p = resolveLoopPlan({ until: 'text=立即提交', maxRounds: 4, batch: false }, '任意文本（不含关键词也触发）');
+      assert.equal(p.source, 'explicit');
+      assert.equal(p.marker, 'text=立即提交');
+      assert.equal(p.batch, false);
+      assert.equal(p.maxRounds, 4);
+      // 显式但未声明 batch → 保守缺省 false（防"依次逐个"被催成整屏并行）
+      assert.equal(resolveLoopPlan({ until: '提交' }, 'x').batch, false);
+      // until 裸文本直接作 auto 链 selector
+      assert.equal(resolveLoopPlan({ until: '立即提交' }, 'x').marker, '立即提交');
+      // batch 字符串形态解析
+      assert.equal(resolveLoopPlan({ until: 'x', batch: 'true' }, 'x').batch, true);
+      assert.equal(resolveLoopPlan({ until: 'x', batch: 'off' }, 'x').batch, false);
+      // maxRounds 非法值钳制与缺省
+      assert.equal(resolveLoopPlan({ until: 'x', maxRounds: -3 }, 'x').maxRounds, 1);
+      assert.equal(resolveLoopPlan({ until: 'x' }, 'x').maxRounds, 10, '缺省 10（与旧循环上限制一致）');
+    });
+
+    test('resolveLoopPlan：keyword 兼容路径——批量话术维持、显式在场时压过关键词', () => {
+      const kw = resolveLoopPlan({ type: 'ai' }, '逐题作答直到出现「立即提交」按钮');
+      assert.equal(kw.source, 'keyword');
+      assert.equal(kw.batch, true, '兼容路径维持历史批量行为（存量语义不变）');
+      assert.equal(kw.maxRounds, 10);
+      // 显式 until 在场：source=explicit、until 压过引号提取
+      const both = resolveLoopPlan({ until: 'text=提交' }, '直到出现「别的」');
+      assert.equal(both.source, 'explicit');
+      assert.equal(both.marker, 'text=提交');
+    });
+  });

@@ -591,3 +591,24 @@ test('通道决策：uia2 超时（槽被占）→ 退避后重试成功，不�
   assert.equal(exec.calls.filter((c) => c.includes('uiautomator dump')).length, 0);
   await device.close();
 });
+
+test('inputText：ASCII 文本 yadb 回读失败 → input text 降级重试一次（评审 #16）', async () => {
+  const exec = makeExec(); // dump 回来输入框为空 → yadb 与降级路径都回读失败
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  const r = await device.inputText([16, 1140, 704, 1220], 'hello123');
+  assert.equal(r.ok, false, '降级后仍未回读到 → 失败语义不变');
+  assert.equal(r.strategy, 'input-text-fallback');
+  const fb = exec.calls.find((c) => c.includes('input text hello123'));
+  assert.ok(fb, '应尝试原生 input text 降级');
+  await device.close();
+});
+
+test('inputText：非 ASCII（中文）yadb 失败不降级（input text 对中文静默失败，§5.4.5）', async () => {
+  const exec = makeExec();
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  const r = await device.inputText([16, 1140, 704, 1220], '中文测试');
+  assert.equal(r.ok, false);
+  assert.equal(r.strategy, undefined);
+  assert.equal(exec.calls.some((c) => c.includes('input text ')), false, '中文不得走 input text');
+  await device.close();
+});

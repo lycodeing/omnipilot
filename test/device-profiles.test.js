@@ -47,3 +47,29 @@ test('自定义目录缺失该模块：报错带文件路径（便于排查）',
   const dir = mkdtempSync(join(tmpdir(), 'ask-prof3-'));
   await assert.rejects(() => loadProfile('nope', { dir }), /profile 加载失败/);
 });
+
+// —— resolveTiming：tap_each_row 两形态（selector/视觉）共用的时序优先级 ——
+// 统一前：视觉形态没接 profile，settle/maxRounds/verifyColor 在 visual-answer.js 另写一份
+// 缺省，与 questionnaire 预设数值分叉。此组测试锁住"显式参数 > profile > 内置缺省"。
+test('resolveTiming：无 profile 走内置缺省（与历史视觉形态行为一致）', async () => {
+  const { resolveTiming } = await import('../src/device/profiles/index.js');
+  assert.deepEqual(resolveTiming({}, null), { maxRounds: 60, verifyColor: 'auto', settleMs: 700 });
+  assert.deepEqual(resolveTiming(), { maxRounds: 60, verifyColor: 'auto', settleMs: 700 });
+});
+
+test('resolveTiming：profile 提供时序，显式参数优先于 profile', async () => {
+  const { resolveTiming } = await import('../src/device/profiles/index.js');
+  const prof = await loadProfile('questionnaire'); // settleMs:700 maxRounds:80 verifyColor:'auto'
+  // 全部来自 profile
+  assert.deepEqual(resolveTiming({}, prof), { maxRounds: 80, verifyColor: 'auto', settleMs: 700 });
+  // 显式参数压过 profile
+  assert.equal(resolveTiming({ maxRounds: 12 }, prof).maxRounds, 12);
+  assert.equal(resolveTiming({ verifyColor: '#FF0000' }, prof).verifyColor, '#FF0000');
+  // form 预设的 settleMs 生效
+  const form = await loadProfile('form');
+  assert.equal(resolveTiming({}, form).settleMs, 400);
+  // 非法 maxRounds（NaN/负数/小数）钳到 [1,∞) 的行为与旧 device 实现一致
+  assert.equal(resolveTiming({ maxRounds: NaN }, prof).maxRounds, 60, 'NaN 回退缺省');
+  assert.equal(resolveTiming({ maxRounds: -5 }, prof).maxRounds, 1, '负数钳到 1');
+  assert.equal(resolveTiming({ maxRounds: 7.9 }, prof).maxRounds, 7, '小数截断');
+});

@@ -33,6 +33,13 @@ export function resolveStrategy(family) {
   if (exact) return exact;
   const entries = [...custom.entries(), ...Object.entries(FAMILY_ALIASES)];
   for (const [k, s] of entries) if (f.startsWith(k)) return s;
-  for (const [k, s] of entries) if (f.includes(k)) return s;
+  // includes 模糊匹配已删（2026-11-10 评审 #15）："mygptx" 之类未知名曾凭子串静默误路由到
+  // gpt 策略。未命中返回 null——调用方走 probe 探测（probe.js inferFamily）或显式报错，不猜。
   return null;
 }
+
+// 探测代表集（评审 #15）：每个策略取 FAMILY_ALIASES 中首个登记的 family 作为代表，
+// 从 STRATEGIES 派生——新增策略时 probe 无需再同步登记（此前两处清单会漂移）。
+export const REPRESENTATIVES = Object.entries(STRATEGIES)
+  .map(([sid, strategy]) => [Object.entries(FAMILY_ALIASES).find(([, s]) => s === strategy)?.[0] ?? sid, strategy]);
+

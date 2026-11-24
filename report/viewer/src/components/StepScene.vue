@@ -146,7 +146,30 @@ const placeholderText = computed(() => {
         <div v-if="pointerStyle" class="scene-pointer" :style="pointerStyle"></div>
         <div v-if="pointerSpinning" class="scene-pointer-spin"><i class="scene-spinner"></i></div>
       </div>
-      <div v-else class="scene-placeholder">{{ placeholderText }}</div>
+      <div v-else class="scene-placeholder">
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+          <rect
+            x="3.5"
+            y="5"
+            width="17"
+            height="14"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+          />
+          <path
+            d="M3.5 15.5l4.6-4.2 3.6 3.3 3.4-3 5.4 4.6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <circle cx="9" cy="9.4" r="1.5" fill="currentColor" />
+        </svg>
+        <span>{{ placeholderText }}</span>
+      </div>
       <div class="subtitle">
         <span class="subtitle-title">{{ subtitle.title }}</span>
         <span v-if="subtitle.subTitle" class="subtitle-sub">{{ subtitle.subTitle }}</span>
@@ -161,7 +184,7 @@ const placeholderText = computed(() => {
   position: relative;
   width: 100%;
   height: 100%;
-  background: var(--stage, #15171c);
+  background: var(--stage, #f7f8fa);
   overflow: hidden;
 }
 .scene-stage {
@@ -224,12 +247,13 @@ const placeholderText = computed(() => {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #6b7686;
-  font-size: 13px;
-  letter-spacing: 2px;
-  background: repeating-linear-gradient(45deg, #171a20 0 14px, #14171c 14px 28px);
+  gap: 10px;
+  color: var(--text-4);
+  font-size: 12px;
+  letter-spacing: 0.08em;
 }
 .subtitle {
   position: absolute;
@@ -265,6 +289,28 @@ const placeholderText = computed(() => {
     padding: 24px 12px 10px;
     font-size: 13px;
     gap: 8px;
+  }
+}
+/* 桌面窄柱档：字幕改为两行（类型 + 目标），避免长文本被截成一行省略号 */
+@media (min-width: 1280px) {
+  .subtitle {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    padding: 30px 12px 10px;
+    font-size: 12px;
+    background: linear-gradient(rgba(10, 12, 16, 0), rgba(10, 12, 16, 0.93) 42%);
+  }
+  .subtitle-sub {
+    width: 100%;
+    font-size: 11.5px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    white-space: normal;
+    line-height: 1.45;
   }
 }
 </style>

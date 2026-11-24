@@ -79,7 +79,8 @@ report/
     "logTime": "2026-10-26T15:30:12+08:00",
     "tasks": [{
       "taskId": "3",                         // String(step.index)
-      "type": "tap",                         // step.type 原样：tap|input|swipe|key|assert|screenshot|sleep|extract|...
+      "type": "tap",                         // step.type 原样；词表单一来源 src/tools/vocab.js
+                                             //（25 契约工具名 + point_tap + sleep|net|aiWaitFor|answer_row；MCP 工具名为动态名，端上原样回退）
       "status": "finished",                  // ok→finished，其余→failed
       "thought": "模型思考原文，可为空串",
       "param": { "target": "电子相册" },      // 动作参数；assert 步为 { "text": "..." }
@@ -128,9 +129,9 @@ export function layoutScripts(scripts);   // → { segments, totalFrames, lastEf
 ### 3.2 `utils/buildReplayScripts.js`
 
 ```js
-export const ACTION_TYPES = ['tap','input','swipe','long_press','key','back','home','scroll'];
-export function typeLabel(type);          // 中文标签：tap→'点击' input→'输入' swipe→'滑动' assert→'断言'
-                                          // screenshot→'截图' sleep→'等待' extract→'提取' 其他→原样
+export const ACTION_TYPES = REPLAY_ACTION_TYPES;  // 从 @engine/vocab（src/tools/vocab.js）派生，不在 viewer 本地维护
+export function typeLabel(type);          // 中文标签，源 = STEP_LABELS（@engine/vocab）
+                                          // 未收录类型（MCP 动态工具名等）→ 原样回退
 export function buildReplayScripts(execution);   // execution = dump.executions[i] → AnimationScript[]
 ```
 

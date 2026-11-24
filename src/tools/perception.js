@@ -31,6 +31,16 @@ export function findBySelector(flat, sel) {
   return flat.find((n) => matchSelector(n, sel)) ?? null;
 }
 
+// 容器级多匹配（列表卡片每张一个 scope）：与 findBySelector 同源（matchNodeSelector 委托），
+// 替代 data.js 曾自造的 class= 字符串比较（评审 #14：绕过单一实现源，'#index=' 语义还被静默忽略）
+export function findAllBySelector(flat, sel) {
+  if (String(sel).startsWith('index=')) {
+    const n = findBySelector(flat, sel);
+    return n ? [n] : [];
+  }
+  return flat.filter((n) => matchSelector(n, sel));
+}
+
 function nodeSummary(n) {
   return { index: n.index, text: n.text, cls: n.cls, resourceId: n.resourceId, contentDesc: n.contentDesc, clickable: n.clickable, bounds: n.bounds, center: n.center };
 }

@@ -12,6 +12,11 @@ import { withLocateRetry, StepRollout } from './rollout.js';
 import * as state from './state.js';
 import * as net from '../net/profile.js';
 import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor, screenSignature } from './png.js';
+import { resolveTiming } from './profiles/index.js';
+import { classifyTransportError } from './errors.js';
+
+// uia2 退避预算（评审 #5/#6：时序常量命名成组，不再散落字面量）
+const UIA2_BACKOFF = { transientMs: 5_000, fatalMs: 60_000 };
 import { createUia2 } from './uia2.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
@@ -106,6 +111,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   const uia2 = uia2Inject ?? (exec ? null : createUia2({ adb, serial, log: (m) => console.warn('[uia2] ' + m) }));
   let uia2DeadUntil = 0;
   let lastUia2Error = '';
+  let lastUia2SlotFree = false; // 上次失败是否意味着"槽空闲、legacy 可走"（protocol/ensure 失败 → true）
   // 最近一次成功 dump 的树 hash：scroll 等只做**变化检测**的场景用它当对比基线，
   // 免掉一次 38-55s 的慢 dump（动画不改 a11y 树，跨时间复用安全；换 App 的动作清空）
   let lastTreeHash = null;
@@ -132,9 +138,17 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         throw new Error('uia2 无 hierarchy');
       } catch (e) {
         lastUia2Error = String(e?.message ?? e).slice(0, 100);
-        const transient = e?.status === undefined && /超时|连接|中断|ECONN|socket/i.test(lastUia2Error);
+        // 传输类判定（评审 #6）：结构化 e.kind/e.code 优先（classifyTransportError），
+        // message 正则仅兜底注入执行器/历史错误。e.status 非 undefined = HTTP 有应答
+        // （服务活着），不是传输故障——与旧 `e?.status === undefined` 守卫语义一致。
+        const kind = classifyTransportError(e);
+        const transient = e?.status === undefined && (kind === 'timeout' || kind === 'connection');
         uia2FailedTransiently = transient;
-        const backoffMs = transient ? 5_000 : 60_000;
+        // 槽空闲判定：protocol（HTTP 有应答但非 200，如 500）= 服务活着但 UiAutomation 没注册上
+        // → 槽空闲；ensure 失败（'uia2 不可用'）= 服务没起来 → 槽也空闲。其余（timeout/connection/
+        // 无 hierarchy）= 服务活着持槽 → legacy 是死路。
+        lastUia2SlotFree = kind === 'protocol' || /uia2 不可用/.test(lastUia2Error);
+        const backoffMs = transient ? UIA2_BACKOFF.transientMs : UIA2_BACKOFF.fatalMs;
         uia2DeadUntil = Date.now() + backoffMs;
         console.warn(`[uia2] 不可用（${lastUia2Error}），${Math.round(backoffMs / 1000)}s 内走 legacy dump 通道`);
       }
@@ -154,7 +168,9 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // "瞬时报错"，导致"有应答但无树"（无 hierarchy/会话 id 缺失/JSON 解析失败——服务明显
     // 活着=槽被占）也掉进 140s 的注定 legacy 死路。注释判据与实现对齐到同一句话。
     // lastUia2Error 跨调用保留：跳过 uia2 尝试（退避期内）的调用也能凭上次的失败类型入守卫。
-    const slotHeldError = lastUia2Error && !/建会话失败: 500/.test(lastUia2Error) && !/uia2 不可用/.test(lastUia2Error);
+    // 槽判定（评审 #6）：结构化 e.kind === 'protocol'（uia2 建会话 HTTP 有应答但非 200）
+    // 即"服务活着、槽空闲"；message 正则保留兜底注入/历史错误。
+    const slotHeldError = lastUia2Error && !lastUia2SlotFree && !/uia2 不可用/.test(lastUia2Error);
     if (uia2 && slotHeldError) {
       const pid = await uia2.serverPid().catch(() => null);
       if (pid) {
@@ -350,14 +366,28 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         if (doClear) await yadb.clearAndType(want);
         else await yadb.type(want);
         beforeAction();
-        const tree = await dumpTree({ fresh: true }); // 回读校验强制用新树（§5.4.5）
-        const readBack = readTextAt(flattenNodes(tree.nodes), xy);
+        let tree = await dumpTree({ fresh: true }); // 回读校验强制用新树（§5.4.5）
+        let readBack = readTextAt(flattenNodes(tree.nodes), xy);
+        // ASCII 降级（评审 #16）：yadb 依赖设备 ABI/app_process，vendor 二进制与设备 ABI
+        // 不符时 inputText 全挂且无替代路径。纯 ASCII 可走原生 `input text` 重试一次
+        //（空格 %s、shell 元字符转义）；非 ASCII 不降级（input text 对中文静默失败，§5.4.5）。
+        let usedFallback = false;
+        if (readBack !== want && /^[\x20-\x7E]+$/.test(want)) {
+          const escaped = want.replace(/([\\'"`$;&<>|()*?~[\]{}#%!])/g, '\\$1').replace(/ /g, '%s');
+          await adb.shell(`input text ${escaped}`).catch(() => {});
+          usedFallback = true;
+          beforeAction();
+          tree = await dumpTree({ fresh: true });
+          readBack = readTextAt(flattenNodes(tree.nodes), xy);
+        }
         const ok = readBack === want;
-        return {
+        const res = {
           ok,
           readBack,
           error: ok ? null : readBack == null ? '回读失败：未在输入位置找到节点' : `回读不一致: 期望「${text}」实际「${readBack}」`,
+          ...(usedFallback ? { strategy: 'input-text-fallback' } : {}),
         };
+        return res;
       } catch (e) {
         return { ok: false, readBack: null, error: String(e?.message ?? e) };
       }
@@ -498,14 +528,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           return result;
         }
       }
-      const effVerifyColor = verifyColor ?? prof?.verifyColor ?? 'auto';
+      // 时序优先级统一走 profiles.resolveTiming（selector/视觉两形态同款）：显式参数 > profile > 内置缺省
+      const { maxRounds: maxRoundsEff, verifyColor: effVerifyColor, settleMs } = resolveTiming({ maxRounds, verifyColor }, prof);
       const expectedColor = effVerifyColor === 'auto' || effVerifyColor == null ? null : (Array.isArray(effVerifyColor) ? effVerifyColor : parseHexColor(effVerifyColor));
       if (effVerifyColor !== 'auto' && effVerifyColor != null && !expectedColor) {
         result.error = `verifyColor 无法解析: ${effVerifyColor}（应为 '#RRGGBB' 或 [r,g,b] 或 'auto'）`;
         return result;
       }
-      const settleMs = Number.isFinite(prof?.settleMs) ? prof.settleMs : 700;
-      const maxRoundsEff = Math.max(1, Math.trunc(Number(maxRounds ?? prof?.maxRounds ?? 60)) || 60);
       // 就绪等待预算（2026-11-02 实证）：调用方往往在"点进问卷"的同一步里紧接着调本工具，
       // 此时页面可能还在转场/首屏渲染，树里**一行都没有**。旧实现见到 0 行立刻按"无行可答"
       // 收尾返回 ok（实测 11s 就 ok 退出，整轮其余断言全灭）。改为：从未 tap 过且树中
@@ -540,8 +569,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
             const png = decodePng(buffer);
             const b = p.bounds;
             const cx = p.center[0]; const cy = p.center[1];
-            const rx = b ? Math.max(4, Math.round((b[2] - b[0]) * 0.2)) : 22;
-            const ry = b ? Math.max(4, Math.round((b[3] - b[1]) * 0.2)) : 22;
+            // 无 bounds 兜底采样半径：屏宽 2%（1080 宽 ≈ 22px，比例化适配其它分辨率，评审 #7）
+            const sz = await getSize().catch(() => null);
+            const fallbackR = Math.max(4, Math.round((sz?.w ?? 1080) * 0.02));
+            const rx = b ? Math.max(4, Math.round((b[2] - b[0]) * 0.2)) : fallbackR;
+            const ry = b ? Math.max(4, Math.round((b[3] - b[1]) * 0.2)) : fallbackR;
             let hits = 0; let total = 0;
             for (const fx of [-1, 0, 1]) for (const fy of [-1, 0, 1]) {
               const px = pixelAt(png, cx + fx * rx, cy + fy * ry);
@@ -596,10 +628,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           return result;
         }
         const size = await getSize().catch(() => null);
-        const h = size?.h ?? 2400; // getSize 失败时的兜底屏高（常见机型统计值；size=null 时 vis 已跳过在屏检查）
+        // size=null 时 vis 已短路跳过在屏检查——不需要"兜底屏高"假值（评审 #7 移除 ?? 2400）
         // 零面积（隐藏预渲染层 bounds=[0,0,0,0]）先排除，再看中心点是否在屏
         const areaOk = (n) => Array.isArray(n.bounds) && n.bounds.length === 4 && n.bounds[2] - n.bounds[0] > 0 && n.bounds[3] - n.bounds[1] > 0;
-        const vis = (n) => areaOk(n) && (!size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= h));
+        const vis = (n) => areaOk(n) && (!size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= size.h));
         // 行节点取 bounds 真实且带文本者（含滚出屏幕的行，保持文档序）：无文本行无法记账，
         // 进了集群会每轮重 tap 直到 maxRounds（漏答且无 error），故在入口排除。
         // rows 支持 | 交替（与 tap 同款方言）：多类行混排的表单一次表达
@@ -616,15 +648,16 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           }
         }
         // 选项带下界 = 下一行的 cy（下一行的选项必在其行 cy 之下，天然不含邻行选项）；
-        // 末行/无下一行时回退 cy+400。行距随 App 布局变化，不硬编码。
+        // 末行/无下一行时回退屏高比例（实测标定 1080×2340 上为 400px，按比例适配其它分辨率，评审 #7）
+        const bandFallback = Math.round((size?.h ?? 2340) * (400 / 2340));
         const bandEndOf = (i) => {
           const cl = clusters[i];
           const next = clusters[i + 1];
-          return next ? Math.max(next.cy - 8, cl.cy + 40) : cl.cy + 400;
+          return next ? Math.max(next.cy - 8, cl.cy + 40) : cl.cy + bandFallback;
         };
         const optsFor = (cl) => {
           const i = clusters.indexOf(cl);
-          const bandEnd = i >= 0 ? bandEndOf(i) : cl.cy + 400;
+          const bandEnd = i >= 0 ? bandEndOf(i) : cl.cy + bandFallback;
           return flat
             .filter((n) => tapSels.some((s) => matchNode(n, s)) && n.center[1] > cl.cy && n.center[1] <= bandEnd && areaOk(n))
             .sort((a, b) => a.center[0] - b.center[0]);
@@ -659,7 +692,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           let dir = 'down';
           if (firstUn) {
             const opts = optsFor(firstUn);
-            if (!opts.length && firstUn.cy >= 0 && firstUn.cy <= h) {
+            if (!opts.length && firstUn.cy >= 0 && (!size || firstUn.cy <= size.h)) {
               skipped.add(firstUn.text); // 在屏但选项集不匹配：记跳过，避免死循环
               continue;
             }

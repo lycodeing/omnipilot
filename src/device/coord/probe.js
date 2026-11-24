@@ -2,16 +2,8 @@
 // 结果记入 .ask/family-probe.json 供复用；多命中/全不命中 → 拒绝，不猜
 import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { STRATEGIES } from './registry.js';
+import { REPRESENTATIVES } from './registry.js';
 import { pointInBounds } from './strategy.js';
-
-// 四种互异策略 → 代表性 family
-const REPRESENTATIVES = [
-  ['glm', STRATEGIES.xy1000],
-  ['gemini', STRATEGIES.yx1000],
-  ['kimi', STRATEGIES.unitPoint],
-  ['gpt', STRATEGIES.absolute],
-];
 
 // raw 按各策略换算，换算结果（点或 bbox 中心）落在 knownBounds 内者计命中
 export function inferFamily(raw, size, knownBounds) {

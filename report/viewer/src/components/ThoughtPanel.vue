@@ -74,18 +74,6 @@ const timingText = computed(() => {
   flex: 1;
   overflow: auto;
 }
-.panel-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.panel-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-1);
-}
 .panel-task {
   padding: 0 7px;
   border-radius: var(--radius-chip);

@@ -1,15 +1,16 @@
 // dump task → 动画脚本编排（DESIGN.md §19.8.1，契约 §3.2）
 // 四类编排 + failed 附加帧 + End 段；不生成 0 帧 pointer 脚本，指针挂在动作 img 上。
 
+// 步骤类型词表单一来源（src/tools/vocab.js）：此前 ACTION_TYPES/LABELS 在本文件另写一份，
+// 缺 tap_each_row/point_tap/launch/terminate（这些动作类型静默降级成静帧），且含从未落盘的
+// assert/screenshot/extract 旧名。相对路径跨出 viewer 根是刻意的：同一份词表要同时被
+// vite build（报告产物）与根 npm test（node --test 直跑本文件）解析，vite 别名对后者不可见。
+import { STEP_LABELS, REPLAY_ACTION_TYPES } from '../../../../src/tools/vocab.js';
 import { DUR } from './playback-math.js';
 
-export const ACTION_TYPES = ['tap', 'input', 'swipe', 'long_press', 'key', 'back', 'home', 'scroll'];
-
-const LABELS = {
-  tap: '点击', input: '输入', swipe: '滑动', assert: '断言',
-  screenshot: '截图', sleep: '等待', extract: '提取',
-  answer_row: '作答', // tapEachRow 逐题取证子步骤（selector/视觉两模式共用）
-};
+// 兼容导出（原消费方按名引用）；REPLAY_ACTION_TYPES 在引擎侧同步测试守护
+export const ACTION_TYPES = REPLAY_ACTION_TYPES;
+const LABELS = STEP_LABELS;
 
 export function typeLabel(type) {
   if (type == null) return '';

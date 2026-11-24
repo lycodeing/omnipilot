@@ -39,10 +39,24 @@ export function baseUrlHash(url) {
 //     且从 disabled 迁移时"请求将失败"）。
 //   - 故对不能关闭的模型，最低档降到 'low'（官方允许的最低有效档），而不是 none。
 // 返回符合该模型能力的 thinkingLevelMap（Pi 的 thinkingLevel → 网关思考控制值）。
-export function buildThinkingLevelMap(name = '') {
+
+// 模型能力表（2026-11-10 评审 #8）：家族级**协议能力**（思考可否关闭/最低档位）收敛于此，
+// 与 device/coord 的家族策略表同款范式——新家族加一行，不碰引擎逻辑。此前 glm-5.3 正则
+// 内联在 buildThinkingLevelMap 里，家族知识散落。首条 match 命中即用；未命中走缺省能力。
+const MODEL_CAPABILITIES = [
   // GLM-5.3 / 5.3-Flash / 5.3-FlashX：思考不可关闭，最低只到 low
-  const glm53 = /^glm-5\.3(-flash|-flashx)?$/i.test(String(name).trim());
-  const minEffort = glm53 ? 'low' : 'none';
+  { match: /^glm-5\.3(-flash|-flashx)?$/i, canDisableThinking: false, minEffort: 'low' },
+];
+const DEFAULT_CAPABILITIES = { canDisableThinking: true, minEffort: 'none' };
+
+export function modelCapabilities(name = '') {
+  const n = String(name).trim();
+  return MODEL_CAPABILITIES.find((c) => c.match.test(n)) ?? DEFAULT_CAPABILITIES;
+}
+
+export function buildThinkingLevelMap(name = '') {
+  const caps = modelCapabilities(name);
+  const minEffort = caps.canDisableThinking ? 'none' : caps.minEffort;
   // 中/高档一律置 null（不允许出现、会被钳制），保证 agent 循环不会自发长思考（省时间与 token）
   return {
     off: minEffort,

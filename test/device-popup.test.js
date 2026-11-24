@@ -106,3 +106,106 @@ test('detectDialog：树根 pkg 是系统弹窗包 → 从树即可判弹窗（�
   assert.equal(r.reason, 'foreground-is-system-dialog');
   assert.equal(fgCalls, 0);
 });
+
+// —— 弹窗族 registry（2026-11-10 通用性评审）：locale 文案包 + 复合判据 ——
+// 此前两份中文词表内联：英文设备检测永不命中、dismiss 盲按 back 且无告警；
+// 内嵌检测纯词表匹配会把"您需同意…"静态文案/合法协议页误判成权限框自动点掉。
+import { POPUP_WORD_PACKS, resolvePopupTexts } from '../src/device/popup.js';
+
+test('resolvePopupTexts：完整 tag / 语言前缀 / 未识别 locale 并集兜底', () => {
+  assert.equal(resolvePopupTexts('zh-CN'), POPUP_WORD_PACKS.zh);
+  assert.equal(resolvePopupTexts('zh_CN'), POPUP_WORD_PACKS.zh);
+  assert.equal(resolvePopupTexts('en-US'), POPUP_WORD_PACKS.en);
+  assert.equal(resolvePopupTexts('en'), POPUP_WORD_PACKS.en);
+  // 未识别 locale：全部包并集（宁可多候选，不可静默全盲），zh 在前保持历史优先序
+  const fr = resolvePopupTexts('fr-FR');
+  assert.ok(fr.allowTexts.includes('允许') && fr.allowTexts.includes('Allow'));
+  assert.ok(fr.allowTexts.indexOf('允许') < fr.allowTexts.indexOf('Allow'));
+  const empty = resolvePopupTexts('');
+  assert.ok(empty.detectTexts.length >= POPUP_WORD_PACKS.zh.detectTexts.length + POPUP_WORD_PACKS.en.detectTexts.length);
+});
+
+test('词表包纪律：detectTexts ⊆ allowTexts（检测子集必可点）且不含泛化确认词', () => {
+  for (const [lang, p] of Object.entries(POPUP_WORD_PACKS)) {
+    for (const d of p.detectTexts) {
+      assert.ok(p.allowTexts.includes(d), `${lang}.detectTexts "${d}" 不在 allowTexts 中`);
+    }
+    // '确定/OK/继续' 是普通 App 按钮常见文案，进 detect 会把协议页/支付确认误判为权限框
+    assert.ok(!p.detectTexts.some((t) => ['确定', '知道了', '好的', 'OK', 'Continue', 'Got it'].includes(t)), `${lang}.detectTexts 混入泛化确认词`);
+  }
+});
+
+test('detectDialog：en 设备（getProp）识别英文权限框；zh 文案在 en 包下不误报', async () => {
+  const device = {
+    getProp: async (n) => (n === 'persist.sys.locale' ? 'en-US' : ''),
+    foreground: async () => ({ package: 'com.daimajia.gold', activity: 'Main' }),
+    dumpTree: async () => ({ nodes: [{ index: 0, text: 'Allow', cls: 'Button', resourceId: '', contentDesc: '', clickable: true, bounds: [0, 0, 10, 10], children: [] }] }),
+  };
+  const r = await detectDialog(device);
+  assert.equal(r.detected, true);
+  assert.equal(r.reason, 'allow-button-visible');
+
+  const zhOnly = {
+    getProp: async () => 'en-US',
+    foreground: async () => ({ package: 'com.daimajia.gold', activity: 'Main' }),
+    dumpTree: async () => ({ nodes: [{ index: 0, text: '允许', cls: 'Button', resourceId: '', contentDesc: '', clickable: true, bounds: [0, 0, 10, 10], children: [] }] }),
+  };
+  const r2 = await detectDialog(zhOnly);
+  assert.equal(r2.detected, false, 'en locale 下 zh 文案不应触发内嵌检测');
+});
+
+test('复合判据：不可点链上的权限文案（静态段落/协议页）不再误报', async () => {
+  const device = {
+    foreground: async () => ({ package: 'com.daimajia.gold', activity: 'Main' }),
+    dumpTree: async () => ({ nodes: [{
+      index: 0, text: '', cls: 'TextView', resourceId: '', contentDesc: '', clickable: false, bounds: [0, 0, 10, 10],
+      children: [{ index: 1, text: '您需要同意隐私政策后才能继续使用', cls: 'TextView', resourceId: '', contentDesc: '', clickable: false, bounds: [0, 0, 10, 10], children: [] }],
+    }] }),
+  };
+  const r = await detectDialog(device);
+  assert.equal(r.detected, false, '纯文案（整链不可点）不应判为权限框');
+});
+
+test('复合判据：叶子不可点但祖先可点（WebView 常态）仍可检出', async () => {
+  const device = {
+    foreground: async () => ({ package: 'com.daimajia.gold', activity: 'Main' }),
+    dumpTree: async () => ({ nodes: [{
+      index: 0, text: '', cls: 'View', resourceId: '', contentDesc: '', clickable: true, bounds: [0, 0, 10, 10],
+      children: [{ index: 1, text: '允许', cls: 'TextView', resourceId: '', contentDesc: '', clickable: false, bounds: [0, 0, 10, 10], children: [] }],
+    }] }),
+  };
+  const r = await detectDialog(device);
+  assert.equal(r.detected, true);
+});
+
+test('ASK_POPUP_LOCALE 覆盖：跳过 getprop，强制指定词表', async () => {
+  process.env.ASK_POPUP_LOCALE = 'en';
+  try {
+    const device = {
+      // 故意不实现 getProp：覆盖生效时不应尝试读取
+      foreground: async () => ({ package: 'com.daimajia.gold', activity: 'Main' }),
+      dumpTree: async () => ({ nodes: [{ index: 0, text: 'Allow', cls: 'Button', resourceId: '', contentDesc: '', clickable: true, bounds: [0, 0, 10, 10], children: [] }] }),
+    };
+    const r = await detectDialog(device);
+    assert.equal(r.detected, true);
+  } finally {
+    delete process.env.ASK_POPUP_LOCALE;
+  }
+});
+
+test('dismissDialog：en 设备按 en 包点按（优先长语）', async () => {
+  const clicked = [];
+  const device = {
+    getProp: async () => 'en-US',
+    foreground: async () => ({ package: 'com.google.android.permissioncontroller', activity: 'x' }),
+    dumpTree: async () => ({ nodes: [] }),
+    locate: async (t) => (t === 'Allow only while using the app' || t === 'Allow'
+      ? { ok: true, bounds: [0, 0, 10, 10] } : { ok: false, bounds: null }),
+    tap: async (b) => { clicked.push(b); return { ok: true }; },
+    waitIdle: async () => ({ stable: true }),
+  };
+  const r = await dismissDialog(device);
+  assert.equal(r.ok, true);
+  assert.equal(r.clicked, 'Allow only while using the app', '长语优先（对齐 zh 包 始终允许>允许 的语义）');
+  assert.equal(clicked.length, 1);
+});

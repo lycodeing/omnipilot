@@ -5,10 +5,25 @@ const RULES = [
   {
     id: 'pixel-coords',
     level: 'error',
-    test: (line) =>
-      /\b(input\s+(tap|swipe)\s+[-\d]+\s+[-\d]+|input\s+tap\s*\{?\s*["']?\d+\s*,\s*\d+)/i.test(line) ||
-      /(?:^|[^\d.])-?\d{3,}\s*[,，]\s*-?\d{3,}(?:[^\d.]|$)/.test(line.replace(/[「」【】]/g, ' ')),
-    message: '出现 adb 原生 input tap/swipe 像素坐标或文本含像素坐标（2026-09-24 裁定：禁止裸坐标）',
+    // 2026-09-24 裁定：禁止把坐标写进用例。用例顶层声明 allowCoords: true 时放行（DESIGN.md:449 逃生口）。
+    // 形态覆盖三档：adb 原生 input tap/swipe、文本裸坐标对、以及步骤命令的 { x: N, y: N } 对象形态
+    // ——最后一档此前漏网（正则要求两个三位数之间是裸逗号，`{ x: 135, y: 2115 }` 中间隔着 `y:`），
+    // 导致 learning-daily-recommend.yaml 的两步坐标点击 lint 报 0 error 却静默失效。
+    test: (line, allLines) => {
+      // 步骤命令对象形态：`- tap: { x: 135, y: 2115 }`（键名 x/y，值 1 位以上数字）
+      const isCoordStep = /^\s*-\s*[A-Za-z][\w-]*\s*[:：]\s*\{[^}]*["']?x["']?\s*[:：]\s*-?\d+[^}]*["']?y["']?\s*[:：]\s*-?\d+/i.test(line);
+      // 逃生口只对"坐标步骤"生效：顶层 allowCoords: true 时放行 `tap: { x, y }`。
+      // 其余形态（尤其 ai: 文本里的裸 `input tap 512 760`）仍拦——那是把 adb 命令写进任务描述，
+      // 声明 allowCoords 不该把它一起放过。
+      if (isCoordStep && /(?:^|\n)\s*allowCoords\s*[:：]\s*(?:true|yes|on|1)\s*$/im.test((allLines ?? []).join('\n'))) return false;
+      // allLines 是整份文本的行数组（lintCaseText 传 lines）
+      return (
+        isCoordStep ||
+        /\b(input\s+(tap|swipe)\s+[-\d]+\s+[-\d]+|input\s+tap\s*\{?\s*["']?\d+\s*,\s*\d+)/i.test(line) ||
+        /(?:^|[^\d.])-?\d{3,}\s*[,，]\s*-?\d{3,}(?:[^\d.]|$)/.test(line.replace(/[「」【】]/g, ' '))
+      );
+    },
+    message: '出现 adb 原生 input tap/swipe 像素坐标或文本含像素坐标（2026-09-24 裁定：禁止裸坐标；确需请用顶层 allowCoords: true）',
   },
   {
     id: 'platform-fragment',
@@ -45,15 +60,24 @@ const RULES = [
     id: 'inferred-assert',
     level: 'warn',
     // 仅对断言行生效：规则语义是"断言含推断式"，命中 ai:/aiTap: 等步骤的描述文本属误报
-    // （外部框架用例的拖动/滚动描述常含"已进入/跳转到"字样，非断言）
-    test: (line) => /(aiAssert|assert|断言)/.test(line) && /(已进入|已跳转到|成功进入了?|导航到了?)\s*\S{0,10}(页|界面|页面)/.test(line),
+    // （外部框架用例的拖动/滚动描述常含"已进入/跳转到"字样，非断言）。
+    // 中英双语（2026-11-10 评审 #9）：此前纯中文词表对英文用例零覆盖（静默豁免）。
+    test: (line) => /(aiAssert|assert|断言)/.test(line) && (
+      /(已进入|已跳转到|成功进入了?|导航到了?)\s*\S{0,10}(页|界面|页面)/.test(line)
+      || /(navigated to|entered the|redirected to|now on the)\s*[\w\s]{0,16}(page|screen|dialog)/i.test(line)
+    ),
     message: '断言含推断式"已进入 XX 页"，应描述当前屏幕可见元素',
   },
   {
     id: 'universal-assert',
     level: 'warn',
-    // 仅对断言行生效：步骤描述里的"没有变化/有变化"（如拖动到底判定）不是断言判据
-    test: (line) => /(aiAssert|assert|断言)/.test(line) && /(每个|所有|全部)[\u4e00-\u9fa5A-Za-z0-9_]{0,12}(都|均)|红色|绿色|蓝色|白色|黑色|已变化|有变化/.test(line),
+    // 仅对断言行生效：步骤描述里的"没有变化/有变化"（如拖动到底判定）不是断言判据。
+    // 中英双语：全称量词/颜色/"已变化"判据同源脆弱（踩坑清单 §1）
+    test: (line) => /(aiAssert|assert|断言)/.test(line) && (
+      /(每个|所有|全部)[\u4e00-\u9fa5A-Za-z0-9_]{0,12}(都|均)|红色|绿色|蓝色|白色|黑色|已变化|有变化/.test(line)
+      || /\ball\b[\w\s]{0,24}\b(are|have|has)\b/i.test(line)
+      || /\b(red|green|blue|white|black)\b/i.test(line)
+    ),
     message: '断言含全称量词/颜色词/"已变化"类脆弱判据（踩坑清单 §1）',
   },
   {
@@ -62,11 +86,12 @@ const RULES = [
     test: (line, allLines, idx) => {
       const isAssert = /(assert|aiAssert|断言)/.test(line);
       if (!isAssert || idx === 0) return false;
-      // 剥掉否定语境（"不要点击/勿启动"等）再判定，否则"不要点击任何内容"这类
-      // 防护性叮嘱会误报为点击动作（实测 m1-search.yaml 误报）
-      const prev = (allLines[idx - 1] || '').replace(/(不要|勿|禁止|严禁|切忌|切莫|别|不能|不得)[\u4e00-\u9fa5]{0,6}?(点击|跳转|启动|navigate|launch|tap)/g, '');
-      // 点击/跳转类动作：旧名（tap/click/点击）+ 新引擎名（aiTap/aiInput/launch/…）
-      if (!/(tap|click|点击|跳转|navigate|launch|启动|aiTap|aiInput|aiLongPress|aiKeyboardPress)/.test(prev)) return false;
+      // 剥掉否定语境（"不要点击/勿启动/Don't click"等）再判定，否则防护性叮嘱会误报为点击动作
+      const prev = (allLines[idx - 1] || '')
+        .replace(/(不要|勿|禁止|严禁|切忌|切莫|别|不能|不得)[\u4e00-\u9fa5]{0,6}?(点击|跳转|启动|navigate|launch|tap)/g, '')
+        .replace(/\b(do not|don't|never|avoid|without)\b[\w\s]{0,10}?\b(click|tap|launch|open|navigate|press)\b/gi, '');
+      // 点击/跳转类动作：旧名（tap/click/点击）+ 新引擎名（aiTap/aiInput/launch/…）+ 英文动词
+      if (!/(tap|click|点击|跳转|navigate|launch|启动|aiTap|aiInput|aiLongPress|aiKeyboardPress|\bopen\b|\bpress\b)/.test(prev)) return false;
       // 前一行是点击且之间没有 wait_idle/sleep/aiWaitFor，且当前行之前也没有
       // （aiWaitFor 是等待步骤：外部框架风格用例常用它分隔点击与断言）
       for (let j = idx - 1; j >= 0 && j >= idx - 2; j--) {
@@ -75,6 +100,20 @@ const RULES = [
       return true;
     },
     message: '点击/跳转后紧跟断言而中间无 wait_idle/sleep（转场期断言必挂）',
+  },
+  {
+    id: 'target-package-missing',
+    level: 'warn',
+    // 评审 #4：pregrant 此前从步骤 JSON 抓第一个 com.*（断言/URL 可能抢先误中）。用例含
+    // launch/terminate 而顶层未声明 targetPackage 时提示显式声明，使包名解析可审计。
+    // 只在**首个** launch/terminate 行报一次（不逐行重复刷屏）。
+    test: (line, allLines, idx) => {
+      if (!/^\s*-\s*(launch|terminate)\s*[:：]/.test(line)) return false;
+      if (/(?:^|\n)\s*targetPackage\s*[:：]/.test((allLines ?? []).join('\n'))) return false;
+      const first = (allLines ?? []).findIndex((l) => /^\s*-\s*(launch|terminate)\s*[:：]/.test(l));
+      return first === idx;
+    },
+    message: '用例含 launch/terminate 但顶层未声明 targetPackage：--pregrant 将从步骤文本猜测包名（可能误中），建议顶层声明 targetPackage: <包名>',
   },
 ];
 

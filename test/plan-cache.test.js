@@ -6,12 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { planKey, createPlanCache } from '../src/session/plan-cache.js';
 
-test('planKey：同参数同键；步骤文本/序号/用例任一变化即换键', () => {
+test('planKey：同参数同键；文本/用例变化换键；stepIndex 不参与键（评审 #11：插删步骤不错位失效）', () => {
   const a = planKey({ caseId: 'c1', stepIndex: 3, stepText: '点击健康自测' });
   assert.equal(a, planKey({ caseId: 'c1', stepIndex: 3, stepText: '点击健康自测' }));
   assert.notEqual(a, planKey({ caseId: 'c1', stepIndex: 3, stepText: '点击卒中评估' }));
-  assert.notEqual(a, planKey({ caseId: 'c1', stepIndex: 4, stepText: '点击健康自测' }));
   assert.notEqual(a, planKey({ caseId: 'c2', stepIndex: 3, stepText: '点击健康自测' }));
+  // 位置无关：步骤前插删一行（stepIndex 漂移）后同文本步骤仍命中——plan 是语义动作
+  //（target 文本、回放时重新定位），同文本共享计划安全
+  assert.equal(a, planKey({ caseId: 'c1', stepIndex: 4, stepText: '点击健康自测' }));
 });
 
 test('put/get 往返 + 跨实例持久化（同 stateDir 重建后仍可读）', () => {

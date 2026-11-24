@@ -81,37 +81,9 @@ function pct(v) {
   flex: 1;
   overflow: auto;
 }
-.panel-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.panel-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-.panel-count {
-  padding: 0 7px;
-  border-radius: var(--radius-chip);
-  background: var(--neutral-weak);
-  color: var(--text-2);
-  font-size: 11px;
-  font-family: var(--font-mono);
-  line-height: 18px;
-}
 .panel-body {
   display: flex;
   flex-direction: column;
-}
-.panel-empty {
-  margin: 0;
-  padding: 14px 0;
-  text-align: center;
-  color: var(--text-3);
-  font-size: 12px;
 }
 .lane {
   display: flex;

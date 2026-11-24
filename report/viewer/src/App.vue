@@ -47,6 +47,18 @@ const modelBriefs = computed(() =>
 )
 const deviceSize = computed(() => (meta.device && isStr(meta.device.size) && meta.device.size) || '—')
 
+// 截图宽高比（桌面回放舱按此比例定宽）：优先 meta.device.size（"1080x2340"），
+// 解析不出时按竖屏手机 9:19.5 兜底。播放器据此把满宽舞台收成一根手机宽度的窄柱，
+// 横向空间让给详情区（2026-11-05 布局再平衡）。
+const stageAspect = computed(() => {
+  const s = meta.device && isStr(meta.device.size) ? meta.device.size.trim() : ''
+  const m = /^(\d+)\s*[x×*]\s*(\d+)$/i.exec(s)
+  if (!m) return 9 / 19.5
+  const w = Number(m[1])
+  const h = Number(m[2])
+  return w > 0 && h > 0 ? w / h : 9 / 19.5
+})
+
 // 总通过率（单任务即该 case 自身统计，§19.6）
 const passRate = computed(() => {
   let total = 0
@@ -80,8 +92,14 @@ const hasAssertions = computed(() => Array.isArray(data.assertions) && data.asse
 
 const statusText = computed(() => {
   const s = meta.status || 'unknown'
-  return { pass: '通过', fail: '失败', error: '错误', timeout: '超时' }[s] || s
+  // cancelled：recorder 侧 STATUSES 含该值（中断收尾），此前缺映射裸显英文
+  return { pass: '通过', fail: '失败', error: '错误', timeout: '超时', cancelled: '已取消' }[s] || s
 })
+
+// 桌面回放舱宽度：按截图宽高比算出的"手机柱"宽度上限（CSS 里再与 46vw 取小）
+const stageAspectStyle = computed(() => ({
+  '--stage-aspect': String(stageAspect.value),
+}))
 
 // 主题：默认浅色；深色 HUD 为可选模式，选择持久化（index.html 的内联脚本在挂载前
 // 应用 data-theme 防白闪）。切换即改 <html data-theme>，令牌层整体换肤。
@@ -153,33 +171,51 @@ function onSelectTask(executionIndex, taskId) {
             />
           </svg>
         </button>
-        <div class="nav-title">
-          <h1 class="nav-name">{{ meta.groupName || '未命名报告' }}</h1>
+        <div class="nav-id">
+          <div class="nav-title-row">
+            <h1 class="nav-name">{{ meta.groupName || '未命名报告' }}</h1>
+            <span class="status-badge" :class="'status-' + (meta.status || 'unknown')">
+              <i class="badge-dot"></i>{{ statusText }}
+            </span>
+          </div>
           <span class="nav-sub">{{ meta.sdkVersion || '—' }} · {{ meta.deviceType || '—' }} · {{ deviceSize }}</span>
         </div>
-        <span class="status-badge" :class="'status-' + (meta.status || 'unknown')">
-          <i class="badge-dot"></i>{{ statusText }}
-        </span>
-        <button
-          class="theme-toggle"
-          type="button"
-          :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色 HUD 主题'"
-          :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色 HUD 主题'"
-          @click="toggleTheme"
-        >
-          <svg v-if="theme === 'dark'" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <circle cx="8" cy="8" r="3.2" fill="currentColor" />
-            <path
-              d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linecap="round"
-            />
-          </svg>
-          <svg v-else viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path d="M13.4 9.6A5.6 5.6 0 0 1 6.4 2.6a5.6 5.6 0 1 0 7 7Z" fill="currentColor" />
-          </svg>
-        </button>
+        <div class="nav-actions">
+          <div class="nav-stats">
+            <span class="nav-stat">
+              <span class="nav-stat-label">通过率</span>
+              <span class="nav-stat-value">{{ passRate }}</span>
+            </span>
+            <span class="nav-stat">
+              <span class="nav-stat-label">总耗时</span>
+              <span class="nav-stat-value mono">{{ formatDuration(meta.durationMs) }}</span>
+            </span>
+            <span v-if="modelBriefs.length" class="nav-stat">
+              <span class="nav-stat-label">模型</span>
+              <span v-for="(b, i) in modelBriefs" :key="i" class="model-chip">{{ b.name }}</span>
+            </span>
+          </div>
+          <button
+            class="theme-toggle"
+            type="button"
+            :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色 HUD 主题'"
+            :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色 HUD 主题'"
+            @click="toggleTheme"
+          >
+            <svg v-if="theme === 'dark'" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <circle cx="8" cy="8" r="3.2" fill="currentColor" />
+              <path
+                d="M8 1.2v1.8M8 13v1.8M1.2 8H3M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+            </svg>
+            <svg v-else viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M13.4 9.6A5.6 5.6 0 0 1 6.4 2.6a5.6 5.6 0 1 0 7 7Z" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
         <div class="nav-tabs" role="tablist">
           <button
             type="button"
@@ -197,20 +233,6 @@ function onSelectTask(executionIndex, taskId) {
           >
             步骤
           </button>
-        </div>
-        <div class="nav-meta">
-          <span class="nav-stat">
-            <span class="nav-stat-label">通过率</span>
-            <span class="nav-stat-value">{{ passRate }}</span>
-          </span>
-          <span class="nav-stat">
-            <span class="nav-stat-label">总耗时</span>
-            <span class="nav-stat-value mono">{{ formatDuration(meta.durationMs) }}</span>
-          </span>
-          <span v-if="modelBriefs.length" class="nav-stat">
-            <span class="nav-stat-label">模型</span>
-            <span v-for="(b, i) in modelBriefs" :key="i" class="model-chip">{{ b.name }}</span>
-          </span>
         </div>
       </div>
     </header>
@@ -256,7 +278,7 @@ function onSelectTask(executionIndex, taskId) {
       </aside>
 
       <main class="main-area">
-        <section class="player-card">
+        <section class="player-card" :style="stageAspectStyle">
           <Player
             ref="playerRef"
             :execution="currentExecution"
@@ -264,18 +286,20 @@ function onSelectTask(executionIndex, taskId) {
             @task-change="onTaskChange"
           />
         </section>
-        <div class="detail-grid">
-          <section v-if="currentTask" class="detail-card">
-            <ThoughtPanel :task="currentTask" />
-          </section>
-          <section v-if="hasAssertions" class="detail-card">
+        <div class="detail-grid" :class="{ 'has-assert': hasAssertions }">
+          <div v-if="currentTask || hasNetwork || hasLocate" class="detail-col">
+            <section v-if="currentTask" class="detail-card card-thought">
+              <ThoughtPanel :task="currentTask" />
+            </section>
+            <section v-if="hasNetwork" class="detail-card card-network">
+              <NetworkLane :network-timeline="data.networkTimeline" :duration-ms="meta.durationMs" />
+            </section>
+            <section v-if="hasLocate" class="detail-card card-locate">
+              <LocateStats :tasks="currentExecutionTasks" />
+            </section>
+          </div>
+          <section v-if="hasAssertions" class="detail-card card-assert">
             <AssertionCard :assertions="data.assertions" />
-          </section>
-          <section v-if="hasNetwork" class="detail-card">
-            <NetworkLane :network-timeline="data.networkTimeline" :duration-ms="meta.durationMs" />
-          </section>
-          <section v-if="hasLocate" class="detail-card">
-            <LocateStats :tasks="currentExecutionTasks" />
           </section>
         </div>
       </main>
@@ -304,13 +328,24 @@ function onSelectTask(executionIndex, taskId) {
   border-bottom: 1px solid var(--border);
   padding: 0 16px;
 }
+/* 深色 HUD：顶栏底部一条青色渐变光线（浅色为 none） */
+.top-nav::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--nav-line);
+  pointer-events: none;
+}
 .nav-main {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: 6px 14px;
   min-height: var(--nav-h);
-  padding: 6px 0;
+  padding: 8px 0;
 }
 .nav-burger {
   flex: none;
@@ -330,43 +365,52 @@ function onSelectTask(executionIndex, taskId) {
   background: var(--bg-hover);
   color: var(--text-1);
 }
-.nav-title {
+/* 标识区：主标题 + 状态徽章一行，版本/设备一行（层级：名称 > 徽章 > 元信息） */
+.nav-id {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  gap: 1px;
+}
+.nav-title-row {
+  display: flex;
+  align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 .nav-name {
   margin: 0;
+  min-width: 0;
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
   color: var(--text-1);
-  text-shadow: var(--title-glow);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .nav-sub {
-  flex: none;
   font-size: 11px;
   font-family: var(--font-mono);
   color: var(--text-3);
   white-space: nowrap;
-  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
 }
 .status-badge {
   flex: none;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 24px;
+  height: 22px;
   padding: 0 10px;
   border-radius: var(--radius-chip);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   background: var(--neutral-weak);
   color: var(--neutral);
   border: 1px solid var(--border);
@@ -386,20 +430,64 @@ function onSelectTask(executionIndex, taskId) {
 .status-badge.status-pass {
   background: var(--pass-weak);
   color: var(--pass);
-  border: 1px solid rgba(52, 211, 153, 0.45);
-  box-shadow: var(--glow-pass);
+  border-color: transparent;
 }
 .status-badge.status-fail,
 .status-badge.status-error {
   background: var(--fail-weak);
   color: var(--fail);
-  border: 1px solid rgba(251, 113, 133, 0.45);
-  box-shadow: var(--glow-fail);
+  border-color: transparent;
 }
 .status-badge.status-timeout {
   background: var(--warn-weak);
   color: var(--warn);
-  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-color: transparent;
+}
+
+/* 右侧动作区：指标簇 + 分隔线 + 主题开关 */
+.nav-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.nav-stats {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding-right: 14px;
+  border-right: 1px solid var(--divider);
+}
+.nav-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  white-space: nowrap;
+}
+.nav-stat-label {
+  color: var(--text-3);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+.nav-stat-value {
+  color: var(--text-1);
+  font-weight: 650;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+.model-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 17px;
 }
 
 .theme-toggle {
@@ -407,8 +495,8 @@ function onSelectTask(executionIndex, taskId) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-ctl);
   background: var(--bg-card);
@@ -450,46 +538,6 @@ function onSelectTask(executionIndex, taskId) {
   box-shadow: var(--shadow-card);
 }
 
-/* 元信息条 */
-.nav-meta {
-  flex: none;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-}
-.nav-stat {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.nav-stat-label {
-  color: var(--text-3);
-  text-transform: uppercase;
-  font-size: 10px;
-  letter-spacing: 0.12em;
-}
-.nav-stat-value {
-  color: var(--accent);
-  font-weight: 700;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-.model-chip {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: var(--radius-chip);
-  border: 1px solid var(--accent-border);
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  background: var(--accent-weak);
-  color: var(--text-2);
-  font-size: 11px;
-}
-
 /* ---------- 主体 ---------- */
 .app-body {
   flex: 1;
@@ -504,7 +552,7 @@ function onSelectTask(executionIndex, taskId) {
   gap: 12px;
 }
 
-/* 侧栏 */
+/* 侧栏：与主卡同级的白色圆角面板（桌面静态 / 平板抽屉 / 手机 Tab 内容） */
 .side-pane {
   flex: none;
   width: var(--sidebar-w);
@@ -512,18 +560,25 @@ function onSelectTask(executionIndex, taskId) {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
 }
 .side-pane-head {
   flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 8px 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--divider);
 }
 .side-pane-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
 }
 .side-pane-count {
   padding: 0 8px;
@@ -532,6 +587,7 @@ function onSelectTask(executionIndex, taskId) {
   color: var(--text-2);
   font-size: 11px;
   font-family: var(--font-mono);
+  line-height: 18px;
 }
 .side-pane-close {
   display: none;
@@ -554,7 +610,7 @@ function onSelectTask(executionIndex, taskId) {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 4px 8px 0;
+  padding: 8px;
 }
 
 /* 主区：白色圆角大卡 */
@@ -570,8 +626,6 @@ function onSelectTask(executionIndex, taskId) {
   overflow: hidden;
 }
 .player-card {
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   flex: 1;
   min-height: 0;
   display: flex;
@@ -586,22 +640,23 @@ function onSelectTask(executionIndex, taskId) {
   border-top: 1px solid var(--divider);
   background: var(--bg-subtle);
 }
+/* 左列容器：窄屏下摊平为普通流（卡片直接进单/双列网格） */
+.detail-col {
+  display: contents;
+}
 .detail-card {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  padding: 12px 14px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   box-shadow: var(--shadow-card);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.2s ease;
 }
 .detail-card:hover {
-  border-color: var(--accent-border);
-  box-shadow: var(--shadow-card), 0 0 0 1px rgba(34, 211, 238, 0.12);
-  padding: 12px 14px;
+  border-color: var(--card-hover-border);
 }
 .detail-card > * {
   min-width: 0;
@@ -619,7 +674,10 @@ function onSelectTask(executionIndex, taskId) {
     bottom: 0;
     z-index: 60;
     width: min(320px, 86vw);
-    background: var(--bg-card);
+    border-radius: 0;
+    border-top: none;
+    border-bottom: none;
+    border-left: none;
     transform: translateX(-102%);
     transition: transform 0.22s ease;
     box-shadow: none;
@@ -628,18 +686,18 @@ function onSelectTask(executionIndex, taskId) {
     transform: none;
     box-shadow: var(--shadow-pop);
   }
-  .side-pane-head {
-    padding: 12px 12px 8px;
-    border-bottom: 1px solid var(--divider);
-  }
   .side-pane-close {
     display: inline-flex;
   }
-  .side-pane-body {
-    padding: 8px 10px 12px;
-  }
   .detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+  .detail-col {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
   }
 }
 @media (min-width: 768px) and (max-width: 899px) {
@@ -651,7 +709,7 @@ function onSelectTask(executionIndex, taskId) {
   display: none;
 }
 
-/* 桌面（≥1280）：双栏静态，视口内滚动 */
+/* 桌面（≥1280）：视口内滚动；左为按截图比例定宽的回放柱，右为详情区 */
 @media (min-width: 1280px) {
   .app {
     height: 100vh;
@@ -663,19 +721,69 @@ function onSelectTask(executionIndex, taskId) {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
-  .side-pane {
-    width: var(--sidebar-w);
-    background: transparent;
+  .app-body {
+    align-items: stretch;
   }
+  /* 主区横向两栏：回放柱（窄）+ 详情区（吃满剩余宽度） */
+  .main-area {
+    flex-direction: row;
+    gap: 10px;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    overflow: hidden;
+  }
+  /* 回放柱：宽度由截图宽高比决定（min: 260px，max: 46vw），高度撑满；
+     手机截图不再被塞进满宽横条，两侧空场归还给详情区 */
   .player-card {
+    flex: none;
+    width: clamp(260px, calc((100vh - var(--nav-h) - 56px) * var(--stage-aspect, 0.46)), 46vw);
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+  }
+  /* 详情区：占满右侧；两列各自独立滚动，长卡不把网格撑破 */
+  .detail-grid {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: stretch;
+    padding: 12px;
+    border: none;
+    border-radius: var(--radius-card);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-card);
+  }
+  .detail-col {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  /* 左列末卡撑满剩余高度，列内不留死区 */
+  .detail-col > .detail-card:last-child {
     flex: 1;
   }
-  .detail-grid {
-    max-height: 44%;
-    overflow-y: auto;
-    grid-template-columns: 1.25fr 1fr;
-    grid-auto-rows: minmax(0, auto);
-    align-content: start;
+  .detail-grid:not(.has-assert) {
+    grid-template-columns: 1fr;
+  }
+  /* 右列断言卡自身滚动，卡片高度跟随容器而非内容 */
+  .card-assert {
+    min-height: 0;
+    overflow: hidden;
+  }
+  /* 右列只有断言卡时让它撑满整列高度，避免卡下方留白 */
+  .detail-grid > .card-assert {
+    height: 100%;
   }
   .detail-card {
     overflow: hidden;
@@ -691,39 +799,39 @@ function onSelectTask(executionIndex, taskId) {
     padding: 0 12px;
   }
   .nav-main {
-    gap: 8px 10px;
+    gap: 6px 10px;
     padding: 8px 0;
   }
-  .nav-title {
-    flex: 1 1 100%;
+  .nav-id {
     order: 1;
+    flex: 1 1 auto;
   }
-  .nav-name {
-    font-size: 15px;
-    white-space: normal;
-    line-height: 1.35;
+  .nav-actions {
+    display: contents;
   }
-  .nav-sub {
-    white-space: normal;
-  }
-  .status-badge {
+  .theme-toggle {
     order: 2;
   }
   .nav-tabs {
     order: 3;
     display: inline-flex;
-    margin-left: auto;
   }
-  .nav-meta {
+  .nav-stats {
     order: 4;
     flex: 1 1 100%;
+    gap: 16px;
+    padding: 2px 0 4px;
+    border-right: none;
     overflow-x: auto;
-    flex-wrap: nowrap;
-    padding-bottom: 2px;
     scrollbar-width: none;
   }
-  .nav-meta::-webkit-scrollbar {
+  .nav-stats::-webkit-scrollbar {
     display: none;
+  }
+  .nav-stat {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
   }
   .nav-sub {
     display: none;
@@ -738,9 +846,16 @@ function onSelectTask(executionIndex, taskId) {
     width: 100%;
     transform: none;
     box-shadow: none;
+    border: none;
+    border-radius: 0;
+    background: transparent;
   }
   .side-pane-head {
     padding: 2px 4px 8px;
+    border-bottom: none;
+  }
+  .side-pane-body {
+    padding: 0;
   }
   .side-pane-close {
     display: none;
@@ -750,9 +865,6 @@ function onSelectTask(executionIndex, taskId) {
   }
   .app-body.at-steps .main-area {
     display: none;
-  }
-  .main-area {
-    background: var(--bg-card);
   }
   .detail-grid {
     grid-template-columns: 1fr;

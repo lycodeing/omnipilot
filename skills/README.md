@@ -11,6 +11,7 @@
 > ```
 >
 > 验证方法：`loader.skills` 应包含技能名（见 `docs/VERIFICATION-REPORT.md` 缺陷 #10）。
+> 同步已收敛为脚本：**`npm run skills:sync`**（替代上面的手工 cp）。
 
 ## 现有技能
 

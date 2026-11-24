@@ -1,6 +1,6 @@
 // 动作计划缓存（2026-11-04 业界调研落地，Midscene caching / AutoDroid-V2 思想）：
 // ai/aiAct 步的模型往返（单轮 wall 的 144-527s 大头）在重复执行同一用例时是纯浪费——
-// 同样的步骤文本 + 同样的页面 → 同样的工具调用。按（用例源 + 步骤序号 + 步骤文本 sha1）
+// 同样的步骤文本 + 同样的页面 → 同样的工具调用。按（用例源 + 步骤文本 sha1）
 // 缓存该步实际使用的工具调用，二次执行直接回放（0 模型往返）；回放失败（LOCATE_MISS
 // 等）由调用方自动回退模型规划并覆盖缓存条目。
 // 设计边界：只缓存"单工具调用且成功"的步——马拉松/多工具步的后续动作依赖中间页面
@@ -10,10 +10,13 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
-// 缓存键：用例身份 + 步骤位置 + 步骤文本摘要。步骤文本改动 → 键变 → 自然失效。
-export function planKey({ caseId, stepIndex, stepText }) {
+// 缓存键：用例身份 + 步骤文本摘要。步骤文本改动 → 键变 → 自然失效。
+// 键不含 stepIndex（2026-11-10 评审 #11）：plan 是**语义动作**（target 文本，回放时重新
+// 定位、不含坐标），同用例内两处相同文本步骤共享计划安全；而含 stepIndex 时，在步骤前
+// 插删一行会让同文本步骤错位 miss（缓存全量失效）。stepIndex 参数保留以兼容调用方，不参与键。
+export function planKey({ caseId, stepText } = {}) {
   const h = createHash('sha1').update(String(stepText ?? '')).digest('hex').slice(0, 10);
-  return `${caseId}::${stepIndex}::${h}`;
+  return `${caseId}::${h}`;
 }
 
 export function createPlanCache(stateDir, { maxEntries = 200 } = {}) {

@@ -3,6 +3,7 @@
 // ② hostPort 线性探测防碰撞（多设备并行哈希撞槽 → 串台读别的设备的树）；
 // ③ started 死变量删除；模块级 usedPorts 进程内去重。
 import http from 'node:http';
+import { withKind } from './errors.js';
 
 const DEVICE_PORT = 6790;
 const usedPorts = new Set(); // 进程内已占用 host 端口（--parallel 多设备防哈希碰撞）
@@ -30,7 +31,7 @@ function httpRaw(hostP, p, { method = 'GET', body = null, timeoutMs = 8000 } = {
         const chunks = [];
         res.on('data', (d) => chunks.push(d));
         res.on('error', (e) => { if (!settled) { settled = true; clearTimeout(deadline); reject(e); } });
-        res.on('aborted', () => { if (!settled) { settled = true; clearTimeout(deadline); reject(new Error(`uia2 连接中断: ${p}`)); } });
+        res.on('aborted', () => { if (!settled) { settled = true; clearTimeout(deadline); reject(withKind(new Error(`uia2 连接中断: ${p}`), 'connection')); } });
         res.on('end', () => { if (!settled) { settled = true; clearTimeout(deadline); resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }); } });
       },
     );
@@ -38,9 +39,9 @@ function httpRaw(hostP, p, { method = 'GET', body = null, timeoutMs = 8000 } = {
       if (settled) return;
       settled = true;
       try { req.destroy(); } catch { /* ignore */ }
-      reject(new Error(`uia2 超时(${timeoutMs}ms): ${p}`));
+      reject(withKind(new Error(`uia2 超时(${timeoutMs}ms): ${p}`), 'timeout'));
     }, timeoutMs);
-    req.on('error', (e) => { if (!settled) { settled = true; clearTimeout(deadline); reject(e); } });
+    req.on('error', (e) => { if (!settled) { settled = true; clearTimeout(deadline); reject(withKind(e, typeof e?.code === 'string' && e.code === 'ETIMEDOUT' ? 'timeout' : 'connection')); } });
     if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
     req.end();
   });
@@ -209,7 +210,7 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
           }
         }
       }
-      throw new Error(`uia2 建会话失败: ${r.status}`);
+      throw withKind(new Error(`uia2 建会话失败: ${r.status}`), 'protocol'); // 500=服务活但 UiAutomation 未注册（槽空闲），非传输故障
     }
     sessionFailures = 0;
     const j = JSON.parse(r.body);
