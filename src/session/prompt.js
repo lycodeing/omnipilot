@@ -103,10 +103,37 @@ export function assemblePrompt({
 
   const userLayer = layers.find((l) => l.name === 'L3-user');
   const total = layers.reduce((n, l) => n + l.content.length, 0);
-  if (total > budget && userLayer) {
-    const overflow = total - budget;
-    userLayer.content = trimMiddle(userLayer.content, Math.max(0, userLayer.content.length - overflow));
-    warnings.push(`系统提示词超预算（${total} > ${budget} 字符），已裁剪用户段中段`);
+  if (total > budget) {
+    // 裁剪优先级：L3-user（用户段，可牺牲）→ L1（引擎段）→ L2（安卓段，最后动）。
+    // 此前只在存在 L3 时裁 L3：L1+L2 本身就超预算时（引擎段或安卓段变长），
+    // 用户段被裁到 0 也补不齐缺口，且完全没有告警——预算契约形同虚设。
+    let remaining = total - budget;
+    if (userLayer && remaining > 0) {
+      const cut = Math.min(remaining, userLayer.content.length);
+      userLayer.content = trimMiddle(userLayer.content, userLayer.content.length - cut);
+      remaining -= cut;
+    }
+    if (remaining > 0) {
+      const l1 = layers.find((l) => l.name === 'L1-engine');
+      if (l1) {
+        const cut = Math.min(remaining, l1.content.length);
+        l1.content = trimMiddle(l1.content, l1.content.length - cut);
+        remaining -= cut;
+      }
+    }
+    if (remaining > 0) {
+      const l2 = layers.find((l) => l.name === 'L2-android');
+      if (l2) {
+        const cut = Math.min(remaining, l2.content.length);
+        l2.content = trimMiddle(l2.content, l2.content.length - cut);
+        remaining -= cut;
+      }
+    }
+    warnings.push(
+      remaining > 0
+        ? `系统提示词超预算（${total} > ${budget} 字符）且各层裁剪后仍超 ${remaining} 字符`
+        : `系统提示词超预算（${total} > ${budget} 字符），已按 L3→L1→L2 顺序裁剪`,
+    );
   }
 
   const systemPrompt = layers.map((l) => l.content.trim()).join('\n\n');

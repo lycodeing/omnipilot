@@ -232,3 +232,28 @@ test('findByRegex：危险模式返回空结果而非卡死', () => {
   const flat = [{ text: 'aaaa', contentDesc: '' }];
   assert.deepEqual(findByRegex(flat, '(a+)+$'), [], '危险模式应被拒');
 });
+
+test('locate 失败信息可操作：含目标、已尝试策略、相关度排序的候选', async () => {
+  // 回归用例：原实现只返回"未找到目标"，模型既不知道搜的是什么、也不知道试过
+  // 哪些策略；candidates 还是 DFS 顺序的前 8 个（与目标无关的节点），无法自纠。
+  const tree = {
+    nodes: [
+      { index: 0, text: '', cls: 'FrameLayout', resourceId: '', contentDesc: '', clickable: false, bounds: [0, 0, 720, 1280], children: [
+        { index: 1, text: '首页', cls: 'TextView', resourceId: '', contentDesc: '', clickable: false, bounds: [0, 0, 100, 50], children: [] },
+        { index: 2, text: '电子相册', cls: 'TextView', resourceId: 'com.lgdg:id/album', contentDesc: '', clickable: true, bounds: [0, 100, 200, 150], children: [] },
+      ] },
+    ],
+    hash: 'h', dumpMs: 1, fromCache: false,
+  };
+  const locate = createLocator({
+    getTree: async () => tree,
+    getSize: async () => ({ w: 720, h: 1280 }),
+    screencap: async () => ({ buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }),
+    vlmCache: null,
+  });
+  const r = await locate('不存在的按钮');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /不存在的按钮/, '错误信息应包含目标');
+  assert.match(r.error, /已尝试策略/, '错误信息应说明尝试过的策略');
+  assert.ok(Array.isArray(r.candidates) && r.candidates.length > 0);
+});

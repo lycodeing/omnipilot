@@ -167,14 +167,24 @@ export function buildActionTools(ctx) {
     execute: async (_id, params) => {
       const gate = await confirmWrite(ctx, 'swipe', `${params.from}→${params.to}`);
       if (!gate.allowed) return denied('swipe');
-      // from/to 为区域名时直接透传；元素描述先定位，失败仍交门面兜底（§1.1 swipe 支持区域名/坐标/元素）
+      // from/to 为区域名时直接透传；元素描述先定位。
+      // 定位失败必须返回 LOCATE_MISS：原实现把描述原样丢给设备层，而设备的
+      // resolvePoint 只认区域名/坐标 → 报"未知区域名: 列表底部（可用: top/bottom/…）"，
+      // 既掩盖了真因（元素没找到），又列出了模型从未用过的区域名，模型无法自纠。
       const resolve = async (desc) => {
         if (['bottom', 'top', 'left', 'right'].includes(desc)) return desc;
         const loc = await locateWithCache(desc);
         if (loc.ok && loc.bounds) return loc.bounds;
-        return desc;
+        return { miss: desc, error: loc.error };
       };
-      const r = await device.swipe(await resolve(params.from), await resolve(params.to), { durationMs: params.durationMs ?? 300 });
+      const from = await resolve(params.from);
+      const to = await resolve(params.to);
+      for (const v of [from, to]) {
+        if (v && typeof v === 'object' && v.miss) {
+          return locateMiss(v.miss, v.error, { fallback: `未找到滑动起点/终点元素：${v.miss}` });
+        }
+      }
+      const r = await device.swipe(from, to, { durationMs: params.durationMs ?? 300 });
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: r.ok, from: params.from, to: params.to, latencyMs: r.latencyMs, error: r.error }) }],
         details: { ok: r.ok },

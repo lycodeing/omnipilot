@@ -356,20 +356,9 @@ export function interpolate(text, vars) {
   });
 }
 
-// 遍历用例中需要插值的字段（text + 参数值）
-export function interpolateCase(caseObj, vars) {
-  return {
-    ...caseObj,
-    steps: caseObj.steps.map((s) => {
-      const out = { ...s };
-      if (typeof out.text === 'string') out.text = interpolate(out.text, vars);
-      for (const k of PARAM_KEYS) {
-        if (typeof out[k] === 'string') out[k] = interpolate(out[k], vars);
-      }
-      return out;
-    }),
-  };
-}
+// 注：原 interpolateCase（整例插值）已删除——它无生产消费者（bin/ask.js 在主循环
+// 里自行对每个步骤的字符串字段调 interpolate），且只插 PARAM_KEYS 里的键，与生产
+// 路径"插所有字符串字段"的行为已分叉。两份实现并存即两份语义，留一份即可。
 
 // 从"等待"文本里解析出可定位的元素 selector（§21）：
 //   '热榜列表第一项出现' → 无明确文本 → null（退回等树稳定）

@@ -17,18 +17,18 @@ export function globToRegExp(glob) {
 }
 
 // 白名单匹配：工具可写原名、server__原名、server:原名 或 server_原名 四种形态
-export function matchesAllowList(originalName, serverName, allowTools) {
-  if (!Array.isArray(allowTools) || allowTools.length === 0) return false; // 默认拒绝
+// 单一实现：allowRes 是预编译的 glob 正则数组（运行期与测试共用同一份逻辑——
+// 此前运行期用 matchesCompiled、导出的是 matchesAllowList，两份实现可能漂移）。
+export function matchesAllowList(originalName, serverName, allowTools, allowRes = null) {
+  const res = allowRes ?? (Array.isArray(allowTools) ? allowTools.map((g) => globToRegExp(String(g))) : []);
+  if (!res.length) return false; // 默认拒绝
   const forms = [
     originalName,
     `${serverName}__${originalName}`,
     `${serverName}:${originalName}`,
     `${serverName}_${originalName}`,
   ];
-  return allowTools.some((g) => {
-    const re = globToRegExp(String(g));
-    return forms.some((f) => re.test(f));
-  });
+  return res.some((re) => forms.some((f) => re.test(f)));
 }
 
 // JSON Schema（MCP）→ TypeBox（Pi defineTool parameters）
@@ -94,16 +94,7 @@ export async function createMcpBridge({ config, logger = () => {}, connectImpl =
 
   // 白名单 glob 预编译（旧实现每次匹配都 new RegExp，T 工具 × G glob × 4 形态重复编译）
   const allowRes = allowTools.map((g) => globToRegExp(String(g)));
-  const matchesCompiled = (originalName, serverName) => {
-    if (!allowRes.length) return false; // 默认拒绝
-    const forms = [
-      originalName,
-      `${serverName}__${originalName}`,
-      `${serverName}:${originalName}`,
-      `${serverName}_${originalName}`,
-    ];
-    return allowRes.some((re) => forms.some((f) => re.test(f)));
-  };
+  const matchesCompiled = (originalName, serverName) => matchesAllowList(originalName, serverName, allowTools, allowRes);
 
   // 并行连接各 server（旧实现串行，超时最坏叠加：每 server 10s 上限）
   const entries = Object.values(servers);
@@ -144,7 +135,8 @@ export async function createMcpBridge({ config, logger = () => {}, connectImpl =
   // 运行期 O(1) 工具查找（旧实现 callByName 每次线性 find）
   const byFinalName = new Map(bridge.tools.map((t) => [t.finalName, t]));
 
-  bridge.hasAccess = (originalName, serverName) => matchesCompiled(originalName, serverName);
+  // 注：原 bridge.hasAccess 已删除——全仓库零调用（连文档都没有），与
+  // matchesAllowList 是同一规则的第二个入口，留一份即可。
 
   bridge.callByName = async (finalName, args) => {
     const t = byFinalName.get(finalName);

@@ -7,7 +7,7 @@ import path from 'node:path';
 
 import { assemblePrompt, PROJECT_ROOT } from '../src/session/prompt.js';
 import { resolveStrategy, createSessionManager } from '../src/session/persist.js';
-import { parseCaseText, caseFromText, interpolate, interpolateCase, buildToolCall, normalizeType, parseCoords, resolveLoopPlan, QUERY_TYPES } from '../src/session/case.js';
+import { parseCaseText, caseFromText, interpolate, buildToolCall, normalizeType, parseCoords, resolveLoopPlan, QUERY_TYPES } from '../src/session/case.js';
 import { resolveModelConfig, validateModelConfig, baseUrlHash, ModelConfigError } from '../src/session/model.js';
 
 // —— prompt 三层装配（§6.1/6.2） ——
@@ -177,13 +177,6 @@ steps:
     const vars = new Map([['name', '春游']]);
     assert.equal(interpolate('相册 ${name} 于 2025', vars), '相册 春游 于 2025');
     assert.equal(interpolate('未知 ${nope} 保留', vars), '未知 ${nope} 保留');
-  });
-
-  test('interpolateCase 逐步骤插值', () => {
-    const c = { name: 't', steps: [{ type: 'ai', text: '查 ${x}' }, { type: 'sleep', seconds: 1 }] };
-    const out = interpolateCase(c, new Map([['x', '列表']]));
-    assert.equal(out.steps[0].text, '查 列表');
-    assert.equal(out.steps[1].text, undefined);
   });
 });
 

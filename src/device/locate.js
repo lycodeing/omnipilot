@@ -160,11 +160,28 @@ export function nodeAtBounds(flat, bounds) {
 }
 
 // 失败时返回候选节点列表，让模型改写描述（§5.1 策略 5）
-export function candidatesOf(flat, limit = 8) {
-  return flat
-    .filter((n) => n.text || n.contentDesc)
+// 候选节点（失败时给模型参考）。按与目标的相关度排序——原实现取 DFS 顺序的前 8 个，
+// 与目标往往无关，模型无法据此改写描述。相关度：目标文本与节点文本的公共字符数。
+export function candidatesOf(flat, target = null, limit = 8) {
+  const nodes = flat.filter((n) => n.text || n.contentDesc);
+  const needle = String(target ?? '').trim();
+  if (!needle) return nodes.slice(0, limit).map(candidateView);
+  const score = (n) => {
+    const hay = `${n.text ?? ''} ${n.contentDesc ?? ''}`;
+    let s = 0;
+    for (const ch of new Set(needle)) if (hay.includes(ch)) s += 1;
+    if (n.resourceId && needle && (n.resourceId.includes(needle) || needle.includes(n.resourceId))) s += 3;
+    return s;
+  };
+  return nodes
+    .map((n) => ({ n, s: score(n) }))
+    .sort((a, b) => b.s - a.s)
     .slice(0, limit)
-    .map((n) => ({ text: n.text, contentDesc: n.contentDesc, resourceId: n.resourceId, cls: n.cls, bounds: n.bounds }));
+    .map((x) => candidateView(x.n));
+}
+
+function candidateView(n) {
+  return { text: n.text, contentDesc: n.contentDesc, resourceId: n.resourceId, cls: n.cls, bounds: n.bounds };
 }
 
 export function matchSelector(flat, selector) {
@@ -258,7 +275,10 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
         if (matched) strategy = 'within';
       }
     }
+    // 已尝试的策略序列（失败时告知模型，便于它改写描述）
+    const attempted = [];
     const tryStrategy = (nodes, name) => {
+      attempted.push(name);
       if (matched || !nodes?.length) return;
       matched = nodes.filter((n) => inScreen(n.bounds, size)).sort((a, b) => area(a.bounds) - area(b.bounds))[0] ?? null;
       if (matched) strategy = name;
@@ -348,6 +368,13 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
       return { ...result, ok: true, bounds: conv.bounds, center: conv.center, strategy: 'vlm', identity };
     }
 
-    return { ...result, error: '未找到目标', candidates: candidatesOf(flat) };
+    // 失败信息必须可操作：模型据此改写描述。原实现只给"未找到目标"——
+    // 既没说搜的是什么，也没说试过哪些策略，candidates 还是 DFS 顺序的前 8 个
+    // （与目标无关的节点），模型无法据此调整。
+    return {
+      ...result,
+      error: `未找到目标 "${target}"：已尝试策略 ${attempted.join('→')}，未命中`,
+      candidates: candidatesOf(flat, target),
+    };
   };
 }

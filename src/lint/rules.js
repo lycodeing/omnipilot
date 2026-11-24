@@ -52,6 +52,7 @@ const RULES = [
     level: 'error',
     test: (line) => /\$\{\s*([A-Za-z_][\w]*)\s*\}/.test(line),
     // 变量是否已定义需要全文上下文，见 lintCaseText 内闭环
+    message: '引用了未定义的变量（${...}）——未定义时插值会静默保留字面量，输入到 UI 的将是 ${xxx} 原文',
   },
   {
     id: 'unreachable-scroll',
@@ -142,7 +143,13 @@ function definedVars(text) {
     for (const m of line.matchAll(/^\s*-\s*(?:name|as)\s*[:：]\s*([\w-]+)/gm)) defs.add(m[1]);
     // 步骤参数行的 name:（aiQuery 落库名 / data_extract 数据集名）
     for (const m of line.matchAll(/^\s+name\s*[:：]\s*([\w-]+)\s*$/gm)) defs.add(m[1]);
-    for (const m of line.matchAll(/([\w-]+)\s*[:=]\s*\$\{/g)) defs.add(m[1]);
+    // 形如 "key: ${...}" 的行——只当**定义**当 key 出现在别处时（key: ${other}）
+    // 不算自引用；但 "phone: ${phone}" 是自引用，必须排除，否则 undefined-var
+    // 规则把 ${phone} 记成"已定义"，漏报未定义变量（变量未定义时 interpolate
+    // 会静默保留字面量 ${phone} 输入到 UI）。
+    for (const m of line.matchAll(/([\w-]+)\s*[:=]\s*\$\{\s*([A-Za-z_][\w]*)/g)) {
+      if (m[1] !== m[2]) defs.add(m[1]);
+    }
   }
   return defs;
 }

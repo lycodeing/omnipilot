@@ -92,12 +92,27 @@ async function loadSchema(dataDir, name) {
 
 // schema 进程级缓存：schema 文件几乎不变，避免每次 append/upsert 付 ENOENT/readFile。
 // 键含 dataDir：同名数据集在不同目录（测试/多工作区）的 schema 互不串用。
+// 必须按 mtime+size 失效：schema 是用户可编辑的契约文件，用户收紧 schema 后期望后续
+// 写入被校验拦截——无失效条件会让缓存永久持有旧 schema，数据质量闸门静默失效。
+// （与 ROW_CACHE 同样的失效策略；schema 文件极小，多一次 stat 的成本可忽略。）
 const SCHEMA_CACHE = new Map();
 async function loadSchemaCached(dataDir, name) {
+  const file = path.join(dataDir, `${name}.schema.json`);
+  let st = null;
+  try {
+    st = await stat(file);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
   const k = `${dataDir}\u0000${name}`;
-  if (SCHEMA_CACHE.has(k)) return SCHEMA_CACHE.get(k);
+  const cached = SCHEMA_CACHE.get(k);
+  if (!st) {
+    SCHEMA_CACHE.delete(k);
+    return null;
+  }
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.schema;
   const schema = await loadSchema(dataDir, name);
-  SCHEMA_CACHE.set(k, schema);
+  SCHEMA_CACHE.set(k, { mtimeMs: st.mtimeMs, size: st.size, schema });
   return schema;
 }
 

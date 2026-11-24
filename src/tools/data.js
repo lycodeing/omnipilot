@@ -290,10 +290,11 @@ export function buildDataTools(ctx) {
     }),
     execute: async (_id, params) => {
       ctx.secretCalls.push({ tool: 'sms_read', provider: 'device', key: 'sms', stepIndex: ctx.currentStepIndex ?? null });
-      if (!opts.yes && typeof ctx.confirm === 'function') {
-        const ok = await ctx.confirm('读取设备短信/通知（敏感操作）？');
-        if (!ok) return denied('sms_read'); // details.denied=true，记账标 cancelled（与操作工具一致）
-      }
+      // 走 confirmWrite（与所有写操作同一套语义）：--yes 直通、ctx.confirm 征求
+      // 同意、两者都无时告警一次后放行。此前 sms_read 自己实现了一套，缺了
+      // 非交互兜底告警——用户在 CI/管道里丢掉这道安全门却毫无察觉。
+      const gate = await confirmWrite(ctx, 'sms_read', '读取设备短信/通知（敏感操作）');
+      if (!gate.allowed) return denied('sms_read'); // details.denied=true，记账标 cancelled（与操作工具一致）
       // 设备层若提供扩展能力（content://sms / notification listener）则使用
       if (typeof device.readSms === 'function') {
         const r = await device.readSms(params);

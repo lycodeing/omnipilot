@@ -132,7 +132,6 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // （服务端内部仍要等一次 a11y idle），而 legacy 三通道在同类 busy 页会全败。若超时也
     // 退避 60s，一次抖动就让整轮退化成"引擎全盲"，实测 run-20261102-125547 因此 8 断言全灭。
     // 传输类错误（超时/断连）只退避 5s（下一两次 dump 就回来），只有服务真的起不来才 60s。
-    let uia2FailedTransiently = false; // （保留供退避分类）本轮 uia2 是否因超时/断连失败
     if (uia2 && Date.now() >= uia2DeadUntil) {
       try {
         // uia2 的 source 超时同样受本次 dump 预算约束（默认走 SDK 内部超时）
@@ -146,7 +145,6 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         // （服务活着），不是传输故障——与旧 `e?.status === undefined` 守卫语义一致。
         const kind = classifyTransportError(e);
         const transient = e?.status === undefined && (kind === 'timeout' || kind === 'connection');
-        uia2FailedTransiently = transient;
         // 槽空闲判定：protocol（HTTP 有应答但非 200，如 500）= 服务活着但 UiAutomation 没注册上
         // → 槽空闲；ensure 失败（'uia2 不可用'）= 服务没起来 → 槽也空闲。其余（timeout/connection/
         // 无 hierarchy）= 服务活着持槽 → legacy 是死路。

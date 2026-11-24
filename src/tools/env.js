@@ -99,7 +99,9 @@ export function buildEnvTools(ctx) {
       expectedPackage: Type.Optional(Type.String({ description: '期望的前台包名，缺省则只查当前前台进程存活' })),
     }),
     execute: async (_id, params) => {
-      const expected = params.expectedPackage || opts.expectedPackage || null;
+      // 只认工具参数：opts.expectedPackage 从未被任何地方写入（全仓库零写入点），
+      // 是个永不生效的回落配置——留着会让人以为可以在 CLI 层统一指定包名。
+      const expected = params.expectedPackage || null;
       const r = await device.assertNoCrash(expected);
       const passed = r.ok && r.alive;
       try { recorder?.addAssertion?.({ text: `assert_no_crash ${expected || '(当前)'}`, passed, reason: r.error || null }); } catch { /* 忽略 */ }
@@ -118,13 +120,22 @@ export function buildEnvTools(ctx) {
     execute: async (_id, params) => {
       const ts = Date.now();
       // 缺省落 run 目录；无 recorder 时落工作区私有状态目录（不污染 cwd）
-      const fallback = recorder?.dir
-        ? path.join(recorder.dir, `ui-dump-${ts}.xml`)
-        : path.join(ctx.stateDir || path.resolve('.ask'), `ui-dump-${ts}.xml`);
-      // 显式相对路径解析到 run 目录（避免模型传裸文件名落到 cwd，见 VERIFICATION-REPORT §11）
-      const target = params.path
-        ? (path.isAbsolute(params.path) ? params.path : path.join(recorder?.dir || ctx.stateDir || '.', params.path))
-        : fallback;
+      const baseDir = recorder?.dir || ctx.stateDir || path.resolve('.ask');
+      const fallback = path.join(baseDir, `ui-dump-${ts}.xml`);
+      // 落盘范围限定在 run/state 目录内：模型给的 path 若直接采信（尤其绝对路径），
+      // 就能把 UI dump 写到进程有权限的任意位置（/etc/passwd 等）。
+      // 相对路径解析到 baseDir；绝对路径仅当已在 baseDir 内才接受，否则钳回。
+      let target;
+      if (!params.path) {
+        target = fallback;
+      } else {
+        const abs = path.isAbsolute(params.path) ? path.resolve(params.path) : path.resolve(baseDir, params.path);
+        const root = path.resolve(baseDir) + path.sep;
+        target = abs.startsWith(root) ? abs : fallback;
+        if (abs !== target) {
+          console.warn(`[warn] ui_dump 路径 "${params.path}" 超出 run 目录，已改为 ${target}`);
+        }
+      }
       const p = await device.dumpToFile(target);
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, path: p }) }], details: { ok: true, path: p } };
     },
