@@ -33,9 +33,21 @@ const FALLBACK_SHELL = [
 
 // ---------- 标签工具 ----------
 
+// HTML 实体解码：属性值写入前经 attrEscape 转义，读取时需还原。
+// 浏览器的 getAttribute 会自动解码，而正则提取（tools.js 的 extractDumps）不会——
+// 不解码则两侧算出的 group id 不一致，破坏契约「按 data-group-id 去重保最新」。
+export function decodeEntities(s) {
+  return String(s ?? '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');   // 必须最后解码（&amp;amp; → &amp; → &）
+}
+
 function attrVal(attrs, name) {
   const m = String(attrs ?? '').match(`${name}="([^"]*)"`);
-  return m ? m[1] : null;
+  return m ? decodeEntities(m[1]) : null;
 }
 
 function attrEscape(v) {
@@ -49,9 +61,16 @@ function insertBeforeBody(html, tag) {
   return `${html.slice(0, idx)}${tag}\n${html.slice(idx)}`;
 }
 
-// JSON 写入前转义 </ 防止提前闭合标签；\/ 是合法 JSON 转义，解析后还原
+// JSON 写入前转义 < 防止进入 HTML 的 script-data 状态机。
+// 只转义 </ 不够：`<!--<script>` 会让 HTML 解析器进入 "script data double escaped"，
+// 此后的 </script> 不再闭合标签，后续全部内容被吞进 script 元素——整份报告损坏。
+// 转义 < 为 < 是合法 JSON 转义（JSON.parse 后原样还原），且不进入任何 tokenizer 状态。
+export function escapeJsonForScript(json) {
+  return json.replace(/</g, '\\u003c');
+}
+
 export function makeDumpTag(groupId, dump) {
-  const json = JSON.stringify(dump ?? {}).replace(/<\//g, '<\\/');
+  const json = escapeJsonForScript(JSON.stringify(dump ?? {}));
   return `<script type="${DUMP_TAG_TYPE}" data-group-id="${attrEscape(groupId ?? 'default')}">${json}</script>`;
 }
 
@@ -242,7 +261,7 @@ export class ReportWriter {
   async appendExecution(dump) {
     const d = this._prepareDump(dump);
     const extra = this.mode === 'directory' ? ' data-screenshot-mode="directory"' : '';
-    const json = JSON.stringify(d).replace(/<\//g, '<\\/');
+    const json = escapeJsonForScript(JSON.stringify(d));
     const tag = `<script type="${DUMP_TAG_TYPE}" data-group-id="${attrEscape(d.groupName ?? 'default')}"${extra}>${json}</script>`;
     await this._appendTag(tag);
   }
@@ -300,7 +319,7 @@ export class ReportWriter {
         dump.screenshots = normalized;
       }
       const extra = this.mode === 'directory' ? ' data-screenshot-mode="directory"' : '';
-      const json = JSON.stringify(dump).replace(/<\//g, '<\\/');
+      const json = escapeJsonForScript(JSON.stringify(dump));
       tags.push(`<script type="${DUMP_TAG_TYPE}" data-group-id="${attrEscape(gid)}"${extra}>${json}</script>`);
     }
     for (const [iid, [start, end]] of images) tags.push(makeImageTag(iid, content.slice(start, end)));
@@ -328,11 +347,20 @@ export function loadShell(distDir) {
     return FALLBACK_SHELL;
   }
   const isExternal = (u) => /^(https?:)?\/\/|^data:/i.test(u);
+  // 目录约束：只允许内联 dist 内的资源。path.resolve 会让 ../ 逃出 dist，
+  // 导致 dist 外的任意文件被读进报告（报告是会被分享的产物）。
+  const distRoot = path.resolve(dir) + path.sep;
+  const resolveInDist = (rel) => {
+    const abs = path.resolve(dir, decodeURIComponent(rel));
+    return abs.startsWith(distRoot) ? abs : null;
+  };
   html = html.replace(/<script\b([^>]*)\bsrc=["']([^"']+)["']([^>]*)>\s*<\/script>/gi, (tag, pre, src, post) => {
     if (isExternal(src)) return tag;
+    const abs = resolveInDist(src);
+    if (!abs) return tag;   // 越界 → 保持原样（与外链同样处理）
     let code;
     try {
-      code = fsSync.readFileSync(path.resolve(dir, decodeURIComponent(src)), 'utf8');
+      code = fsSync.readFileSync(abs, 'utf8');
     } catch {
       return tag;
     }
@@ -343,9 +371,11 @@ export function loadShell(distDir) {
     if (!/\brel=["']?stylesheet["']?/i.test(attrs)) return tag;
     const href = attrVal(attrs, 'href');
     if (!href || isExternal(href)) return tag;
+    const abs = resolveInDist(href);
+    if (!abs) return tag;   // 越界 → 保持原样
     let css;
     try {
-      css = fsSync.readFileSync(path.resolve(dir, decodeURIComponent(href)), 'utf8');
+      css = fsSync.readFileSync(abs, 'utf8');
     } catch {
       return tag;
     }

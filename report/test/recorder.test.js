@@ -13,6 +13,7 @@ import {
   ReportWriter, loadShell, writeReport,
 } from '../recorder.js';
 import { extractDumps } from '../tools.js';
+import { JSDOM } from 'jsdom';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/run.sample.json'), 'utf8'));
@@ -173,10 +174,60 @@ test('makeDumpTag 转义 </script>、保留中文、可 round-trip', () => {
   assert.ok(tag.startsWith('<script type="ask-dump" data-group-id="g1">'));
   assert.ok(tag.endsWith('</script>'));
   assert.equal(tag.split('</script>').length - 1, 1); // 体内无裸闭合
-  assert.ok(tag.includes('<\\/script>')); // 转义形式存在
+  assert.ok(tag.includes('\\u003c/script>'), '小于号被转义为 JSON 合法转义');
   assert.ok(tag.includes('电子相册'));
   const payload = tag.slice(tag.indexOf('>') + 1, -'</script>'.length);
-  assert.deepEqual(JSON.parse(payload), dump); // \/ 是合法 JSON 转义，解析还原
+  assert.deepEqual(JSON.parse(payload), dump); // < 是合法 JSON 转义，解析还原
+});
+
+test('makeDumpTag：HTML 解析器状态安全（jsdom 实测）', () => {
+  // 回归用例：只转义 </ 不够——`<!--<script>` 会让 HTML 解析器进入
+  // "script data double escaped" 状态，此后 </script> 不再闭合标签，
+  // 后续全部内容被吞进 script 元素，整份报告损坏（实测报"报告数据缺失"）。
+  const payloads = [
+    '<!--<script>',
+    '<!--<script>x',
+    '<script>',
+    '</script>',
+    '<!--<script>-->',
+    'a<!--<script>b',
+  ];
+  for (const note of payloads) {
+    const tag = makeDumpTag('g1', { note });
+    const html = `<!doctype html><html><body>${tag}<div id="root">DATA</div></body></html>`;
+    const dom = new JSDOM(html);
+    const el = dom.window.document.querySelector('script[type="ask-dump"]');
+    assert.ok(el, `payload ${JSON.stringify(note)} 应产出完整闭合的 dump 元素`);
+    assert.equal(el.textContent.includes('DATA'), false, '后续内容不应被吞进 script 元素');
+    assert.ok(dom.window.document.querySelector('#root'), '报告后续内容应完好');
+    const payload = el.textContent;
+    assert.deepEqual(JSON.parse(payload), { note }, '内容应可完整 round-trip');
+  }
+});
+
+test('loadShell 不内联 dist 目录外的文件（路径穿越防护）', () => {
+  // 回归用例：path.resolve 会让 ../ 逃出 dist，导致 dist 外任意文件被读进
+  // 报告（报告是会被分享的产物）。
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-shell-'));
+  const dist = path.join(root, 'dist');
+  fs.mkdirSync(dist);
+  fs.writeFileSync(path.join(root, 'secret.js'), 'globalThis.__leaked = true;');
+  fs.writeFileSync(path.join(root, 'secret.css'), 'body { --leaked: 1 }');
+  fs.writeFileSync(path.join(dist, 'index.html'), [
+    '<!doctype html><html><head>',
+    '  <link rel="stylesheet" href="../secret.css">',
+    '</head><body>',
+    '  <div id="root"></div>',
+    '  <script src="../secret.js"></script>',
+    '  <script src="./ok.js"></script>',
+    '</body></html>',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dist, 'ok.js'), 'console.log("inlined-ok");');
+  const shell = loadShell(dist);
+  assert.ok(!shell.includes('__leaked'), 'dist 外 JS 不应被内联');
+  assert.ok(!shell.includes('--leaked'), 'dist 外样式不应被内联');
+  assert.ok(shell.includes('inlined-ok'), 'dist 内文件应正常内联');
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 test('makeDumpTag 转义 groupId 属性，makeImageTag 原样输出', () => {

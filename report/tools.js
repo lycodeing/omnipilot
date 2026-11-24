@@ -3,13 +3,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { DUMP_TAG_TYPE } from './recorder.js';
+import { DUMP_TAG_TYPE, decodeEntities } from './recorder.js';
 
 const DUMP_TAG_RE = new RegExp(`<script type="${DUMP_TAG_TYPE}"([^>]*)>([\\s\\S]*?)<\\/script>`, 'g');
 
+// 属性值解码：与浏览器 getAttribute 一致（写入侧 attrEscape 编码，读取侧须还原），
+// 否则本模块与 viewer 算出的 group id 不同，契约的去重保证失效。
 function attrVal(attrs, name) {
   const m = String(attrs ?? '').match(`${name}="([^"]*)"`);
-  return m ? m[1] : null;
+  return m ? decodeEntities(m[1]) : null;
 }
 
 // → [{ groupId, dump }]，同 group 保最新
