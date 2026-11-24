@@ -11,12 +11,9 @@ import { Yadb, readTextAt } from './input.js';
 import { withLocateRetry, StepRollout } from './rollout.js';
 import * as state from './state.js';
 import * as net from './net-profile.js';
-import { decodePng, pixelAt, isBlueish, isColorish, parseHexColor, screenSignature } from './png.js';
-import { resolveTiming } from './profiles/index.js';
-import { classifyTransportError } from './errors.js';
+import { screenSignature } from './png.js';
 
 // uia2 退避预算（评审 #5/#6：时序常量命名成组，不再散落字面量）
-const UIA2_BACKOFF = { transientMs: 5_000, fatalMs: 60_000 };
 import { createUia2 } from './uia2.js';
 import { createTapEachRow } from './tap-each-row.js';
 import { createDumpChannels } from './dump-channels.js';
@@ -37,7 +34,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     try {
       const r = await adb.waitForBoot({ timeoutMs: Number(process.env.ASK_BOOT_TIMEOUT_MS) || 60_000 });
       if (!r.ready) console.warn(`[warn] ${r.reason}`);
-      if (r?.size) bootSize = r.size; // waitForBoot 已解析 wm size，seed 进 sizeCache 免重复往返
+      if (r?.size) bootSize = r.size; // waitForBoot 已解析 wm size，seed 进尺寸探测缓存免重复往返
     } catch (e) {
       console.warn(`[warn] 等待设备就绪失败：${e?.message ?? e}`);
     }
