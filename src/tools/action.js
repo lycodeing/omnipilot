@@ -3,6 +3,8 @@
 
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
+import { textResult } from './perception.js';
+import { assertSafePackage, assertSafeActivity } from '../device/package-guard.js';
 
 // 写/敏感操作确认钩子：opts.yes 直通；交互模式由 ctx.confirm 提供扩展点（§13.3）
 // 告警标志挂在 ctx 上（而非模块级）：bin/ask.js 支持多 run 并发，模块级标志会
@@ -363,6 +365,16 @@ export function buildActionTools(ctx) {
     description: '冷启动应用（包名或 包名/activity）。',
     parameters: Type.Object({ appId: Type.String() }),
     execute: async (_id, params) => {
+      // 包名白名单（第一道防线）：appId 会进 adb shell 命令串，而 adb shell 是设备端
+      // /bin/sh -c 执行的。设备层也有同样的校验（最后防线），但在工具层拦住能给出
+      // 准确的参数错误，而不是"设备层拒绝"的误导信息。
+      const id = String(params.appId ?? '').trim();
+      const [pkg, activity] = id.split('/');
+      const bad = (() => {
+        try { assertSafePackage(pkg); if (activity) assertSafeActivity(activity); return null; }
+        catch (e) { return e.message; }
+      })();
+      if (bad) return textResult({ ok: false, error: bad });
       const gate = await confirmWrite(ctx, 'launch', params.appId);
       if (!gate.allowed) return denied('launch');
       const r = await device.launch(params.appId);
@@ -376,6 +388,9 @@ export function buildActionTools(ctx) {
     description: '强杀应用进程。',
     parameters: Type.Object({ packageName: Type.String() }),
     execute: async (_id, params) => {
+      // 包名白名单（第一道防线，同 launch）
+      try { assertSafePackage(params.packageName); }
+      catch (e) { return textResult({ ok: false, error: e.message }); }
       const gate = await confirmWrite(ctx, 'terminate', params.packageName);
       if (!gate.allowed) return denied('terminate');
       const r = await device.terminate(params.packageName);

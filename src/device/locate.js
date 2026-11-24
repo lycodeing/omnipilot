@@ -32,6 +32,13 @@ export function parseTarget(target) {
   if ((m = /^text=(.+?)(?:#index=(\d+))?$/i.exec(t))) {
     return { kind: 'exact_text', text: m[1], index: m[2] ? Number(m[2]) : 0 };
   }
+  // text*= 前缀匹配（包含）。此前 parseTarget 无此分支 → 落入 auto 把整个
+  // "text*=xx" 当字面量搜 → 永不命中。而 matchNodeSelector 与工具层文档
+  // （ai_wait_for 的 selector 说明）都承诺支持 text*= —— waitForElement 等
+  // 走 parseTarget 的路径会静默等到超时。两套语法必须一致。
+  if ((m = /^text\*=(.+?)(?:#index=(\d+))?$/i.exec(t))) {
+    return { kind: 'contains', text: m[1], field: null };
+  }
   if ((m = /^desc=(.+)$/i.exec(t))) return { kind: 'contains', text: m[1], field: 'contentDesc' };
   if ((m = /^re:(.+)$/s.exec(t))) return { kind: 'regex', pattern: m[1] };
   return { kind: 'auto', text: t };

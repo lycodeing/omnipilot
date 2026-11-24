@@ -183,7 +183,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         // 下次 dumpTree 直接跳过退避（Date.now() >= 0 恒真）→ 立刻再付
         // 10s 等待 + 60s source 超时，正是这段退避本要避免的 ≈140s/次成本。
         try {
-          const xml = await uia2.source({ timeoutMs: 60_000 });
+          // 重试预算同样受本次 dump 预算约束——此前硬编码 60s，完全无视 budgetMs，
+          // 使 waitForElement({timeoutMs:10000}) 仍可能被拖成 60s+。
+          const retryBudget = budgetMs != null ? Math.max(1000, budgetMs) : 60_000;
+          const xml = await uia2.source({ timeoutMs: retryBudget });
           if (xml.includes('</hierarchy>')) {
             uia2DeadUntil = 0;   // 成功才解除退避
             return xml;
@@ -209,9 +212,17 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     }
     // timeout 前缀（含秒数）：`timeout 10 <cmd>`；降级时为空串 → 直接 <cmd>
     const tw = (sec) => (timeoutSupported ? `timeout ${sec} ` : '');
-    // 预算裁剪：各通道的客户端超时不得超过本次 dump 的总预算（budgetMs）。
-    // 否则 waitForElement({timeoutMs:10000}) 可能被单通道的 55s 拖成 165s。
-    const cap = (ms) => (budgetMs != null ? Math.max(1000, Math.min(ms, budgetMs)) : ms);
+    // 预算裁剪：预算必须**跨通道共享递减**，否则 3 通道 × 2 轮各取满预算
+    // → budgetMs=10000 时最坏 61s（6 倍超支），"最多等 N 毫秒"的契约被击穿。
+    // cap() 取当前**剩余**预算与通道固有上限的较小者；剩余耗尽则直接失败。
+    const dumpT0 = Date.now();
+    const remain = () => (budgetMs != null ? budgetMs - (Date.now() - dumpT0) : Infinity);
+    const cap = (ms) => {
+      if (budgetMs == null) return ms;
+      const r = remain();
+      if (r <= 0) throw new Error(`dump 预算耗尽（${budgetMs}ms 内未取到树）`);
+      return Math.max(500, Math.min(ms, r));
+    };
     const tryExecOut = async () => {
       const cmd = timeoutSupported
         ? ['exec-out', 'timeout', '10', 'uiautomator', 'dump', '/dev/tty']
@@ -826,7 +837,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         // 不再让异常逃出（曾使整条用例在 aiWaitFor 步判 error 中断，VERIFICATION-OVERVIEW §7）
         let h = null;
         try {
-          h = (await dumpTree({ fresh: true })).hash; // 必须强制新树，缓存命中会使判定失真
+          // 把剩余预算传给 dump：单次 fresh dump 可达 4-155s（uia2 退避/重试路径），
+          // 不设上限会让 waitIdle({timeoutMs:10000}) 实测跑出 155s。
+          const remain = timeoutMs - (Date.now() - t0);
+          h = (await dumpTree({ fresh: true, timeoutMs: Math.max(1000, remain) })).hash; // 必须强制新树，缓存命中会使判定失真
         } catch { /* 未稳定，继续等 */ }
         dumps++;
         if (h !== null) {

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseXmlDump, truncateAtHierarchyEnd, treeHash } from '../src/device/uitree.js';
-import { createLocator, parseTarget, compileSafeRegex, findByRegex } from '../src/device/locate.js';
+import { createLocator, parseTarget, compileSafeRegex, findByRegex, matchSelector, matchNodeSelector } from '../src/device/locate.js';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/ui-dump.xml', import.meta.url));
 const nodes = parseXmlDump(truncateAtHierarchyEnd(readFileSync(FIXTURE, 'utf8')));
@@ -276,4 +276,14 @@ test('locate 失败信息可操作：含目标、已尝试策略、相关度排�
   assert.match(r.error, /不存在的按钮/, '错误信息应包含目标');
   assert.match(r.error, /已尝试策略/, '错误信息应说明尝试过的策略');
   assert.ok(Array.isArray(r.candidates) && r.candidates.length > 0);
+});
+
+test('两套 selector 语法对 text*= 判定一致', () => {
+  // 回归用例：parseTarget 无 text*= 分支 → 落入 auto 把整个 "text*=xx" 当字面量
+  // 搜 → waitForElement 等走 parseTarget 的路径永不命中（静默等到超时）。
+  // 而 matchNodeSelector 与工具层文档都承诺支持 text*=。
+  const flat = [{ index: 0, text: '热度榜', contentDesc: '', resourceId: '', cls: 'TextView', clickable: false, bounds: [0, 0, 100, 50], children: [] }];
+  assert.ok(matchSelector(flat, 'text*=热度'), 'matchSelector 应支持 text*= 前缀匹配');
+  assert.ok(flat.some((n) => matchNodeSelector(n, 'text*=热度')), 'matchNodeSelector 应支持 text*=');
+  assert.ok(matchSelector(flat, 'text=热度榜'), 'text= 精确匹配仍工作');
 });

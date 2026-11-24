@@ -726,3 +726,41 @@ describe('写操作确认闸', () => {
     assert.match(warnings[0], /未启用操作确认/);   // 文案已覆盖写操作与敏感读取
   });
 });
+
+// —— 包名注入：工具层第一道防线 ——
+
+describe('包名白名单（工具层）', () => {
+  test('launch：非法包名被工具层拦下，不触达设备', async () => {
+    let launched = null;
+    const ctx = makeCtx({
+      device: { ...makeFakeDevice(), launch: async (id) => { launched = id; return { ok: true, error: null }; } },
+    });
+    const tool = buildTools(ctx).find((t) => t.name === 'launch');
+    const r = await tool.execute('id1', { appId: 'com.x; rm -rf /sdcard' }, undefined, undefined, {});
+    assert.equal(getContent(r).ok, false, '非法包名应被拒绝');
+    assert.match(getContent(r).error, /包名非法/);
+    assert.equal(launched, null, '不得触达设备层');
+  });
+
+  test('terminate：非法包名被工具层拦下，不触达设备', async () => {
+    let terminated = null;
+    const ctx = makeCtx({
+      device: { ...makeFakeDevice(), terminate: async (p) => { terminated = p; return { ok: true }; } },
+    });
+    const tool = buildTools(ctx).find((t) => t.name === 'terminate');
+    const r = await tool.execute('id1', { packageName: 'com.y|cat' }, undefined, undefined, {});
+    assert.equal(getContent(r).ok, false);
+    assert.equal(terminated, null, '不得触达设备层');
+  });
+
+  test('launch：合法包名正常放行', async () => {
+    let launched = null;
+    const ctx = makeCtx({
+      device: { ...makeFakeDevice(), launch: async (id) => { launched = id; return { ok: true, error: null }; } },
+    });
+    const tool = buildTools(ctx).find((t) => t.name === 'launch');
+    const r = await tool.execute('id1', { appId: 'com.normal.app' }, undefined, undefined, {});
+    assert.equal(getContent(r).ok, true);
+    assert.equal(launched, 'com.normal.app');
+  });
+});
