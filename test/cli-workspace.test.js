@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveWorkspace, ensureWorkspace, formatDate, DEFAULT_INSTANCE } from '../src/cli/workspace.js';
+import { resolveWorkspace, ensureWorkspace, formatDate, DEFAULT_INSTANCE, pickDefaultHome } from '../src/cli/workspace.js';
 
 test('formatDate：YYYY-MM-DD 零填充', () => {
   assert.equal(formatDate(new Date(2026, 0, 5)), '2026-01-05');
@@ -37,9 +37,10 @@ test('resolveWorkspace：环境变量覆盖（ASK_HOME/ASK_DATE/ASK_INSTANCE）'
 });
 
 test('resolveWorkspace：ASK_WORKSPACE 直接钉死整个 instance 目录', () => {
-  const ws = resolveWorkspace({ env: { ASK_WORKSPACE: 'C:/tmp/ws', ASK_HOME: '/ignored' } });
-  assert.equal(ws.root, join('C:/tmp/ws'));
-  assert.equal(ws.runDir, join('C:/tmp/ws', 'run'));
+  // 路径用平台无关的绝对路径（path.resolve 会在 win32 上把 C:/tmp/ws 也解析成绝对路径）
+  const ws = resolveWorkspace({ env: { ASK_WORKSPACE: '/tmp/ws', ASK_HOME: '/ignored' } });
+  assert.equal(ws.root, '/tmp/ws');
+  assert.equal(ws.runDir, join('/tmp/ws', 'run'));
   assert.equal(ws.lockRoot, '/ignored', '锁根仍用 ASK_HOME（全局）');
 });
 
@@ -56,4 +57,65 @@ test('ensureWorkspace：幂等创建所有子目录（含全局锁目录）', ()
     assert.ok(existsSync(d), `应创建 ${d}`);
   }
   ensureWorkspace(ws); // 再调一次不抛错
+});
+
+// ---- pickDefaultHome：默认工作区探测（含更名兼容） ----
+
+// 构造一个"哪些路径存在"的假文件系统
+const fsStub = (existing) => (p) => existing.includes(p);
+
+test('pickDefaultHome：win32 优先用当前目录名 C:/opt/omni-pilot', () => {
+  const home = pickDefaultHome({
+    platform: 'win32',
+    env: { HOME: '/h' },
+    existsSync: fsStub(['C:/opt/omni-pilot']),
+  });
+  assert.equal(home, 'C:/opt/omni-pilot');
+});
+
+test('pickDefaultHome：win32 当前名不存在时回落更名前的历史工作区（兼容老用户）', () => {
+  // 老用户机器上只有 C:/opt/scene-kit——必须继续沿用，否则历史 run / 设备锁 / probe 缓存失联
+  const home = pickDefaultHome({
+    platform: 'win32',
+    env: { HOME: '/h' },
+    existsSync: fsStub(['C:/opt/scene-kit']),
+  });
+  assert.equal(home, 'C:/opt/scene-kit');
+});
+
+test('pickDefaultHome：win32 两个目录都不存在时回退用户目录', () => {
+  const home = pickDefaultHome({
+    platform: 'win32',
+    env: { HOME: '/h', USERPROFILE: '/h' },
+    existsSync: fsStub([]),
+  });
+  assert.equal(home, join('/h', '.local', 'share', 'omni-pilot'));
+});
+
+test('pickDefaultHome：win32 当前名与历史名同时存在时用当前名', () => {
+  const home = pickDefaultHome({
+    platform: 'win32',
+    env: { HOME: '/h' },
+    existsSync: fsStub(['C:/opt/omni-pilot', 'C:/opt/scene-kit']),
+  });
+  assert.equal(home, 'C:/opt/omni-pilot', '新目录优先');
+});
+
+test('pickDefaultHome：unix 当前名不可用时回落历史工作区', () => {
+  // /opt 不可写（无 root 权限）时，若历史目录存在则继续沿用
+  const home = pickDefaultHome({
+    platform: 'darwin',
+    env: { HOME: '/h' },
+    existsSync: fsStub(['/opt/scene-kit']),
+  });
+  assert.equal(home, '/opt/scene-kit');
+});
+
+test('pickDefaultHome：unix 无任何可用目录时回退用户目录', () => {
+  const home = pickDefaultHome({
+    platform: 'linux',
+    env: { HOME: '/h' },
+    existsSync: fsStub([]),
+  });
+  assert.equal(home, join('/h', '.local', 'share', 'omni-pilot'));
 });

@@ -15,35 +15,72 @@
 // 其他平台 → 优先 /opt/omni-pilot（存在且可写时），否则回退 ~/.local/share/omni-pilot
 // （非 root 在 Linux/macOS 上通常无 /opt 写权限，硬编码会导致工作区创建静默失败）
 //
-// ASK_WORKSPACE 可直接钉死整个 instance 目录（测试 / CI 用）；ASK_DATE / ASK_INSTANCE 分别覆盖日期与实例名。
+// 更名兼容（2026-11-24）：项目更名为 OmniPilot，历史工作区仍叫 scene-kit。
+// 探测顺序为「新名 → 旧名」，旧目录存在则继续沿用——否则老用户的既有 run、
+// 设备锁与 family 探测缓存会失联（锁目录跨进程全局互斥，迁移即失效）。
+//
+// ASK_WORKSPACE 可直接钉死整个 instance 目录（测试 / CI 用）；ASK_DATE / ASK_INSTANCE 覆盖日期与实例名。
 
 import path from 'node:path';
 import fs from 'node:fs';
 
+// 历史工作区目录名（更名前）：仅用于兼容探测，新装机器不存在
+const LEGACY_DIR_NAME = 'scene-kit';
+// 当前工作区目录名
+const CURRENT_DIR_NAME = 'omni-pilot';
+
 export const DEFAULT_HOME = pickDefaultHome();
 export const DEFAULT_INSTANCE = 'instance';
 
-function pickDefaultHome() {
+function exists(p) {
+  try {
+    return fs.existsSync(p);
+  } catch {
+    return false;
+  }
+}
+
+// 探测历史工作区（更名前的目录名），存在则返回；不存在返回 null。
+// 只在当前目录名不存在时调用——当前名优先。
+function findLegacyHome(candidates, existsSync) {
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return null;
+}
+
+export function pickDefaultHome({
+  platform = process.platform,
+  env = process.env,
+  existsSync = exists,
+} = {}) {
   // 平台缺省（2026-11-10 评审 #13）：环境路径不再无条件写死——
-  //   win32：沿用历史 C:/opt/omni-pilot **仅当已存在**（兼容既有工作区与历史 run），
-  //          否则回退用户目录 ~/.local/share/omni-pilot；全新机器不再往 C:/opt 落盘
-  //   unix：优先 /opt/omni-pilot（存在且可写），否则 ~/.local/share/omni-pilot
+  //   win32：沿用既有工作区 **仅当已存在**（兼容历史 run），
+  //          探测顺序 C:/opt/omni-pilot → C:/opt/scene-kit（更名前）；
+  //          都没有则回退用户目录 ~/.local/share/omni-pilot；全新机器不再往 C:/opt 落盘
+  //   unix：优先 /opt/omni-pilot（存在且可写），其次历史 /opt/scene-kit，
+  //          否则 ~/.local/share/omni-pilot
   // ASK_HOME / ASK_WORKSPACE 仍可完全覆盖。
-  const fallbackHome = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share', 'omni-pilot');
-  if (process.platform === 'win32') {
-    const legacy = 'C:/opt/omni-pilot';
-    try {
-      if (fs.existsSync(legacy)) return legacy;
-    } catch { /* 探测失败走回退 */ }
+  const home = env.HOME || env.USERPROFILE || '.';
+  const fallbackHome = path.join(home, '.local', 'share', CURRENT_DIR_NAME);
+  if (platform === 'win32') {
+    const preferred = `C:/opt/${CURRENT_DIR_NAME}`;
+    if (existsSync(preferred)) return preferred;
+    // 更名前的历史工作区：存在则继续沿用，保持历史 run / 设备锁 / probe 缓存连续
+    const legacy = findLegacyHome([`C:/opt/${LEGACY_DIR_NAME}`], existsSync);
+    if (legacy) return legacy;
     return fallbackHome;
   }
-  const preferred = '/opt/omni-pilot';
+  const preferred = `/opt/${CURRENT_DIR_NAME}`;
   try {
     // 父目录可写（或目标已存在且可写）才采用 /opt
-    const target = fs.existsSync(preferred) ? preferred : path.dirname(preferred);
+    const target = existsSync(preferred) ? preferred : path.dirname(preferred);
     fs.accessSync(target, fs.constants.W_OK);
     return preferred;
   } catch {
+    // 当前名不可用时回落历史目录（存在即可用），保持老用户数据连续
+    const legacy = findLegacyHome([`/opt/${LEGACY_DIR_NAME}`], existsSync);
+    if (legacy) return legacy;
     return fallbackHome;
   }
 }

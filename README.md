@@ -70,6 +70,7 @@ node bin/ask.js run cases/s3-engine-params.yaml --yes --device 192.168.1.50:5555
 ```
 
 - `ASK_HOME` 默认：Windows → `C:/opt/omni-pilot`（等价 `/c/opt/omni-pilot`）；其他平台 → `/opt/omni-pilot`
+  （更名前的历史工作区 `scene-kit` 若已存在会自动沿用，保证历史 run / 设备锁 / 探测缓存连续）
 - `ASK_WORKSPACE` 可直接钉死整个实例目录（CI/测试用）；`ASK_DATE` / `ASK_INSTANCE` 覆盖日期与实例名
 - `ask run <用例>` 支持**裸文件名**：先按给定路径找，找不到再回退 `<实例>/case/` 目录
 - 项目根的 `cases/` 是**用例模板/示例**（交付内容）；实际运行请用工作区目录

@@ -9,20 +9,29 @@ import { buildDump, makeDumpTag } from '../recorder.js'
 const viewerRoot = path.dirname(fileURLToPath(import.meta.url))
 // runs 目录解析优先顺序：
 //   1. ASK_WORKSPACE（显式指定 instance 目录）→ <ws>/run
-  //   2. ASK_HOME（默认 C:/opt/omni-pilot）→ 取日期最新、实例最新的 <home>/<date>/<inst>/run
+//   2. ASK_HOME（默认 C:/opt/omni-pilot）→ 取日期最新、实例最新的 <home>/<date>/<inst>/run
+//      更名前的历史工作区 scene-kit 若存在则一并探测（兼容老用户）
 //   3. 旧布局回退：项目根 runs/（迁移期兼容）
 function latestRunDir() {
   const candidates = []
   if (process.env.ASK_WORKSPACE) candidates.push(path.join(path.resolve(process.env.ASK_WORKSPACE), 'run'))
-  const home = process.env.ASK_HOME || (process.platform === 'win32' ? 'C:/opt/omni-pilot' : '/opt/omni-pilot')
-  try {
-    const dates = fs.readdirSync(home).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()
-    for (const d of dates) {
-      const insts = fs.readdirSync(path.join(home, d)).filter((i) => fs.existsSync(path.join(home, d, i, 'run')))
-      for (const i of insts) candidates.push(path.join(home, d, i, 'run'))
+  const homes = process.env.ASK_HOME
+    ? [process.env.ASK_HOME]
+    : [
+        process.platform === 'win32' ? 'C:/opt/omni-pilot' : '/opt/omni-pilot',
+        // 更名前的历史工作区（兼容老用户既有 run）
+        process.platform === 'win32' ? 'C:/opt/scene-kit' : '/opt/scene-kit',
+      ]
+  for (const home of homes) {
+    try {
+      const dates = fs.readdirSync(home).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()
+      for (const d of dates) {
+        const insts = fs.readdirSync(path.join(home, d)).filter((i) => fs.existsSync(path.join(home, d, i, 'run')))
+        for (const i of insts) candidates.push(path.join(home, d, i, 'run'))
+      }
+    } catch {
+      // home 不存在则跳过
     }
-  } catch {
-    // home 不存在则跳过
   }
   // 旧布局
   for (const dir of [path.resolve(process.cwd(), '..', '..'), path.resolve(viewerRoot, '..', '..')]) {
