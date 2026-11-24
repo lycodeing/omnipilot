@@ -209,3 +209,19 @@ test('dismissDialog：en 设备按 en 包点按（优先长语）', async () => 
   assert.equal(r.clicked, 'Allow only while using the app', '长语优先（对齐 zh 包 始终允许>允许 的语义）');
   assert.equal(clicked.length, 1);
 });
+
+test('detectDialog：多窗口树（应用 + 权限弹窗）应识别出系统弹窗', async () => {
+  // 回归用例：uiautomator dump 每窗口一个根，权限弹窗叠在应用上时解析出两个根。
+  // 原实现只取 nodes[0]（底层应用窗口），于是"前台是系统弹窗"永不成立——
+  // 恰恰是弹窗处理存在的场景被漏掉。
+  const device = {
+    foreground: async () => ({ package: 'com.daimajia.gold' }),
+    dumpTree: async () => ({ nodes: [
+      { index: 0, text: '', cls: 'Frame', pkg: 'com.daimajia.gold', resourceId: '', contentDesc: '', clickable: false, bounds: [0,0,10,10], children: [] },
+      { index: 1, text: '', cls: 'Frame', pkg: 'com.google.android.permissioncontroller', resourceId: '', contentDesc: '', clickable: false, bounds: [0,0,10,10], children: [] },
+    ] }),
+  };
+  const r = await detectDialog(device);
+  assert.equal(r.detected, true, '多窗口时应识别出系统弹窗');
+  assert.equal(r.reason, 'foreground-is-system-dialog');
+});

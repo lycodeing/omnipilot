@@ -103,3 +103,19 @@ test('shell({withStderr:true}) 返回 {stdout, stderr}；默认仍返回字符�
   const r = await adb.shell('net 2g', { withStderr: true });
   assert.deepEqual(r, { stdout: 'out-text', stderr: 'err-text' });
 });
+
+// —— 写操作退出码（设备侧失败不得被当成成功）——
+
+test('shell withCode 返回远端退出码与 stderr', async () => {
+  const exec = async () => ({ code: 3, stdout: '', stderr: 'Error: Injecting to another application requires INJECT_EVENTS permission' });
+  const adb = new Adb({ serial: 's', exec });
+  const r = await adb.shell('input tap 100 200', { withCode: true, withStderr: true });
+  assert.equal(r.code, 3);
+  assert.match(r.stderr, /INJECT_EVENTS/);
+});
+
+test('shell 默认仍返回 stdout 字符串（向后兼容既有调用点）', async () => {
+  const exec = async () => ({ code: 0, stdout: 'hello', stderr: '' });
+  const adb = new Adb({ serial: 's', exec });
+  assert.equal(await adb.shell('echo hello'), 'hello');
+});

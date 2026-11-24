@@ -33,8 +33,12 @@ export class Yadb {
   // 首次推送 + chmod；成功后用 ready 标志复用
   async ensureReady() {
     if (this._ready) return;
-    const ls = await this.adb.shell(`ls ${this.remote}`).catch(() => '');
-    if (!String(ls).includes(this.remote)) {
+    // 必须看退出码而非 stdout 子串：ls 对不存在的文件会把
+    // "ls: /path: No such file or directory" 打到 stdout——其中含路径本身，
+    // 子串匹配会误判为"已存在"→ 跳过 push → 后续输入命令对着不存在的二进制
+    // 执行，文本输入静默失效（错误表象在回读校验，与真因无关）。
+    const { code } = await this.adb.shell(`ls ${this.remote}`, { withCode: true }).catch(() => ({ code: 1 }));
+    if (code !== 0) {
       await this.adb.push(this.localPath, this.remote);
       await this.adb.shell(`chmod 755 ${this.remote}`);
     }

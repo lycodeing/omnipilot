@@ -81,3 +81,25 @@ test('scrollDistancePoints：down 100% 位移不超出安全区', async () => {
   assert.ok(t[1] <= Math.round(size.h * 0.90), `终点 ${t[1]} 不越界`);
 });
 
+
+// —— 写操作必须检查设备侧退出码 ——
+
+test('tap：设备侧失败（退出码非 0）必须抛错而非报成功', async () => {
+  // 回归用例：input tap 失败（如缺 INJECT_EVENTS 权限）时 stdout 为空、错误在 stderr，
+  // 退出码非 0。原先不检查退出码 → tap 报成功 → 引擎误以为点击生效，
+  // 后续报出 renderer_unresponsive 之类指向错误方向的诊断。
+  const adb = {
+    shell: async () => ({ code: 1, stdout: '', stderr: 'Error: Injecting to another application requires INJECT_EVENTS permission' }),
+  };
+  await assert.rejects(() => tap(adb, [100, 200]), /INJECT_EVENTS|exit 1/);
+});
+
+test('tap：成功时返回 stdout', async () => {
+  const adb = { shell: async () => ({ code: 0, stdout: '', stderr: '' }) };
+  assert.equal(await tap(adb, [100, 200]), '');
+});
+
+test('key：设备侧失败必须抛错', async () => {
+  const adb = { shell: async () => ({ code: 1, stdout: '', stderr: 'boom' }) };
+  await assert.rejects(() => key(adb, 'back'), /boom|exit 1/);
+});

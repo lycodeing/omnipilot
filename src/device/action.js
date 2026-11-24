@@ -84,21 +84,34 @@ export function resolvePoint(p, size) {
   throw new Error(`无法解析点位: ${JSON.stringify(p)}`);
 }
 
+// 写操作统一检查远端退出码：input tap/swipe/keyevent 在设备侧失败时
+// （如缺 INJECT_EVENTS 权限）stdout 为空、错误在 stderr 且退出码非 0。
+// 不检查就会把失败当成功返回——引擎据此以为点击成功，进而报出
+// renderer_unresponsive 之类指向错误方向的诊断。
+async function runWrite(adb, cmd, { timeoutMs } = {}) {
+  const { code, stdout, stderr } = await adb.shell(cmd, { timeoutMs, withCode: true, withStderr: true });
+  if (code !== 0) {
+    const detail = String(stderr || stdout || '').trim();
+    throw new Error(`设备侧命令失败(exit ${code}): ${cmd}${detail ? ` — ${detail}` : ''}`);
+  }
+  return stdout;
+}
+
 export async function tap(adb, [x, y], { timeoutMs } = {}) {
-  return adb.shell(`input tap ${x} ${y}`, { timeoutMs });
+  return runWrite(adb, `input tap ${x} ${y}`, { timeoutMs });
 }
 
 // 实测 input swipe 同点 + duration 即长按（§5.4.4）
 export async function longPress(adb, [x, y], durationMs = 800, { timeoutMs } = {}) {
-  return adb.shell(`input swipe ${x} ${y} ${x} ${y} ${durationMs}`, { timeoutMs });
+  return runWrite(adb, `input swipe ${x} ${y} ${x} ${y} ${durationMs}`, { timeoutMs });
 }
 
 export async function swipe(adb, [x1, y1], [x2, y2], durationMs = 300, { timeoutMs } = {}) {
-  return adb.shell(`input swipe ${x1} ${y1} ${x2} ${y2} ${durationMs}`, { timeoutMs });
+  return runWrite(adb, `input swipe ${x1} ${y1} ${x2} ${y2} ${durationMs}`, { timeoutMs });
 }
 
 export async function key(adb, name, { timeoutMs } = {}) {
   const code = KEYCODES[String(name).toLowerCase()];
   if (!code) throw new Error(`不支持的按键: ${name}（可用: ${Object.keys(KEYCODES).join('/')}）`);
-  return adb.shell(`input keyevent ${code}`, { timeoutMs });
+  return runWrite(adb, `input keyevent ${code}`, { timeoutMs });
 }

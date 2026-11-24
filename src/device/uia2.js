@@ -13,7 +13,12 @@ export function hostPort(serial) {
   let h = 0;
   for (const ch of String(serial)) h = (h * 31 + ch.charCodeAt(0)) % 997;
   let p = 6790 + (h % 200);
-  while (usedPorts.has(p)) p = p >= 6989 ? 6790 : p + 1;
+  // 槽位耗尽必须有守卫：200 个槽全占时线性探测会绕圈死循环——
+  // 这是同步函数里的无限循环，会卡死 event loop 且无法中断（无超时无报错）。
+  // 与 rebindPort 的守卫保持一致。
+  let probes = 0;
+  while (usedPorts.has(p) && ++probes <= 200) p = p >= 6989 ? 6790 : p + 1;
+  if (probes > 200) throw new Error('hostPort 端口耗尽（200 槽全占用）');
   usedPorts.add(p);
   return p;
 }

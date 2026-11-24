@@ -973,6 +973,9 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   return device;
 }
 
-export async function createDevice({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts } = {}) {
-  return createDeviceWithExecutor({ serial, adbPath, timeouts });
+export async function createDevice({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts, probeFile = null } = {}) {
+  // probeFile 必须转发：CLI 传入的是全局探测缓存路径（<ASK_HOME>/.ask/family-probe.json），
+  // 而 locate 的默认是 cwd/.ask/…——不转发则工作区模式下探测结果永远读不到，
+  // VLM 定位在未指定 family 时必然失败。
+  return createDeviceWithExecutor({ serial, adbPath, timeouts, probeFile });
 }

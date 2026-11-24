@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createUia2 } from '../src/device/uia2.js';
+import { createUia2, hostPort } from '../src/device/uia2.js';
 
 const XML = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="root" bounds="[0,0][100,200]"/></hierarchy>`;
 
@@ -290,4 +290,25 @@ test('uia2：新建会话后注入 waitForIdleTimeout=0 settings（不阻断）'
     assert.equal(posts.length, 1, '新会话应恰好注入一次 settings');
     assert.match(posts[0], /"waitForIdleTimeout":0/);
   } finally { close(); }
+});
+
+// —— hostPort 槽位耗尽守卫 ——
+
+test('hostPort：槽位耗尽时抛错而非死循环', async () => {
+  // 回归用例：线性探测无耗尽检查 → 槽全占满后 while 绕圈，
+  // 这是同步函数里的无限循环，会卡死 event loop 且无法中断（无超时无报错）。
+  // 本文件其它用例已占用部分槽位，故不按绝对计数断言，只要求「最终抛错」。
+  const taken = new Set();
+  let exhausted = false;
+  for (let i = 0; i < 300; i++) {
+    try {
+      taken.add(hostPort(`serial-${i}`));
+    } catch (e) {
+      assert.match(e.message, /端口耗尽/, '耗尽时应抛明确的错');
+      exhausted = true;
+      break;
+    }
+  }
+  assert.ok(exhausted, '占满所有槽位后应抛错');
+  assert.ok(taken.size <= 200, '槽位总数不超过 200');
 });

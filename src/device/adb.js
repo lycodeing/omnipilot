@@ -159,9 +159,18 @@ export class Adb {
 
   // 文本通道：不因远端命令退出码非 0 而抛错（如 pidof 无进程返回 1）
   // withStderr=true 时返回 { stdout, stderr }（判定成败需看 stderr 的场景，如 net 命令不存在）
-  async shell(cmd, { timeoutMs, withStderr = false } = {}) {
+  // withCode=true 时额外返回 { code }——判定写操作是否真的生效需要退出码：
+  // input tap 失败（如缺 INJECT_EVENTS 权限）时 stdout 为空、错误在 stderr，
+  // 不看退出码就会把失败当成功，报出误导性的诊断。
+  async shell(cmd, { timeoutMs, withStderr = false, withCode = false } = {}) {
     const res = await this._enqueue(this._withSerial(['shell', cmd]), { timeoutMs: timeoutMs ?? this.timeouts.command });
     const stdout = typeof res.stdout === 'string' ? res.stdout : Buffer.from(res.stdout ?? '').toString('utf8');
+    if (withCode) {
+      const stderr = String(res.stderr ?? '');
+      return withStderr
+        ? { stdout, stderr, code: res.code ?? 0 }
+        : { stdout, code: res.code ?? 0 };
+    }
     if (withStderr) return { stdout, stderr: String(res.stderr ?? '') };
     return stdout;
   }

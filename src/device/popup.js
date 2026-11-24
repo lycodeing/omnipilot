@@ -127,9 +127,18 @@ export async function detectDialog(device) {
   let tree = null;
   try {
     tree = await device.dumpTree();
-    const rootPkg = tree?.nodes?.[0]?.pkg || null;
+    // 必须看**所有**根节点：uiautomator dump 每窗口一个根，权限弹窗叠在应用窗口之上时
+    // 会解析出两个根（应用 + permissioncontroller）。只取 nodes[0] 拿到的是底层窗口
+    // （应用自己），于是"前台是系统弹窗"的判定永远不成立——恰恰是弹窗处理存在的场景。
+    const rootPkgs = (tree?.nodes ?? []).map((n) => n?.pkg).filter(Boolean);
     const freshEnough = !tree?.fromCache || (Date.now() - (tree.cachedAt ?? 0)) <= MAX_TREE_STALE_MS;
-    if (rootPkg && freshEnough) fg = { package: rootPkg, activity: null, resumedActivity: null };
+    if (rootPkgs.length && freshEnough) {
+      // 存在系统弹窗根 → 前台即该弹窗（弹窗在顶层）
+      const dialogPkg = rootPkgs.find((p) => SYSTEM_DIALOG_PACKAGES.has(p));
+      // 否则取应用包（排除系统弹窗包）
+      const appPkg = rootPkgs.find((p) => !SYSTEM_DIALOG_PACKAGES.has(p)) ?? null;
+      fg = { package: dialogPkg ?? appPkg, activity: null, resumedActivity: null };
+    }
   } catch { /* 树不可用 → 回落 dumpsys */ }
   if (!fg) {
     fg = await device.foreground().catch(() => null);
