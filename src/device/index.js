@@ -20,6 +20,7 @@ const UIA2_BACKOFF = { transientMs: 5_000, fatalMs: 60_000 };
 import { createUia2 } from './uia2.js';
 import { createTapEachRow } from './tap-each-row.js';
 import { createDumpChannels } from './dump-channels.js';
+import { createSizeProbe } from './size-probe.js';
 import { assertSafePackage, assertSafeActivity } from './package-guard.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
@@ -50,10 +51,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   async function matchOnScreen(flat, sel) {
     const m = matchSelector(flat, sel);
     if (!m?.node) return null;
-    let size = sizeCache;
-    if (!size) {
-      try { size = await getSize(); } catch { return { ...m, inWebView: false }; }
-    }
+    // getSize 自带会话级缓存（size-probe.js），命中时零开销——
+    // 与原先直接读 sizeCache 的快速路径等价
+    let size;
+    try { size = await getSize(); } catch { return { ...m, inWebView: false }; }
     const b = m.node.bounds;
     const wv = flat.find((x) => /WebView/i.test(x.cls || ''));
     const zeroArea = !Array.isArray(b) || b[2] <= b[0] || b[3] <= b[1];
@@ -71,34 +72,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   const cache = new TreeCache();
   const vlmCache = new Map();
   const yadb = new Yadb(adb);
-  let sizeCache = bootSize; // waitForBoot 已探测过 wm size 时直接复用（省一次往返）
-  let sizeFailedAt = 0; // 上次探测失败的时刻（负缓存冷却，避免每个工具立刻重复撞墙）
   // 注：原 pendingPreHash / lastActionChanged（"动作后画面是否变化"的懒校验）已删除——
   // 全仓零消费者（device.lastActionChanged getter 无人读），是死代码。
 
-  const SIZE_RETRY = { attempts: 3, delayMs: 500, cooldownMs: 1500 };
-
-  // 屏幕尺寸会话级缓存。冷启动期 wm size 可能未就绪：短退避重试；仍失败则记负缓存冷却，
-  // 冷却期内的调用立刻失败（不再反复打设备），冷却过后允许重探（设备此时通常已就绪）。
-  async function getSize() {
-    if (sizeCache) return sizeCache;
-    if (sizeFailedAt && Date.now() - sizeFailedAt < SIZE_RETRY.cooldownMs) {
-      throw new screen.ScreenSizeError('设备未就绪：屏幕尺寸探测处于冷却期', { notReady: true });
-    }
-    let lastErr;
-    for (let i = 0; i < SIZE_RETRY.attempts; i++) {
-      try {
-        sizeCache = await screen.readScreenSize(adb, { timeoutMs: adb.timeouts.command });
-        sizeFailedAt = 0;
-        return sizeCache;
-      } catch (e) {
-        lastErr = e;
-        if (i < SIZE_RETRY.attempts - 1) await new Promise((r) => setTimeout(r, SIZE_RETRY.delayMs));
-      }
-    }
-    sizeFailedAt = Date.now();
-    throw lastErr;
-  }
+  // 屏幕尺寸探测（见 size-probe.js）：会话级缓存 + 负缓存冷却，状态随模块内聚。
+  const getSize = createSizeProbe({ adb, bootSize });
 
   // /dev/tty dump 在新版 platform-tools 上 shell 通道 stdout 只有提示行，XML 须走 exec-out 通道；
   // exec-out 失败或返回不含 </hierarchy>（同为 shell 通道的病征）时回退 legacy shell（旧镜像/redroid 兼容）。
