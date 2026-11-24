@@ -62,8 +62,8 @@ export function matchNodeSelector(node, sel) {
     return true;
   }
   if (s.startsWith('re:')) {
-    let re;
-    try { re = new RegExp(s.slice(3), 'i'); } catch { return false; }
+    const re = compileSafeRegex(s.slice(3));   // 嵌套量词等危险模式会被拒绝（ReDoS 防护）
+    if (!re) return false;
     return re.test(String(node.text || '')) || re.test(String(node.contentDesc || ''));
   }
   return false;
@@ -82,13 +82,30 @@ export function findByContains(flat, text, field = null) {
   });
 }
 
-export function findByRegex(flat, pattern) {
-  let re;
+// 安全正则编译：selector 的 re: 分支可由用例文本、data_extract 参数或模型产出提供，
+// 是"外部输入 → 正则执行器"的直连通道。嵌套量词（如 (a+)+$）会在 UI 树的每个节点上
+// 触发灾难性回溯——UI 树常有数百节点，单次 locate 可挂死数分钟（无超时、无中断）。
+// 无依赖方案：限制长度 + 拒绝嵌套量词 + 拒绝回溯型构造。
+const MAX_REGEX_LEN = 200;
+// 嵌套量词：(?:\([^)]*[+*][^)]*\)|\[[^\]]*\][+*])\s*[+*] 之类
+const NESTED_QUANTIFIER_RE = /\((?:[^()]*[+*][^()]*)\)\s*[+*?]/;
+const BACKTRACKING_HINT_RE = /\(\?<[=!]|\\1|\\2/;
+
+export function compileSafeRegex(pattern, flags = 'i') {
+  const src = String(pattern ?? '');
+  if (!src || src.length > MAX_REGEX_LEN) return null;
+  if (NESTED_QUANTIFIER_RE.test(src)) return null;   // 嵌套量词 → 灾难性回溯
+  if (BACKTRACKING_HINT_RE.test(src)) return null;   // 反向引用 / 前后查找 → 复杂回溯
   try {
-    re = new RegExp(pattern, 'i');
+    return new RegExp(src, flags);
   } catch {
-    return [];
+    return null;
   }
+}
+
+export function findByRegex(flat, pattern) {
+  const re = compileSafeRegex(pattern);
+  if (!re) return [];
   return flat.filter((n) => (n.text && re.test(n.text)) || (n.contentDesc && re.test(n.contentDesc)));
 }
 

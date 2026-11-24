@@ -62,7 +62,13 @@ async function extractCollection(ctx, params) {
   const { device, store } = ctx;
   const seen = new Map();
   let rounds = 0;
-  const maxRounds = Math.max(1, params.max ?? 20);
+  // 两个上限语义不同，不能混用一个参数：
+  //   max      —— 收集**条数**上限（真正截断已收集行数）
+  //   maxRounds—— 滚动**轮数**上限（防止无限滚动）
+  // 原实现把 max 当轮数用，写 "max: 50" 期望"最多收 50 条"，实际是"最多滚 50 屏"
+  // ——可能收 500 条，也可能因页面早早到底而只收几条。
+  const maxItems = Math.max(1, params.max ?? 20);
+  const maxRounds = Math.max(1, params.maxRounds ?? 20);
 
   while (rounds < maxRounds) {
     rounds++;
@@ -76,12 +82,14 @@ async function extractCollection(ctx, params) {
     for (const row of rows) {
       const k = params.key ? String(row[params.key] ?? JSON.stringify(row)) : JSON.stringify(row);
       if (!seen.has(k)) seen.set(k, row);
+      if (seen.size >= maxItems) break;
     }
+    if (seen.size >= maxItems) break;   // 条数已够，不必再滚
     // 滚动一屏看后续内容（direction 内容语义：down=前进）；无变化即停（树 hash 判定）
     const r = await device.scroll('down', { max: 1, stopWhenNoChange: true });
     if (!r.changed) break;
   }
-  return [...seen.values()];
+  return [...seen.values()].slice(0, maxItems);
 }
 
 // —— ai 模式：截图 + 小模型抽 JSON（§7.1） ——
@@ -129,7 +137,8 @@ export function buildDataTools(ctx) {
       container: Type.Optional(Type.String({ description: '容器 selector（列表卡片 class）' })),
       query: Type.Optional(Type.String({ description: 'ai 提取要求' })),
       key: Type.Optional(Type.String({ description: 'collection 去重主键' })),
-      max: Type.Optional(Type.Number({ description: 'collection 最多条数，默认20' })),
+      max: Type.Optional(Type.Number({ description: 'collection 最多收集条数，默认20' })),
+      maxRounds: Type.Optional(Type.Number({ description: 'collection 最多滚动轮数，默认20' })),
     }),
     execute: async (_id, params) => {
       let rows = [];

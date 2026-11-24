@@ -373,8 +373,17 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         //（空格 %s、shell 元字符转义）；非 ASCII 不降级（input text 对中文静默失败，§5.4.5）。
         let usedFallback = false;
         if (readBack !== want && /^[\x20-\x7E]+$/.test(want)) {
-          const escaped = want.replace(/([\\'"`$;&<>|()*?~[\]{}#%!])/g, '\\$1').replace(/ /g, '%s');
-          await adb.shell(`input text ${escaped}`).catch(() => {});
+          // 转义集贴合 AOSP `input text` 的真实协议（Input.sendText 的 escapeFlag 机制）：
+          //   - 空格 → `%s`（设备端 %s 解码为空格）
+          //   - 字面 `%`：AOSP **不支持**转义它——% 后跟 's' 才被吞成空格，其它情况
+          //     % 与后一字符都保留。故 "%%" 会解成两个 %（更糟），反斜杠转义则设备端
+          //     原样送出（多出反斜杠）。正确做法是**原样保留**，让回读校验发现不符
+          //     并如实报错——这是平台限制，不是可修的 bug。
+          //     （主路径 yadb 无此限制，仅 vendor 二进制 ABI 不符时的降级路径受影响）
+          //   - 其余 shell 元字符用单引号包裹（引号内 shell 不做展开）
+          const arg = want.replace(/ /g, '%s');
+          const quoted = `'${arg.replace(/'/g, `'\\''`)}'`;
+          await adb.shell(`input text ${quoted}`).catch(() => {});
           usedFallback = true;
           beforeAction();
           tree = await dumpTree({ fresh: true });
@@ -948,14 +957,20 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       }
     },
     // 一次 shell 读多个属性（性能）：旧实现每个属性各 spawn 一次 adb（设备事实采集
-    // 曾 4 次串行 adb 调用）。输出按行拆回，行序与入参一致；失败返回空串不抛错。
+    // 曾 4 次串行 adb 调用）。失败返回空串不抛错。
+    //
+    // 必须用分隔符而非按行拆：getprop 对**不存在的属性**会输出空行，按行拆会让
+    // 后续所有属性值整体前移一位（ro.product.model 丢失、被空行顶替）——
+    // 这是数据静默损坏，且会污染整轮运行的提示词（设备事实每次 run 都读）。
     async getProps(names) {
       const list = (Array.isArray(names) ? names : [names]).map((n) => String(n).trim());
       if (!list.length) return [];
+      const SEP = '__ASK_SEP__';
       try {
-        const out = await adb.shell(list.map((n) => `getprop ${n}`).join('; '), { timeoutMs: adb.timeouts.command });
-        const lines = String(out).split(/\r?\n/);
-        return list.map((_, i) => (lines[i] ?? '').trim());
+        const out = await adb.shell(list.map((n) => `getprop ${n}`).join(`; echo ${SEP}; `), { timeoutMs: adb.timeouts.command });
+        // 末尾多一个分隔符，便于切分最后一段
+        const parts = String(out).split(SEP);
+        return list.map((_, i) => String(parts[i] ?? '').trim());
       } catch {
         return list.map(() => '');
       }

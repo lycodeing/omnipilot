@@ -54,18 +54,33 @@ export function parseCoords(text) {
   return null;
 }
 
-// 步骤字段收哪些"参数行"（缩进续行）；不在表内且非命令名的续行仍按旧行为拼进 text
-const PARAM_KEYS = new Set([
-  'value', 'direction', 'distancePct', 'until', 'keyName', 'name', 'timeout',
-  'max', 'maxScrolls', 'durationMs', 'appId', 'package', 'packageName', 'mode', 'path', 'quiet',
-  'rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile',
-  // batch：ai/aiAct 长任务步的续作形态（false=逐个处理 / true=每轮并行处理本屏全部项），
-  // 与 until/maxRounds 一起构成显式 loop 声明（见 resolveLoopPlan）
-  'batch',
-  // selector：aiWaitFor 的显式等待 selector（评审 #10：散文解析只作未声明时的兜底）
-  'selector',
-]);
+// 步骤字段收哪些"参数行"（缩进续行）；不在表内且非命令名的续行仍按旧行为拼进 text。
+// 单一事实源：由下方 PARAM_KEYS_BY_TYPE 的并集派生——两张表手工维护必然漂移
+// （历史上 aiInput 的 clear 只在分类型表里，导致 "clear: true" 被当成文本拼进 text，
+//  且因未进入 step 对象而完全绕过 warnUnknownParams 告警）。
+const PARAM_KEYS_BY_TYPE = {
+  ai: ['timeout', 'until', 'maxRounds', 'batch', 'name'],
+  aiAct: ['timeout', 'until', 'maxRounds', 'batch', 'name'],
+  aiTap: ['timeout'],
+  aiInput: ['value', 'clear', 'timeout'],
+  aiLongPress: ['durationMs', 'timeout'],
+  aiKeyboardPress: ['keyName', 'timeout'],
+  aiScroll: ['direction', 'distancePct', 'until', 'max', 'timeout'],
+  aiTapEach: ['rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile', 'timeout'],
+  uiDump: ['path', 'timeout'],
+  launch: ['appId', 'timeout'],
+  terminate: ['package', 'packageName', 'timeout'],
+  aiWaitFor: ['timeout', 'quiet', 'selector'],
+  aiQuery: ['name', 'mode', 'quiet', 'timeout'],
+  aiAssert: ['timeout'],
+  sleep: [],
+  net: ['profile'],
+};
+const PARAM_KEYS = new Set(Object.values(PARAM_KEYS_BY_TYPE).flat());
 const NUMBER_KEYS = new Set(['seconds', 'max', 'timeout', 'maxScrolls', 'durationMs', 'distancePct']);
+// 布尔型参数：只收工具 schema 明确声明 Type.Boolean 的那些（clear / verify）。
+// 不收 batch —— 它在 resolveLoopPlan 里按 String(s.batch) 正则判定，字符串语义是既有契约。
+const BOOLEAN_KEYS = new Set(['clear', 'verify']);
 
 export class CaseParseError extends Error {
   constructor(message) {
@@ -116,6 +131,13 @@ function coerce(key, val) {
   if (NUMBER_KEYS.has(key)) {
     const n = Number(v);
     return Number.isFinite(n) ? n : v;
+  }
+  // 布尔参数（clear / verify / batch 等）：工具 schema 声明的是 Type.Boolean，
+  // 字符串 "true" 会被 typebox 校验拒绝——必须在此转成真布尔。
+  if (BOOLEAN_KEYS.has(key)) {
+    if (/^(true|yes|on|1)$/i.test(v)) return true;
+    if (/^(false|no|off|0)$/i.test(v)) return false;
+    return v;
   }
   return v;
 }
@@ -212,15 +234,19 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
           continue;
         }
         // 已知参数名（如误缩进的 value:）不当作步骤；其余未知 "key: value" 视为任务文本
-        // —— 但**坐标形态**的未知命令必须报错**：
-        // 旧行为把 "tap: { x: 405, y: 2115 }" 整行当自然语言任务喂给 agent（静默失效），
-        // 点击从未发生，下游断言全灭且无任何告警。命令名是 ASCII 标识符 + 值是坐标/对象字面量
-        // 时，几乎必然是"写了个不受支持的步骤命令"，必须响亮报错。
-        if (/^[A-Za-z][\w-]*$/.test(kv[1]) && (parseCoords(kv[2]) || /^\{.*\}$/.test(String(kv[2]).trim()))) {
+        // —— 但**未知命令名**必须报错**：
+        // 旧行为把 "aiTapp: 点击登录"（拼写错误）整行当自然语言任务喂给 agent，
+        // 命令语义静默降级、断言全灭且无任何告警（与坐标形态的历史事故同源）。
+        // 命令名是 ASCII 标识符（形如 "name: value"）时，几乎必然是"写了个不受支持/
+        // 拼错的步骤命令"，必须响亮报错并给出可用命令表。
+        if (/^[A-Za-z][\w-]*$/.test(kv[1])) {
+          const isCoordLike = parseCoords(kv[2]) || /^\{.*\}$/.test(String(kv[2]).trim());
+          const hint = isCoordLike
+            ? `看起来是坐标/对象形态的步骤，但 DSL 只支持坐标 "tap: { x, y }"（且需顶层 allowCoords: true）。`
+            : `可用命令见 cases/README.md 步骤命令表（aiTap/aiScroll/aiInput/aiAct/assert/sleep 等）；` +
+              `纯文本任务请直接写 "- <描述>"（不带冒号）。`;
           throw new CaseParseError(
-            `${source}:${i + 1} 未知步骤命令 "${kv[1]}: ${unquote(kv[2])}"：看起来是坐标/对象形态的步骤，` +
-            `但 DSL 只支持坐标 "tap: { x, y }"（且需顶层 allowCoords: true）。` +
-            `语义操作请用 aiTap/aiScroll/aiLongPress 等（见 cases/README.md 步骤命令表）`,
+            `${source}:${i + 1} 未知步骤命令 "${kv[1]}: ${unquote(kv[2])}"。${hint}`,
           );
         }
       }
@@ -257,25 +283,9 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
 // 每命令消费的参数表（2026-11-10 评审 #12）：全局 PARAM_KEYS 收集保持宽容，但装载期对
 // "该命令不认的参数"显式 warn——写错位的参数（aiScroll 挂 value:）此前被静默收下、毫无
 // 作用。校准依据：bin/ask.js 与 buildToolCall 的实际消费点 + 全部存量用例（0 误报）。
-const PARAM_KEYS_BY_TYPE = {
-  ai: ['timeout', 'until', 'maxRounds', 'batch', 'name'],
-  aiAct: ['timeout', 'until', 'maxRounds', 'batch', 'name'],
-  aiTap: ['timeout'],
-  aiInput: ['value', 'clear', 'timeout'],
-  aiLongPress: ['durationMs', 'timeout'],
-  aiKeyboardPress: ['keyName', 'timeout'],
-  aiScroll: ['direction', 'distancePct', 'until', 'max', 'timeout'],
-  aiTapEach: ['rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile', 'timeout'],
-  uiDump: ['path', 'timeout'],
-  launch: ['appId', 'timeout'],
-  terminate: ['package', 'packageName', 'timeout'],
-  aiWaitFor: ['timeout', 'quiet', 'selector'],
-  aiQuery: ['name', 'mode', 'quiet', 'timeout'],
-  aiAssert: ['timeout'],
-  sleep: [],
-  net: ['profile'],
-};
-
+// 注：batch 是 ai/aiAct 长任务步的续作形态（false=逐个处理 / true=每轮并行处理本屏全部项），
+// 与 until/maxRounds 一起构成显式 loop 声明（见 resolveLoopPlan）；
+// selector 是 aiWaitFor 的显式等待 selector（评审 #10：散文解析只作未声明时的兜底）。
 function warnUnknownParams(caseObj, source) {
   caseObj.steps.forEach((s, i) => {
     const known = PARAM_KEYS_BY_TYPE[s.type];
@@ -309,7 +319,9 @@ export function buildToolCall(step) {
     return { tool: 'point_tap', params: { x: Number(step.x), y: Number(step.y) } };
   }
   if (t === 'aiTap') return { tool: 'tap', params: { target: step.text } };
-  if (t === 'aiInput') return { tool: 'input', params: { target: step.text, value: step.value ?? '' } };
+  // aiInput 的 clear 必须转发：src/tools/action.js 的 input 工具支持 clear（先清空再输入），
+  // 但此前 buildToolCall 不带 clear → 用例里写 "clear: true" 永远不生效。
+  if (t === 'aiInput') return { tool: 'input', params: { target: step.text, value: step.value ?? '', ...(step.clear != null ? { clear: coerce('clear', step.clear) } : {}) } };
   if (t === 'aiLongPress') return { tool: 'long_press', params: { target: step.text, ...(num(step.durationMs) != null ? { durationMs: num(step.durationMs) } : {}) } };
   if (t === 'aiKeyboardPress') return { tool: 'key', params: { name: step.keyName || step.text } };
   if (t === 'aiScroll') {

@@ -598,8 +598,24 @@ test('inputText：ASCII 文本 yadb 回读失败 → input text 降级重试一�
   const r = await device.inputText([16, 1140, 704, 1220], 'hello123');
   assert.equal(r.ok, false, '降级后仍未回读到 → 失败语义不变');
   assert.equal(r.strategy, 'input-text-fallback');
-  const fb = exec.calls.find((c) => c.includes('input text hello123'));
+  const fb = exec.calls.find((c) => c.includes('input text'));
   assert.ok(fb, '应尝试原生 input text 降级');
+  await device.close();
+});
+
+test('inputText：ASCII 降级时 % 不被反斜杠转义（设备端只认 %s，不认 \\）', async () => {
+  // 回归用例：AOSP 的 input text 用 escapeFlag 机制——% 后的字符是 s 才解成空格，
+  // 其它情况 % 与后字符都保留；反斜杠设备端完全不认。
+  // 故降级路径绝不能反斜杠转义 %（会多出字面反斜杠），也不能自造 %% 编码
+  // （AOSP 会原样保留两个 %）。字面 % 属平台限制，靠回读校验如实报错。
+  const exec = makeExec();
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  await device.inputText([16, 1140, 704, 1220], '50% off');
+  const fb = exec.calls.find((c) => c.includes('input text'));
+  assert.ok(fb, '应尝试原生 input text 降级');
+  assert.ok(fb.includes('50%soff') || fb.includes('50%%soff'),
+    `空格应转 %s，实际: ${fb}`);
+  assert.ok(!fb.includes('\\%'), '% 不应被反斜杠转义（设备端不认反斜杠）');
   await device.close();
 });
 
