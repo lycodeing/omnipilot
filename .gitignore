@@ -1,4 +1,4 @@
-# 运行时产物（已分离到工作区 <ASK_HOME>/<日期>/<实例>/，默认 C:/opt/scene-kit）
+# 运行时产物（已分离到工作区 <ASK_HOME>/<日期>/<实例>/，默认 C:/opt/omni-pilot）
 # 若在项目内误跑出来，一律忽略，避免污染源码树
 runs/
 datasets/

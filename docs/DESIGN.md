@@ -661,7 +661,7 @@ android-agent/
 
 **运行时产物与源码分离**（2026-10-27 起）：执行记录 / 数据集 / 报告 / 实例私有状态不再落入项目树，
 统一写入工作区 `<ASK_HOME>/<日期>/<实例>/{case,run,report,dataset,.ask}`；设备锁与 family 探测缓存落
-`<ASK_HOME>/.ask/`（**全局**，跨实例共享，否则锁失效）。`ASK_HOME` 默认 win32 `C:/opt/scene-kit`、其他平台 `/opt/scene-kit`；
+`<ASK_HOME>/.ask/`（**全局**，跨实例共享，否则锁失效）。`ASK_HOME` 默认 win32 `C:/opt/omni-pilot`、其他平台 `/opt/omni-pilot`；
 `ASK_WORKSPACE` 可钉死实例目录。解析逻辑见 `src/cli/workspace.js`，`.gitignore` 已忽略 `runs/ datasets/ .ask/ sessions/ dist/`。
 
 ---

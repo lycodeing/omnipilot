@@ -1,4 +1,4 @@
-# android-scene-kit 真机验证报告（稀土掘金 × 5 模型矩阵）
+# OmniPilot 真机验证报告（稀土掘金 × 5 模型矩阵）
 
 > 日期：2026-10-27 · 环境：Windows 11 · emulator-5554（Android 15 / API 35，google_apis，1080×2400）
 > 被测应用：稀土掘金 `com.daimajia.gold`（已登录） · 模型网关：u2a.lycodeing.cn（OpenAI 兼容）
@@ -243,7 +243,7 @@ App 页面勘察（供用例编写）：底部 5 Tab（首页/沸点/发现/课�
 **关键设计点**：
 - **设备锁必须全局**（`<ASK_HOME>/.ask/locks/`）——若随实例走，不同日期/实例的进程会各自加锁，锁就失效了
 - **family-probe 缓存全局**（设备属性，与实例无关）
-- `ASK_HOME` 默认 win32 `C:/opt/scene-kit`、其他平台 `/opt/scene-kit`；`ASK_WORKSPACE` 钉死实例；`ASK_DATE`/`ASK_INSTANCE` 覆盖
+- `ASK_HOME` 默认 win32 `C:/opt/omni-pilot`、其他平台 `/opt/omni-pilot`；`ASK_WORKSPACE` 钉死实例；`ASK_DATE`/`ASK_INSTANCE` 覆盖
 - `ask run <用例>` 支持裸文件名：先按给定路径找，找不到回退 `<实例>/case/`
 - `report/cli.js` 的缺省输出从 `cwd/runs/report.html` 改为 **run.json 同级目录**（工作区布局下即 `<实例>/report/`）
 

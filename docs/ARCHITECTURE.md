@@ -134,7 +134,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-  subgraph KIT["OmniScene（本仓库，曾用名 android-scene-kit）"]
+  subgraph KIT["OmniPilot（本仓库，曾用名 OmniScene / android-scene-kit）"]
     A["session/model.js<br/>registerProvider(baseUrl, apiKey, models)"]
     B["session/create.js<br/>createAgentSession(customTools)"]
     C["tools/ai.js<br/>createChatClient（小模型，注入式）"]
@@ -202,7 +202,7 @@ flowchart TD
 ```mermaid
 flowchart LR
   CLI["bin/ask.js"]
-  WS["<ASK_HOME>/<日期>/<实例>/<br/>（默认 C:/opt/scene-kit）"]
+  WS["<ASK_HOME>/<日期>/<实例>/<br/>（默认 C:/opt/omni-pilot）"]
   G["<ASK_HOME>/.ask/<br/>全局（跨实例）"]
 
   CLI -->|"case/ 用例"| WS

@@ -34,7 +34,7 @@ export async function connectServer(server, { timeoutMs = CONNECT_TIMEOUT_MS } =
         requestInit: server.headers ? { headers: server.headers } : undefined,
       });
     }
-    const client = new Client({ name: 'omniscene', version: '0.1.0' });
+    const client = new Client({ name: 'omnipilot', version: '0.1.0' });
     await withTimeout(client.connect(transport), timeoutMs, `MCP ${server.name} 连接`);
     const toolsRes = await withTimeout(client.listTools(), timeoutMs, `MCP ${server.name} listTools`);
     const tools = (toolsRes.tools || []).map((t) => ({

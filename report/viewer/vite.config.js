@@ -9,12 +9,12 @@ import { buildDump, makeDumpTag } from '../recorder.js'
 const viewerRoot = path.dirname(fileURLToPath(import.meta.url))
 // runs 目录解析优先顺序：
 //   1. ASK_WORKSPACE（显式指定 instance 目录）→ <ws>/run
-//   2. ASK_HOME（默认 C:/opt/scene-kit）→ 取日期最新、实例最新的 <home>/<date>/<inst>/run
+  //   2. ASK_HOME（默认 C:/opt/omni-pilot）→ 取日期最新、实例最新的 <home>/<date>/<inst>/run
 //   3. 旧布局回退：项目根 runs/（迁移期兼容）
 function latestRunDir() {
   const candidates = []
   if (process.env.ASK_WORKSPACE) candidates.push(path.join(path.resolve(process.env.ASK_WORKSPACE), 'run'))
-  const home = process.env.ASK_HOME || (process.platform === 'win32' ? 'C:/opt/scene-kit' : '/opt/scene-kit')
+  const home = process.env.ASK_HOME || (process.platform === 'win32' ? 'C:/opt/omni-pilot' : '/opt/omni-pilot')
   try {
     const dates = fs.readdirSync(home).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()
     for (const d of dates) {

@@ -1,9 +1,9 @@
 {
-  "name": "omniscene",
+  "name": "omnipilot",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Android-scenario test agent: Pi agent loop + self-built adb device layer + MCP bridge",
+  "description": "Cross-platform scenario test agent: Pi agent loop + pluggable device layer + MCP bridge",
   "bin": {
     "ask": "./bin/ask.js"
   },

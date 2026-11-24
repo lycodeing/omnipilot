@@ -127,7 +127,7 @@ steps:
 | c4-collection-pipeline | **pass** | 455s | 3/3 |
 | 健康自测（compat，emulator-5556） | **pass** | 457s | 8/8 |
 
-> 详细报告：C:/opt/scene-kit/2026-10-30/health-verify/RUNLOG.md
+> 详细报告：C:/opt/omni-pilot/2026-10-30/health-verify/RUNLOG.md
 > 注：掘金在 x86_64 靠转译层运行，随机 native 崩溃属环境硬限制；按 pm clear 重置稳定窗口分轮重试后全绿。
 
 ## NL 形态验证矩阵（2026-10-28，历史轮次）

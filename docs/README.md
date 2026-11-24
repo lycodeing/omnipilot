@@ -1,6 +1,6 @@
 # docs/ — 文档索引
 
-> OmniScene（曾用名 android-scene-kit）的设计、契约、验证与调研文档集中于此（`report/CONTRACT.md` 属报告子工程，随代码在 `report/`）。
+> OmniPilot（曾用名 OmniScene / android-scene-kit）的设计、契约、验证与调研文档集中于此（`report/CONTRACT.md` 属报告子工程，随代码在 `report/`）。
 
 | 文档 | 内容 | 状态 |
 |---|---|---|

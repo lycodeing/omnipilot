@@ -1,4 +1,4 @@
-# android-scene-kit 验证工程总览
+# OmniPilot 验证工程总览
 
 > 日期：2026-10-27 · 设备：emulator-5554（Android 15 / x86_64 / 1080×2400）· 被测应用：稀土掘金 `com.daimajia.gold`
 > 本文是导航与结论汇总。细节见 [VERIFICATION-REPORT.md](./VERIFICATION-REPORT.md)（20 章，900+ 行）。

@@ -1,4 +1,4 @@
-# OmniScene
+# OmniPilot
 
 跨端场景测试 agent：Pi coding-agent 循环 + 可插拔设备层 + MCP 桥。
 用自然语言或 YAML 用例驱动 App / 网页 / 桌面程序，逐步落 run.json 报告（含截图、定位策略、断言、网络时间线）。
@@ -7,7 +7,7 @@
 - 环境：Node 24（ESM）
 - 依赖：`@earendil-works/pi-coding-agent`、`@modelcontextprotocol/sdk`（其余为 Node 内置）
 - 文档：[docs/DESIGN.md](./docs/DESIGN.md) 设计稿 · [docs/CONTRACT-CORE.md](./docs/CONTRACT-CORE.md) 开发契约 · [docs/VERIFICATION-REPORT.md](./docs/VERIFICATION-REPORT.md) 真机验证报告
-- 曾用名：`android-scene-kit`（2026-10-28 起更名 OmniScene，历史验证报告保留旧名）
+- 曾用名：`android-scene-kit`（2026-10-28 起更名 OmniScene，2026-11-24 起再更名 OmniPilot）
 
 ## 快速上手
 
@@ -33,7 +33,7 @@ node bin/ask.js run cases/s1-hotlist.yaml --yes
 
 ## 远程设备（adb over TCP）
 
-设备不必插在本机。adb 原生支持 TCP 连接，OmniScene 的 `--device <serial>` 直接吃 `host:port` 序列号：
+设备不必插在本机。adb 原生支持 TCP 连接，OmniPilot 的 `--device <serial>` 直接吃 `host:port` 序列号：
 
 ```bash
 # 1. 设备侧开启 TCP（一次性；5555 为常用端口）
@@ -69,7 +69,7 @@ node bin/ask.js run cases/s3-engine-params.yaml --yes --device 192.168.1.50:5555
 └── family-probe.json   模型家族坐标探测缓存（设备属性，全局复用）
 ```
 
-- `ASK_HOME` 默认：Windows → `C:/opt/scene-kit`（等价 `/c/opt/scene-kit`）；其他平台 → `/opt/scene-kit`
+- `ASK_HOME` 默认：Windows → `C:/opt/omni-pilot`（等价 `/c/opt/omni-pilot`）；其他平台 → `/opt/omni-pilot`
 - `ASK_WORKSPACE` 可直接钉死整个实例目录（CI/测试用）；`ASK_DATE` / `ASK_INSTANCE` 覆盖日期与实例名
 - `ask run <用例>` 支持**裸文件名**：先按给定路径找，找不到再回退 `<实例>/case/` 目录
 - 项目根的 `cases/` 是**用例模板/示例**（交付内容）；实际运行请用工作区目录
@@ -133,7 +133,7 @@ npm run docs:check    # 校验 DESIGN.md 的 mermaid 图表可渲染
 
 ## 多平台支持（路线图）
 
-OmniScene 的平台无关资产是**用例 DSL + agent 循环 + 报告流水线**；平台差异全部隔离在设备层适配器
+OmniPilot 的平台无关资产是**用例 DSL + agent 循环 + 报告流水线**；平台差异全部隔离在设备层适配器
 （契约 §1.1 的 `createDevice` 门面：screencap / dumpTree / locate / tap / input / key / launch / …）。
 新增一个平台 = 实现一个适配器，用例与报告零改动。
 

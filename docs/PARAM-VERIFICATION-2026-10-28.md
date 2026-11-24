@@ -1,7 +1,7 @@
 # 参数族用例验证报告（P 系列）
 
 > 日期：2026-10-28 · 设备：emulator-5554（Android 15 / x86_64 / 1080×2400）· 被测应用：稀土掘金 `com.daimajia.gold`
-> 网关：https://u2a.lycodeing.cn/v1 · 工作区：`C:/opt/scene-kit/2026-10-28/param-verify/`
+> 网关：https://u2a.lycodeing.cn/v1 · 工作区：`C:/opt/omni-pilot/2026-10-28/param-verify/`
 > 本轮目标：在既有会话（`session_fdd57cb9f4d6cf4ba477f552fb523eba`）交付物基础上，
 > **按 adb-cheatsheet 的功能点，为每个步骤命令的每种参数形态生成 YAML + 自然语言用例并逐模型验证**。
 
@@ -34,7 +34,7 @@
 | c3-all-commands | 复杂 | 16-18 | 全部 14 种步骤命令各至少一次；launch 文本/appId 双形态、terminate、screen(前台取证)、back/enter/home 键、read(re:)、uiDump、aiAct、secret/sms 不可用路径 |
 | c4-collection-pipeline | 复杂 | 10-14 | collection(key 主键去重+max 上限+container+fields)、data_query 倒序/where、跨数据集 extract→query→upsert→复查流水线、terminate(packageName 参数形态) |
 
-自然语言形态见 [cases/nl-p-cases.md](../../Users/XiaoFeiLong/Downloads/android-scene-kit/android-scene-kit/cases/nl-p-cases.md)。
+自然语言形态见 [cases/nl-p-cases.md](../../cases/nl-p-cases.md)。
 
 ## 三、实测结果
 
@@ -100,8 +100,8 @@
 - **现象**：会话开始后，掘金每次冷启动 5-26 秒内必然 native 崩溃（`SIGSEGV`，故障地址固定 `0x...5a3e00`）。
 - **根因**：与历史报告 §21.6 一致——App 仅含 `arm64/` native 库，靠 NDK Translation（berberis）在 x86_64 上转译运行，转译器遇到无法翻译的指令即崩溃。
 - **本轮取证**（可复核）：
-  - `C:/opt/scene-kit/2026-10-28/param-verify/evidence/logcat-crash.txt` —— 含 `Fatal signal 11 (SIGSEGV)` 与完整栈 `#01 libndk_translation.so (berberis_HandleNoExec+217)` → `#06 berberis::RunGuestThread`；
-  - `C:/opt/scene-kit/2026-10-28/param-verify/evidence/berberis-tombstone.txt` —— tombstone 头部 `ABI: 'x86_64'` / `Guest architecture: 'arm64'` / `Cmdline: com.daimajia.gold`；
+  - `C:/opt/omni-pilot/2026-10-28/param-verify/evidence/logcat-crash.txt` —— 含 `Fatal signal 11 (SIGSEGV)` 与完整栈 `#01 libndk_translation.so (berberis_HandleNoExec+217)` → `#06 berberis::RunGuestThread`；
+  - `C:/opt/omni-pilot/2026-10-28/param-verify/evidence/berberis-tombstone.txt` —— tombstone 头部 `ABI: 'x86_64'` / `Guest architecture: 'arm64'` / `Cmdline: com.daimajia.gold`；
   - 另有 `evidence/tombstone_13.txt`（fdsan SIGABRT）与 `evidence/tombstone-list.txt`。
 - **加重因素**：**App 数据随使用劣化**——同一份数据反复启动后崩溃窗口前移（从 26s 缩到 5s）。
 - **解法**：`adb shell pm clear com.daimajia.gold` + 自动同意隐私协议 → 重置出**约 40-50 分钟的稳定窗口**。代价是登录态丢失（P 系列用例不依赖登录）。
@@ -220,14 +220,14 @@ export ASK_MODEL_URL=https://u2a.lycodeing.cn/v1
 export ASK_MODEL_KEY=<key>
 export ASK_MODEL_NAME=deepseek-v4.1-flash
 export ASK_MODEL_FAMILY=deepseek
-export ASK_WORKSPACE=C:/opt/scene-kit/2026-10-28/param-verify
+export ASK_WORKSPACE=C:/opt/omni-pilot/2026-10-28/param-verify
 
 node bin/ask.js lint cases/*.yaml --strict          # 0 findings
 node bin/ask.js run cases/c3-all-commands.yaml --yes --timeout 1800
 node bin/ask.js do "<nl-p-cases.md 中的任务>" --yes
 ```
 
-**跑批前置**（针对崩溃环境）：`pm clear` + `pm grant POST_NOTIFICATIONS` + 冷启动 + 同意隐私协议，脚本见 `C:/opt/scene-kit/2026-10-28/param-verify/tmp/scripts/run-final-all.sh`。
+**跑批前置**（针对崩溃环境）：`pm clear` + `pm grant POST_NOTIFICATIONS` + 冷启动 + 同意隐私协议，脚本见 `C:/opt/omni-pilot/2026-10-28/param-verify/tmp/scripts/run-final-all.sh`。
 
 ## 八、评审整改记录（交付前自审 + 独立复审）
 
