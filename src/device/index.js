@@ -909,7 +909,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       while (Date.now() - t0 < timeoutMs) {
         let flat = [];
         try {
-          const tree = await dumpTree({ fresh: true });
+          // 同 waitForElement：把剩余预算传给 dump —— 一次 fresh dump 可能耗时
+          // 4-155s（uia2 退避/重试路径），不设上限会让"最多等 N 毫秒"被突破。
+          const remain = timeoutMs - (Date.now() - t0);
+          const tree = await dumpTree({ fresh: true, timeoutMs: Math.max(1000, remain) });
           flat = flattenNodes(tree.nodes);
           failStreak = 0;
         } catch { failStreak++; /* 继续等 */ }
@@ -920,6 +923,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
             if (m?.node) return { appeared: true, dumps, matched: `${sel} → ${m.value || ''}`, inWebView: !!m.inWebView };
           }
         }
+        // dump 之后重新检查 deadline：单次 dump 可能已超出预算，不该再睡一轮
+        if (Date.now() - t0 >= timeoutMs) break;
         const sleepMs = failStreak > 0 ? Math.min(500, 200 * failStreak) : intervalMs;
         await new Promise((r) => setTimeout(r, sleepMs));
       }

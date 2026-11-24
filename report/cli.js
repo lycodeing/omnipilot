@@ -63,6 +63,20 @@ async function cmdBuild(args) {
     } catch {
       fail(`无法读取 secrets 文件: ${args.secrets}`);
     }
+  } else {
+    // 缺少全文兜底时必须显式告警：run.json 里只有脱敏标记（[REDACTED:...]），
+    // 拿不到原值——模型在**后续非 secret 任务**的 thought/assertion.reason 里
+    // 回显密钥时会以明文进报告。recorder 生产路径自带全文扫描，CLI 路径没有。
+    const hasSecretSteps = (runJson?.steps ?? []).some(
+      (s) => s?.type === 'secret_get' || s?.type === 'sms_read' ||
+             String(s?.result ?? '').startsWith('[REDACTED'),
+    );
+    if (hasSecretSteps) {
+      console.error(
+        '[warn] 该 run 含敏感步骤但未提供 --secrets：模型在其它任务里回显的密钥会以明文进入报告。' +
+        '如需兜底脱敏，请用 --secrets <secrets.json>（格式 [{provider,key,value}]）。',
+      );
+    }
   }
   const written = await writeReport(runJson, {
     outPath,

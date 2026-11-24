@@ -54,7 +54,12 @@ report/
   真实 dataURL 放 `ask-image` 标签的 textContent。B 侧 useDump 把 ask-image 收进 `screenshots` 映射。
 - 外链（html-and-assets）模式：dump 标签追加属性 `data-screenshot-mode="directory"`，
   **不写 ask-image 标签**，`screenshots` 值为相对路径 `"./screenshots/<uuid>.png"`，图片由 C 落盘 PNG。
-- JSON 写入前必须转义防提前闭合：`json.replace(/<\//g, '<\\/')`（`\/` 是合法 JSON 转义，解析后还原）。
+- JSON 写入前必须转义防提前闭合：**转义全部 `<` 为 `<`**（`<` 是合法 JSON 转义，解析后还原）。
+  - 原写法 `json.replace(/<\//g, '<\\/')` 只转义 `</`，**不足以**达到"防提前闭合"的目的：
+    HTML 解析器遇到 `<!--<script>` 会进入 "script data double escaped" 状态，此后
+    `</script>` 不再闭合标签，后续内容全被吞进 script 元素——整份报告损坏
+    （实测：一行模型 thought 即可触发）。`<` 全量转义不进入任何 HTML tokenizer 状态。
+  - 该转义须施加于**全部** dump JSON 写入点（makeDumpTag / appendExecution / finalize）。
 - 所有标签统一插在壳的 `</body>` 之前（C）；增量 append 时逐条追加。
 - 同 group 重复 append 是允许的：**读取侧按 data-group-id 去重保最新**（§19.8.6.5）。
 - groupId：默认 `default`（单任务报告）；多任务时为批次名。B 对 executions 数量零假设。
@@ -281,8 +286,11 @@ export const REDACTED_PREFIX = '[REDACTED';
 
 export function buildDump(runJson, opts = {});
 // run.json(§14.1) → dump(§2)。映射（§19.5 表）：steps→executions[0].tasks（taskId=String(index)、
-// timing.end=startedAt+durationMs、status ok→finished 其余→failed、locate 原样透传、
-// type/target→type/param.target）；model→modelBriefs=[{intent:'planning',name}]；
+// timing.end=startedAt+durationMs、locate 原样透传、type/target→type/param.target）；
+// status 映射为四态：ok→finished、cancelled→cancelled、error→error、其余→failed；
+//   另有 `[REDACTED:...]`（recorder 为防密钥落盘覆写的脱敏标记）→finished ——
+//   否则一次**成功**的 secret_get 会被显示为 failed，状态信号被脱敏机制毁掉；
+// model→modelBriefs=[{intent:'planning',name}]；
 // device/status/durationMs/assertions/networkTimeline/rollbacks 透传；screenshots 键 = 各 step 的
 // screenshotId（uuid 由 buildDump 生成并回填 locate.screenshotId），single-html 值 ""。
 // opts: { groupName?, runId?, screenshotIds? }。steps 为空 → executions[0].tasks=[]。
@@ -302,7 +310,13 @@ export class ReportWriter {
 export function loadShell(distDir);
 // 优先读 distDir/index.html，把本地 <script src> 与 <link rel=stylesheet> 内联为内联内容（构建产物单文件化）；
 // 文件不存在 → 返回内置最小兜底壳（<!doctype html>… <div id="root">报告壳未构建，仅数据可解析</div></body>）。
-export async function writeReport(runJson, { outPath, mode, shell, groupName });  // 组合快捷入口（同步实现亦可）
+// 内联只允许 dist 目录内的资源（越界路径保持原样不内联）——报告是会被分享的产物，
+// dist 外的任意文件不得被读入。
+export async function writeReport(runJson, { outPath, mode, shell, groupName, runDir, secrets });
+// runDir：截图相对路径的解析基准（工作区模式下 runsDir 为绝对路径）；缺省用 cwd 推断。
+// secrets：[{provider,key,value}] 列表，用于**全文兜底脱敏**——recorder 写 run.json 时
+//   已做过全文扫描，但 CLI 的 `report/cli.js build` 路径没有：模型在**后续非 secret 任务**的
+//   thought / assertion.reason 里回显密钥时会以明文进报告。传入则两条入口共享同一份保证。
 ```
 
 ### 5.2 `tools.js`
@@ -318,7 +332,9 @@ export function reportHtmlToMarkdown(html);    // extractDumps → 每 execution
 ### 5.3 `cli.js`（零依赖手写 argv，薄壳，逻辑全在 recorder/tools）
 
 ```
-node report/cli.js build <run.json> [--out <file|dir>] [--assets] [--group-name <n>] [--shell <distDir>]
+node report/cli.js build <run.json> [--out <file|dir>] [--assets] [--group-name <n>] [--shell <distDir>] [--secrets <secrets.json>]
+// --secrets：[{provider,key,value}] 列表，用于全文兜底脱敏。run 含敏感步骤而未提供时，
+//   CLI 会向 stderr 告警（模型在其它任务里回显的密钥将以明文进报告）。
 node report/cli.js split <report.html> [--out <dir>]
 node report/cli.js to-md <report.html|dump.json> [--out <file>]
 ```
@@ -345,3 +361,18 @@ C 自建 `test/fixtures/run.sample.json`（§14.1 形状：≥5 步覆盖 tap+lo
 3. `node --test` A、C 全绿。
 4. 交叉缝合点：B 的 useDump 读 C 的标签格式；B 的 Player 调 A 的三模块；A 的 fixtures 与 C 的 buildDump
    产物形状一致（§2）。
+
+---
+
+## 7. 已批准偏差记录（§0 要求）
+
+> §0 规定"任何一方不得擅改本文件的签名与数据形状；如实现中发现契约缺陷，在最终报告里记录偏差"。
+> 本节即为该记录的落点——实现侧与契约侧的每一处已知差异都在此登记（日期 / 差异 / 理由）。
+
+| 日期 | 偏差 | 理由 |
+|---|---|---|
+| 2026-11-24 | §4.1 `parseReportDocument` 实际返回 `{meta, executions, screenshots, assertions, networkTimeline, rollbacks}`，比契约多 3 个字段 | 断言与网络时间线是报告的**核心价值**（Midscene 风格回放），缺失则报告只剩截图流。多返字段为**超集**，不破坏契约消费方 |
+| 2026-11-24 | §5.1 `writeReport` 新增 `runDir` 与 `secrets` 两个**可选**参数 | `runDir`：截图相对路径的解析基准（工作区模式下 runsDir 为绝对路径，按 cwd 推断会找错文件）；`secrets`：CLI 路径缺全文脱敏兜底，模型在后续任务回显密钥时会明文进报告。均为向后兼容的加法，原调用方式不受影响 |
+| 2026-11-24 | §1 转义规定由 `</` 改为 `<` 全量转义；§2 status 映射由两态改为四态 + `[REDACTED]`→finished | 见 §1 / §2 正文的新说明——原规定**无法达成其声明的目标**（`<!--<script>` 仍会摧毁报告；成功的 secret_get 被显示为 failed） |
+
+> 登记原则：只登记**已实现且已验证**的偏差；登记项须给出可复核的理由。

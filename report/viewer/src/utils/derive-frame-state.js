@@ -61,7 +61,10 @@ export function deriveFrameState(frame, layout) {
   // 交叉淡入：与前段不同图时，段前 min(CROSS_FADE_FRAMES, frameCount) 帧线性 0→1
   const prevSeg = hitIndex > 0 ? segments[hitIndex - 1] : null;
   const prevShot = prevSeg ? (prevSeg.script?.screenshotId ?? null) : null;
-  const isChange = prevSeg != null && shot !== prevShot;
+  // 前段必须有图才淡入：前段无图（prevShot 为 null）时淡入的起点是"无底图"，
+  // opacity 从 0 升到 1 期间画面全白（约 9 帧 / 300ms 空白闪帧）。
+  // 当前段也须有图——无图段（spin 等）不该触发淡入。
+  const isChange = prevSeg != null && shot != null && prevShot != null && shot !== prevShot;
   let opacity = 1;
   let prevScreenshotId = null;
   if (isChange && !isEnd && frameCount > 0) {

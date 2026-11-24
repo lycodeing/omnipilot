@@ -613,9 +613,19 @@ test('inputText：ASCII 降级时 % 不被反斜杠转义（设备端只认 %s�
   await device.inputText([16, 1140, 704, 1220], '50% off');
   const fb = exec.calls.find((c) => c.includes('input text'));
   assert.ok(fb, '应尝试原生 input text 降级');
-  assert.ok(fb.includes('50%soff') || fb.includes('50%%soff'),
-    `空格应转 %s，实际: ${fb}`);
+  // AOSP Input.sendText 的 escapeFlag 机制：% 后的字符是 s 才解成空格；其它情况
+  // % 与后字符都保留；反斜杠设备端完全不认。
+  //
+  // 原文 "50% off"：% 后面紧跟的空格必须编码成 %s，于是相邻的 % 与 %s 拼成 "%%s"
+  // ——这是协议本身的限制（AOSP 没有 % 的字面转义），不是实现错误。
+  // 因此这里断言的是"不做错误的转义"：不反斜杠转义、不自造 %% 编码成两个字面 %。
+  assert.ok(fb.includes('50%'), '字面 % 必须保留');
+  assert.ok(fb.includes('%soff'), '空格应转 %s');
   assert.ok(!fb.includes('\\%'), '% 不应被反斜杠转义（设备端不认反斜杠）');
+  // 自造 %% 编码的表现是"%% 后面跟的不是 s"（AOSP 会把 %%s 的首个 % 当字面）
+  // ——原文 "50% off" 恰好产生 "%%s"（% + 空格转的 %s），无法从字面区分，
+  // 故此处只断言"没有把 % 变成 %% 之外的形态"，真实转义由 AOSP 端语义保证。
+  assert.ok(!/%%[^s]/.test(fb), '不应出现 %% 紧跟非 s 的形态（自造 %% 编码）');
   await device.close();
 });
 

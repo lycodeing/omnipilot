@@ -83,19 +83,121 @@ export function findByContains(flat, text, field = null) {
 }
 
 // 安全正则编译：selector 的 re: 分支可由用例文本、data_extract 参数或模型产出提供，
-// 是"外部输入 → 正则执行器"的直连通道。嵌套量词（如 (a+)+$）会在 UI 树的每个节点上
-// 触发灾难性回溯——UI 树常有数百节点，单次 locate 可挂死数分钟（无超时、无中断）。
-// 无依赖方案：限制长度 + 拒绝嵌套量词 + 拒绝回溯型构造。
+// 是"外部输入 → 正则执行器"的直连通道。危险正则会在 UI 树的每个节点上触发灾难性
+// 回溯——UI 树常有数百节点，单次 locate 可挂死数分钟（无超时、无中断）。
+//
+// 判据用**逐字符扫描**而非整模式正则匹配——嵌套组会让"组 + 量词"的正则匹配
+// 失效（`[^()]*` 遇嵌套括号即断），黑名单式整模式匹配挡不住所有形态：
+// 实测 (a|aa)+$、(?:a{1,10}){1,10}$、(a{2,})+$ 都能绕过"嵌套量词"检测，
+// 其中 (?:a{1,10}){1,10}$ 只需 36 字符即 5.5s（36 字符 × 数百节点 = 整轮挂死）。
+//
+// 扫描规则（每个量词看它的作用对象）：
+//   - 作用对象是**分组**（(...) 或 (?:...)）→ 拒绝（组内重复 → 指数回溯）
+//   - 作用对象是**量词**（* + ? {n,m} 紧跟另一个量词）→ 拒绝（嵌套量词）
+//   - 出现反向引用 / 前后查找 / 命名组 → 拒绝
+// 允许：字面字符、字符类、转义、锚点、无量词修饰的分组、单层量词。
 const MAX_REGEX_LEN = 200;
-// 嵌套量词：(?:\([^)]*[+*][^)]*\)|\[[^\]]*\][+*])\s*[+*] 之类
-const NESTED_QUANTIFIER_RE = /\((?:[^()]*[+*][^()]*)\)\s*[+*?]/;
-const BACKTRACKING_HINT_RE = /\(\?<[=!]|\\1|\\2/;
+
+// 扫描 src，判断是否含回溯风险构造。返回 true = 安全。
+function isLinearTimeSafe(src) {
+  const stack = [];      // 分组栈：每项记录该组内是否出现过量词/交替
+  let i = 0;
+  let prevWasQuantifier = false;   // 上一个 token 是量词（用于检测嵌套量词）
+  let prevWasGroup = false;        // 上一个 token 是 ')'（用于检测"组被量词修饰"）
+  while (i < src.length) {
+    const c = src[i];
+    // 转义序列：跳过被转义的字符（\w \d \. \( 等）
+    if (c === '\\') {
+      if (i + 1 >= src.length) return false;      // 尾部孤立反斜杠
+      const n = src[i + 1];
+      if (n >= '1' && n <= '9') return false;      // 反向引用 → 复杂回溯
+      i += 2;
+      prevWasQuantifier = false;
+      prevWasGroup = false;
+      continue;
+    }
+    // 字符类 [...]：内部内容全部跳过（类内的 ] 与量词无回溯意义）
+    if (c === '[') {
+      let j = i + 1;
+      if (src[j] === '^') j++;
+      if (src[j] === ']') j++;      // 类首的 ] 是字面量
+      while (j < src.length && src[j] !== ']') j++;
+      if (j >= src.length) return false;   // 未闭合的类
+      i = j + 1;
+      prevWasQuantifier = false;
+      prevWasGroup = false;
+      continue;
+    }
+    // 分组开始
+    if (c === '(') {
+      // 前瞻/后顾/命名组 → 拒绝
+      let skip = 1;
+      if (src[i + 1] === '?') {
+        const k = src[i + 2];
+        if (k === '=' || k === '!' || k === '<') return false;
+        if (k === ':') skip = 3;      // (?: 前缀 —— '?' 不是量词，整段跳过
+      }
+      stack.push({ hasQuantifier: false, hasAlternation: false });
+      i += skip;
+      prevWasQuantifier = false;
+      prevWasGroup = false;
+      continue;
+    }
+    // 分组结束
+    if (c === ')') {
+      const grp = stack.pop();
+      if (!grp) return false;                      // 括号不配对
+      prevWasQuantifier = false;
+      prevWasGroup = true;                        // ')' 是分组结束 → 下个量词会修饰组
+      if (grp.hasAlternation) return false;       // 组内交替且组可被重复 → 歧义回溯
+      continue;
+    }
+    // 交替
+    if (c === '|') {
+      const grp = stack[stack.length - 1];
+      if (grp) grp.hasAlternation = true;
+      i += 1;
+      prevWasQuantifier = false;
+      prevWasGroup = false;
+      continue;
+    }
+    // 量词
+    let qLen = 0;
+    if (c === '*' || c === '+' || c === '?') qLen = 1;
+    else if (c === '{') {
+      const close = src.indexOf('}', i);
+      if (close === -1) return false;              // 未闭合的 {
+      if (!/^\{\d*(,\d*)?\}$/.test(src.slice(i, close + 1))) {
+        i = close + 1;                            // {literal} 不是量词
+        prevWasQuantifier = false;
+        prevWasGroup = false;
+        continue;
+      }
+      qLen = close - i + 1;
+    }
+    if (qLen) {
+      if (prevWasQuantifier) return false;        // 嵌套量词
+      if (prevWasGroup) return false;             // 量词修饰分组 → 指数回溯
+      const grp = stack[stack.length - 1];
+      if (grp) grp.hasQuantifier = true;
+      i += qLen;
+      prevWasQuantifier = true;
+      prevWasGroup = false;
+      continue;
+    }
+    // 普通字面字符
+    i += 1;
+    prevWasQuantifier = false;
+    prevWasGroup = false;
+  }
+  if (stack.length) return false;                // 括号未闭合
+  return true;
+}
 
 export function compileSafeRegex(pattern, flags = 'i') {
   const src = String(pattern ?? '');
   if (!src || src.length > MAX_REGEX_LEN) return null;
-  if (NESTED_QUANTIFIER_RE.test(src)) return null;   // 嵌套量词 → 灾难性回溯
-  if (BACKTRACKING_HINT_RE.test(src)) return null;   // 反向引用 / 前后查找 → 复杂回溯
+  if (!isLinearTimeSafe(src)) return null;
   try {
     return new RegExp(src, flags);
   } catch {
@@ -105,7 +207,12 @@ export function compileSafeRegex(pattern, flags = 'i') {
 
 export function findByRegex(flat, pattern) {
   const re = compileSafeRegex(pattern);
-  if (!re) return [];
+  if (!re) {
+    // 静默返回空数组会让用户分不清"正则被安全策略拒绝"与"确实没匹配到"——
+    // 前者需要改写正则，后者需要换目标。必须显式告知。
+    console.warn(`[warn] 正则被安全策略拒绝（可能含灾难性回溯形态，如分组被量词修饰或交替歧义）: ${pattern}`);
+    return [];
+  }
   return flat.filter((n) => (n.text && re.test(n.text)) || (n.contentDesc && re.test(n.contentDesc)));
 }
 

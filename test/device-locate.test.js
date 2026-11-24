@@ -218,19 +218,39 @@ test('within 行内作用域定位：scope 行内的目标按钮', async () => {
 
 // ---- re: selector 的 ReDoS 防护 ----
 
-test('compileSafeRegex：拒绝嵌套量词等灾难性回溯模式', () => {
+test('compileSafeRegex：拒绝灾难性回溯模式（含绕过形态）', () => {
   // 回归用例：selector 可由用例文本/模型产出提供，是"外部输入 → 正则执行器"的
-  // 直连通道。(a+)+$ 类模式在 UI 树每个节点上触发灾难性回溯，单次 locate 可挂死。
-  assert.equal(compileSafeRegex('(a+)+$'), null, '嵌套量词应被拒绝');
-  assert.equal(compileSafeRegex('(x+x+)+y'), null, '嵌套量词应被拒绝');
+  // 直连通道。危险正则会在 UI 树每个节点上触发灾难性回溯，单次 locate 可挂死。
+  //
+  // 原实现只挡"嵌套量词"一种形态，实测可被系统性绕过：
+  //   (a|aa)+$          交替歧义
+  //   (?:a{1,10}){1,10}$ {n,m} 型嵌套（36 字符即 5.5s）
+  //   (a{2,})+$         {n,} 型嵌套
+  for (const p of [
+    '(a+)+$', '(x+x+)+y', '(a*)*x', '(\\w+\\s?)*$',
+    '(a|aa)+$', '(?:a{1,10}){1,10}$', '(a{2,})+$', 'a{1,}{1,}', '(?:a|b)*c',
+  ]) {
+    assert.equal(compileSafeRegex(p), null, `应拒绝 ${p}`);
+  }
   assert.equal(compileSafeRegex('a'.repeat(300)), null, '超长应被拒绝');
-  assert.ok(compileSafeRegex('电子相册'), '正常模式应允许');
-  assert.ok(compileSafeRegex('item[0-9]+'), '正常模式应允许');
+  // 反向引用 / 前后查找
+  assert.equal(compileSafeRegex('(a)\\1'), null, '反向引用应被拒绝');
+  assert.equal(compileSafeRegex('(?=abc)'), null, '前瞻应被拒绝');
+});
+
+test('compileSafeRegex：正常模式不被误拒', () => {
+  for (const p of [
+    '电子相册', '[0-9]+', 'item[0-9]+', '浏览|阅读|看过', '^设置',
+    'colou?r', 'a{2,3}', '\\d+\\s*\\S+',
+  ]) {
+    assert.ok(compileSafeRegex(p), `不应误拒 ${p}`);
+  }
 });
 
 test('findByRegex：危险模式返回空结果而非卡死', () => {
   const flat = [{ text: 'aaaa', contentDesc: '' }];
   assert.deepEqual(findByRegex(flat, '(a+)+$'), [], '危险模式应被拒');
+  assert.deepEqual(findByRegex(flat, '(?:a{1,10}){1,10}$'), [], '绕过形态应被拒');
 });
 
 test('locate 失败信息可操作：含目标、已尝试策略、相关度排序的候选', async () => {

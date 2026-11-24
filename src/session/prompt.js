@@ -1,8 +1,9 @@
 // 三层提示词装配（§6.1/6.2）：
 //   L1 引擎层 prompts/system.md    —— append 模式加载；replace/none 跳过
-//   L2 安卓层 prompts/system.android.md —— 永远保留（设备事实不交给用户）
+//   L2 安卓层 prompts/system.android.md —— 设备事实层
 //   L3 用户层 --prompt / --prompt-file —— 追加在末尾（优先级最高）
-// 总长超过预算（默认 12000 字符）时裁剪用户段中段并 warn。
+// 总长超过预算（默认 12000 字符）时按 L3→L1→L2 顺序裁剪中段并 warn
+// （L2 最后动；但仍可被裁——引擎层或安卓层本身超预算时，用户段裁到 0 也补不齐缺口）。
 // L2 的设备事实（{{SCREEN_SIZE}}/{{DEVICE_MODEL}}/{{ANDROID_VERSION}}/{{NET_PROFILE_SECTION}}）
 // 由调用方运行时采集（facts 参数）填充；本模块不做任何设备访问，保持纯函数可单测。
 
@@ -18,11 +19,13 @@ function readIfExists(p) {
   try { return fs.readFileSync(p, 'utf8'); } catch { return ''; }
 }
 
-function trimMiddle(text, budget) {
+// 裁剪标记必须标明是**哪一层**被裁——L1/L2 现在也走本函数，原硬编码的
+// "用户段过长"对引擎段/安卓段是错误自述（模型会困惑为何引擎指令说"用户段"）。
+function trimMiddle(text, budget, label = '提示词') {
   if (text.length <= budget) return text;
   const head = Math.floor(budget * 0.6);
   const tail = Math.max(0, budget - head - 20);
-  return text.slice(0, head) + '\n…[用户段过长，中段已裁剪]…\n' + (tail > 0 ? text.slice(-tail) : '');
+  return text.slice(0, head) + `\n…[${label}过长，中段已裁剪]…\n` + (tail > 0 ? text.slice(-tail) : '');
 }
 
 // net 段按探测结果三态：支持 → 档位语义；不支持 → 设备差异说明；未探测 → 先探测提示
@@ -110,14 +113,14 @@ export function assemblePrompt({
     let remaining = total - budget;
     if (userLayer && remaining > 0) {
       const cut = Math.min(remaining, userLayer.content.length);
-      userLayer.content = trimMiddle(userLayer.content, userLayer.content.length - cut);
+      userLayer.content = trimMiddle(userLayer.content, userLayer.content.length - cut, '用户段');
       remaining -= cut;
     }
     if (remaining > 0) {
       const l1 = layers.find((l) => l.name === 'L1-engine');
       if (l1) {
         const cut = Math.min(remaining, l1.content.length);
-        l1.content = trimMiddle(l1.content, l1.content.length - cut);
+        l1.content = trimMiddle(l1.content, l1.content.length - cut, '引擎段');
         remaining -= cut;
       }
     }
@@ -125,7 +128,7 @@ export function assemblePrompt({
       const l2 = layers.find((l) => l.name === 'L2-android');
       if (l2) {
         const cut = Math.min(remaining, l2.content.length);
-        l2.content = trimMiddle(l2.content, l2.content.length - cut);
+        l2.content = trimMiddle(l2.content, l2.content.length - cut, '安卓段');
         remaining -= cut;
       }
     }

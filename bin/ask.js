@@ -1334,7 +1334,16 @@ async function main() {
   }
 }
 
-main().then((code) => process.exit(code ?? 0)).catch((e) => {
+main().then((code) => process.exit(code ?? 0)).catch(async (e) => {
   console.error(e?.stack || e?.message || e);
+  // 未捕获异常路径必须释放设备锁：否则设备被锁住直到 stale 超时（10 分钟）。
+  // 信号退出走 gracefulExit（已释放），但纯异常路径此前是裸 exit —— 锁泄漏。
+  try {
+    for (const run of activeRuns) {
+      if (run.serial) {
+        try { releaseLock(WORKSPACE.lockRoot, run.serial); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
   process.exit(2);
 });

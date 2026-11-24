@@ -224,3 +224,20 @@ test('preflight 顺序约束：grant 前必须终止目标 App（真机实测 gr
     '必须先 terminate 再 grant（否则 App 被杀）');
   assert.equal(r.granted.length, 1);
 });
+
+// —— 取值型 flag 缺值必须报错（此前静默取 true）——
+
+test('parseArgv：取值型 flag 缺值时抛错（--timeout --yes）', () => {
+  // 回归用例：缺值时 flags.timeout === true → 消费方 Number(true)*1000 = 1000ms，
+  // 整个 run 的超时预算变成 1 秒且无任何报错。
+  assert.throws(() => parseArgv(['run', '--timeout', '--yes']), /--timeout 需要一个值/);
+  assert.throws(() => parseArgv(['run', '--out']), /--out 需要一个值/);
+});
+
+test('parseArgv：布尔 flag 与可选值 flag 不受影响', () => {
+  assert.equal(parseArgv(['run', '--yes']).flags.yes, true);
+  assert.equal(parseArgv(['run', '--timeout', '60']).flags.timeout, '60');
+  // 可选值 flag（doctor 的"检查默认设备"用法）：裸 --device 为 true
+  assert.equal(parseArgv(['doctor', '--device']).flags.device, true);
+  assert.equal(parseArgv(['doctor', '--device', 'emulator-5554']).flags.device, 'emulator-5554');
+});

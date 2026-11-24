@@ -31,6 +31,11 @@ export function parseArgv(argv) {
       name = name.slice(0, eq);
     } else if ((isOptional || !isBool) && nextIsValue) {
       value = rest[++i];
+    } else if (!isBool && !isOptional) {
+      // 取值型 flag 缺值（"--timeout --yes"）：此前静默取 true，消费方
+      // Number(true)*1000 → 1000ms，整个 run 的超时预算变成 1 秒且无任何报错。
+      // 必须响亮失败。
+      throw new Error(`--${name} 需要一个值（如 --${name} 60）`);
     } else {
       value = true;
     }
