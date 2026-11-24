@@ -143,6 +143,11 @@ export class RunRecorder {
   }
 
   // 写增量快照：与 finish() 的最终写互斥（同一时刻只允许一个写盘在途）
+  //
+  // 关键：_partialWriting 必须在 await 之前赋值。若先 await _buildDoc()（内部有
+  // snapshotDevice 的真实设备 IO，耗时可达数百 ms）再赋值，finish() 会看到
+  // _partialWriting 仍是 null 而不等待——于是 finish 先写最终态，迟到的快照
+  // 随后把已完成的 run 覆盖回 status:'running' + _partial:true（已复现）。
   async _flushPartial() {
     if (this._finished) return;
     if (this._partialWriting) {
@@ -151,19 +156,32 @@ export class RunRecorder {
       return;
     }
     this._partialPending = false;
-    const doc = await this._buildDoc('running', 0, true);
-    const redact = buildRedactor(this._secrets);
-    if (redact) redactDeep(doc, redact);
-    const tmp = `${this._jsonPath}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
+    // 整个「构建 doc + 写盘」包进同一个 Promise，让 finish() 能正确等待
     this._partialWriting = (async () => {
+      const doc = await this._buildDoc('running', 0, true);
+      // 构建期间可能已被 finish() 收尾 → 放弃本次快照（最终态已由 finish 写好）
+      if (this._finished) return;
+      const redact = buildRedactor(this._secrets);
+      if (redact) redactDeep(doc, redact);
+      const tmp = `${this._jsonPath}.tmp-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
       try {
         await fsp.writeFile(tmp, JSON.stringify(doc, null, 2), 'utf8');
+        // rename 前二次确认：finish 可能恰好在 writeFile 期间完成收尾
+        if (this._finished) {
+          await fsp.rm(tmp, { force: true }).catch(() => {});
+          return;
+        }
         await fsp.rename(tmp, this._jsonPath);
-      } finally {
-        this._partialWriting = null;
+      } catch (e) {
+        await fsp.rm(tmp, { force: true }).catch(() => {});
+        throw e;
       }
     })();
-    await this._partialWriting;
+    try {
+      await this._partialWriting;
+    } finally {
+      this._partialWriting = null;
+    }
     if (this._partialPending && !this._finished) {
       this._schedulePartial();
     }

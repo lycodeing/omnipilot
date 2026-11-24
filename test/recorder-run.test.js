@@ -250,3 +250,32 @@ test('无 device/model 时字段为 null，size 支持描述对象形态', async
   const rec2 = new RunRecorder({ runsDir });
   assert.equal((await rec2.finish('pass')).device, null);
 });
+
+test('崩溃安全：finish 与增量快照并发时不被覆盖回 _partial（竞态回归）', async (t) => {
+  // 回归用例：_flushPartial 原先先 await _buildDoc（内部 snapshotDevice 是真实设备
+  // IO）才赋值 _partialWriting —— 那个窗口里 finish 看到 _partialWriting 仍是 null
+  // 而不等待，于是 finish 先写最终态、迟到的快照再 rename 覆盖 → 已完成的 run
+  // 变成 status:'running' + _partial:true（已复现）。
+  const runsDir = tmpRuns(t);
+  let screenCalls = 0;
+  const rec = new RunRecorder({
+    runsDir,
+    caseName: 'c.yaml',
+    // 第一次 screenSize 挂起 300ms —— 快照会卡在 _buildDoc 的 await 处
+    device: {
+      serial: 's', model: 'm',
+      screenSize: async () => {
+        screenCalls += 1;
+        if (screenCalls === 1) await new Promise((r) => setTimeout(r, 300));
+        return { w: 720, h: 1280 };
+      },
+    },
+  });
+  rec.startStep('tap', 'x').end();
+  await new Promise((r) => setTimeout(r, 560));   // 等去抖快照触发并进入 await
+  await rec.finish('pass');
+  await new Promise((r) => setTimeout(r, 400));   // 等迟到的快照落盘
+  const doc = JSON.parse(fs.readFileSync(rec.jsonPath, 'utf8'));
+  assert.equal(doc._partial, undefined, '已完成的 run 不得被增量快照覆盖回 _partial');
+  assert.equal(doc.status, 'pass');
+});

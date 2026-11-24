@@ -4,20 +4,25 @@
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 
-// 写操作确认钩子：opts.yes 直通；交互模式由 ctx.confirm 提供扩展点（§13.3）
+// 写/敏感操作确认钩子：opts.yes 直通；交互模式由 ctx.confirm 提供扩展点（§13.3）
 // 告警标志挂在 ctx 上（而非模块级）：bin/ask.js 支持多 run 并发，模块级标志会
 // 让先告警的 run 抑制掉其它 run 的告警——后者可能根本没有确认能力。
-export async function confirmWrite(ctx, toolName, targetDesc) {
+//
+// kind：'write'（改设备状态）/ 'sensitive'（读凭据、读短信等敏感读取）/ 'mcp'
+// （调用外部 MCP 服务器）。措辞必须区分——对只读操作宣称"写操作"会让用户误解
+// 自己批准了什么。
+export async function confirmWrite(ctx, toolName, targetDesc, { kind = 'write' } = {}) {
   if (ctx.opts?.yes) return { allowed: true };
+  const verb = kind === 'write' ? '调用写操作' : kind === 'sensitive' ? '执行敏感读取' : '调用外部工具';
   if (typeof ctx.confirm === 'function') {
-    const ok = await ctx.confirm(`调用写操作 ${toolName}（${targetDesc}）`);
+    const ok = await ctx.confirm(`${verb} ${toolName}（${targetDesc}）`);
     return { allowed: !!ok };
   }
   // 非交互且未提供 confirm（CI/后台/管道）：按设计放行，但必须显式告警一次——
   // 否则"写操作零确认执行"对使用者完全不可见（权限绕过面）
   if (!ctx._autoAllowWarned) {
     ctx._autoAllowWarned = true;
-    console.warn('[warn] 非交互环境未启用写操作确认，所有 tap/input/swipe/launch 等写操作将直接执行（如需门禁请用 --yes 以外的交互模式，或自行注入 ctx.confirm）');
+    console.warn('[warn] 非交互环境未启用操作确认，所有 tap/input/swipe/launch 等写操作与敏感读取将直接执行（如需门禁请用 --yes 以外的交互模式，或自行注入 ctx.confirm）');
   }
   return { allowed: true };
 }

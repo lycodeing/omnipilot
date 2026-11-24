@@ -197,13 +197,19 @@ export function buildDataTools(ctx) {
     }),
     execute: async (_id, params) => {
       if (!store) return textResult({ ok: false, error: 'store 未注入' });
-      const rows = await store.query(params.name, {
-        where: params.where || undefined,
-        select: params.select,
-        limit: params.limit,
-        orderBy: params.orderBy || undefined,
-      });
-      return textResult({ ok: true, name: params.name, count: rows.length, rows: rows.slice(0, 20) });
+      // 同 data_store：store.query 会抛（非法 where/orderBy/数据集名），必须转结构化
+      // 失败，否则无 recorder 的 ask 路径会以未捕获异常中断
+      try {
+        const rows = await store.query(params.name, {
+          where: params.where || undefined,
+          select: params.select,
+          limit: params.limit,
+          orderBy: params.orderBy || undefined,
+        });
+        return textResult({ ok: true, name: params.name, count: rows.length, rows: rows.slice(0, 20) });
+      } catch (e) {
+        return textResult({ ok: false, error: `数据集查询失败: ${String(e?.message ?? e).slice(0, 200)}` });
+      }
     },
   });
 
@@ -220,26 +226,34 @@ export function buildDataTools(ctx) {
     execute: async (_id, params) => {
       if (!store) return textResult({ ok: false, error: 'store 未注入' });
       const action = params.action || 'append';
-      if (action === 'clear') {
-        await store.clear(params.name);
-        // clear 也要更新留痕：否则整体描述继续宣称旧计数（"以此为准"口径下的陈旧权威证据）
+      // store 层会抛（非法数据集名、非法 where/orderBy、缺主键字段）。必须就地转成
+      // 结构化失败：withRecording 的兜底 try/catch **只在有 recorder 时生效**，而
+      // bin/ask.js 的 ask 直答路径恰恰是 recorder: null —— 异常会逃出工具层、
+      // 以未捕获异常中断整条问答链路，模型也拿不到可自纠的错误文本。
+      try {
+        if (action === 'clear') {
+          await store.clear(params.name);
+          // clear 也要更新留痕：否则整体描述继续宣称旧计数（"以此为准"口径下的陈旧权威证据）
+          ctx.datasetWrites = ctx.datasetWrites ?? new Map();
+          ctx.datasetWrites.set(params.name, 0);
+          return textResult({ ok: true, action, name: params.name });
+        }
+        const rows = params.rows || [];
+        let res;
+        if (action === 'upsert') {
+          if (!params.key) return textResult({ ok: false, error: 'upsert 需要 key 主键字段' });
+          res = await store.upsert(params.name, params.key, rows, { run: recorder?.runId ?? null, step: ctx.currentStepIndex ?? null });
+        } else {
+          res = await store.append(params.name, rows, { run: recorder?.runId ?? null, step: ctx.currentStepIndex ?? null });
+        }
+        // 数据集写入计数留痕（供整体描述引用，见 data_extract 同款注释）；
+        // 口径 = 回读数据集现状（upsert 全量合并时 written=0，按 written 记会"回退"成 0 条）
         ctx.datasetWrites = ctx.datasetWrites ?? new Map();
-        ctx.datasetWrites.set(params.name, 0);
-        return textResult({ ok: true, action, name: params.name });
+        ctx.datasetWrites.set(params.name, (await store.read(params.name)).length);
+        return textResult({ ok: true, action, name: params.name, ...sampleForContext(rows, res.written) });
+      } catch (e) {
+        return textResult({ ok: false, error: `数据集写入失败: ${String(e?.message ?? e).slice(0, 200)}` });
       }
-      const rows = params.rows || [];
-      let res;
-      if (action === 'upsert') {
-        if (!params.key) return textResult({ ok: false, error: 'upsert 需要 key 主键字段' });
-        res = await store.upsert(params.name, params.key, rows, { run: recorder?.runId ?? null, step: ctx.currentStepIndex ?? null });
-      } else {
-        res = await store.append(params.name, rows, { run: recorder?.runId ?? null, step: ctx.currentStepIndex ?? null });
-      }
-      // 数据集写入计数留痕（供整体描述引用，见 data_extract 同款注释）；
-      // 口径 = 回读数据集现状（upsert 全量合并时 written=0，按 written 记会"回退"成 0 条）
-      ctx.datasetWrites = ctx.datasetWrites ?? new Map();
-      ctx.datasetWrites.set(params.name, (await store.read(params.name)).length);
-      return textResult({ ok: true, action, name: params.name, ...sampleForContext(rows, res.written) });
     },
   });
 
@@ -254,6 +268,10 @@ export function buildDataTools(ctx) {
     }),
     execute: async (_id, params) => {
       ctx.secretCalls.push({ tool: 'secret_get', provider: params.provider, key: params.key, stepIndex: ctx.currentStepIndex ?? null });
+      // 凭据读取与 sms_read 同属 §19.7 敏感操作，同样走确认闸——此前只有 sms_read
+      // 有闸，secret_get 零确认直接读出明文密码进上下文，两类敏感操作待遇不一致。
+      const gate = await confirmWrite(ctx, 'secret_get', `读取凭据 ${params.provider}/${params.key}`, { kind: 'sensitive' });
+      if (!gate.allowed) return denied('secret_get');
       // 来源 1：工作区私有状态目录下的 secrets.json（用户自管，不入库不入 git）；
       // 未注入 stateDir 时回退 cwd/.ask（保持既有行为）
       const secretsDir = ctx.stateDir || path.resolve('.ask');
@@ -293,7 +311,7 @@ export function buildDataTools(ctx) {
       // 走 confirmWrite（与所有写操作同一套语义）：--yes 直通、ctx.confirm 征求
       // 同意、两者都无时告警一次后放行。此前 sms_read 自己实现了一套，缺了
       // 非交互兜底告警——用户在 CI/管道里丢掉这道安全门却毫无察觉。
-      const gate = await confirmWrite(ctx, 'sms_read', '读取设备短信/通知（敏感操作）');
+      const gate = await confirmWrite(ctx, 'sms_read', '读取设备短信/通知', { kind: 'sensitive' });
       if (!gate.allowed) return denied('sms_read'); // details.denied=true，记账标 cancelled（与操作工具一致）
       // 设备层若提供扩展能力（content://sms / notification listener）则使用
       if (typeof device.readSms === 'function') {

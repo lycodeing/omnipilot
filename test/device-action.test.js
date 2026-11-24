@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Adb } from '../src/device/adb.js';
 import { centerOf, regionPoint, pickPoint, resolvePoint, tap, longPress, swipe, key, KEYCODES } from '../src/device/action.js';
+import { assertSafePackage, assertSafeActivity } from '../src/device/package-guard.js';
 
 const SIZE = { w: 720, h: 1280 };
 
@@ -103,4 +104,21 @@ test('tap：成功时返回 stdout', async () => {
 test('key：设备侧失败必须抛错', async () => {
   const adb = { shell: async () => ({ code: 1, stdout: '', stderr: 'boom' }) };
   await assert.rejects(() => key(adb, 'back'), /boom|exit 1/);
+});
+
+// —— 包名/Activity 白名单（adb shell 注入防线）——
+
+test('assertSafePackage：合法包名放行，shell 元字符一律拒绝', () => {
+  for (const ok of ['com.example.app', 'com.a.b.c', 'com.my_app']) {
+    assert.equal(assertSafePackage(ok), ok);
+  }
+  for (const bad of ['com.x; rm -rf /sdcard', 'com.x$(id)', 'com.x|cat', 'com.x && id', '', '../etc/passwd']) {
+    assert.throws(() => assertSafePackage(bad), /包名非法/, `应拒绝 "${bad}"`);
+  }
+});
+
+test('assertSafeActivity：合法 Activity（含 $InnerClass）放行，元字符拒绝', () => {
+  assert.equal(assertSafeActivity('com.x.MainActivity'), 'com.x.MainActivity');
+  assert.equal(assertSafeActivity('com.x$Inner'), 'com.x$Inner');
+  assert.throws(() => assertSafeActivity('com.x; id'), /Activity 名非法/);
 });

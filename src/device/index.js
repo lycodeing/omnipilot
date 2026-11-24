@@ -18,6 +18,7 @@ import { classifyTransportError } from './errors.js';
 // uia2 退避预算（评审 #5/#6：时序常量命名成组，不再散落字面量）
 const UIA2_BACKOFF = { transientMs: 5_000, fatalMs: 60_000 };
 import { createUia2 } from './uia2.js';
+import { assertSafePackage, assertSafeActivity } from './package-guard.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
@@ -774,6 +775,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       try {
         const id = String(appId ?? '').trim();
         const [pkg, activity] = id.split('/');
+        // 包名白名单：adb shell 走设备端 /bin/sh -c，未校验的包名可携带
+        // "; rm -rf /sdcard" 之类的 shell 元字符。Android 包名只允许字母数字下划线点。
+        assertSafePackage(pkg);
+        if (activity) assertSafeActivity(activity);
         const out = await adb.shell(activity ? `am start -n ${pkg}/${activity}` : `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`);
         lastTreeHash = null; // 换 App/重启：旧树基线作废
         beforeAction();
@@ -785,7 +790,9 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     },
     async terminate(packageName) {
       try {
-        await adb.shell(`am force-stop ${packageName}`);
+        const pkg = String(packageName ?? '').trim();
+        assertSafePackage(pkg);
+        await adb.shell(`am force-stop ${pkg}`);
         lastTreeHash = null;
         beforeAction();
         return { ok: true };

@@ -127,26 +127,32 @@ export async function runVisualAnswer(deps) {
         const r2 = parseVisualReply(raw2);
         if (r2.kind === 'answer') {
           const conv = strategy.toPixels(Array.isArray(r2.bbox) ? r2.bbox.join(' ') : '', size);
-          if (conv?.center) {
-            await device.tap(conv.center);
-            result.taps++; result.verified++;
-            if (r2.row) result.answers.push({ row: r2.row, option: r2.option });
-            if (onQuestion) {
-              try {
-                const { buffer } = await device.screencap();
-                await onQuestion({ row: r2.row, option: r2.option, verified: true, taps: 1, buffer });
-              } catch { /* 进度回调失败不阻断 */ }
-            }
-            const rowKey2 = (/\d+\s*\/\s*\d+/.exec(r2.row) || [null])[0] || r2.row;
-            const lastKey2 = (/\d+\s*\/\s*\d+/.exec(lastRow) || [null])[0] || lastRow;
-            if (rowKey2 && rowKey2 === lastKey2 && ++repeats >= 3) {
-              result.error = `renderer_unresponsive: 同一题「${r2.row.slice(0, 20)}」连续 ${repeats} 轮未消失`; return result;
-            }
-            lastRow = r2.row;
-            await new Promise((res) => setTimeout(res, settleMs));
-            continue;
+          if (!conv?.center) {
+            // 与主路径同一失败语义：VLM 给了 answer 但 bbox 换算失败 → 硬失败。
+            // 原实现静默落到 result.bottom = true（"滚到底了"），上层据此算出
+            // ok:true / done:false / bottom:true ——模型看到"成功到底"而实际是换算 bug。
+            result.error = 'bbox 无法换算为屏幕坐标（scroll 兜底路径）';
+            return result;
           }
+          await device.tap(conv.center);
+          result.taps++; result.verified++;
+          if (r2.row) result.answers.push({ row: r2.row, option: r2.option });
+          if (onQuestion) {
+            try {
+              const { buffer } = await device.screencap();
+              await onQuestion({ row: r2.row, option: r2.option, verified: true, taps: 1, buffer });
+            } catch { /* 进度回调失败不阻断 */ }
+          }
+          const rowKey2 = (/\d+\s*\/\s*\d+/.exec(r2.row) || [null])[0] || r2.row;
+          const lastKey2 = (/\d+\s*\/\s*\d+/.exec(lastRow) || [null])[0] || lastRow;
+          if (rowKey2 && rowKey2 === lastKey2 && ++repeats >= 3) {
+            result.error = `renderer_unresponsive: 同一题「${r2.row.slice(0, 20)}」连续 ${repeats} 轮未消失`; return result;
+          }
+          lastRow = r2.row;
+          await new Promise((res) => setTimeout(res, settleMs));
+          continue;
         }
+        // 非 answer（模型说"到底了"）才算 bottom
         result.bottom = true;
         return result;
       }

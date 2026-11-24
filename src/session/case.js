@@ -65,7 +65,12 @@ const PARAM_KEYS_BY_TYPE = {
   aiInput: ['value', 'clear', 'timeout'],
   aiLongPress: ['durationMs', 'timeout'],
   aiKeyboardPress: ['keyName', 'timeout'],
-  aiScroll: ['direction', 'distancePct', 'until', 'max', 'timeout'],
+  // maxScrolls 是 aiScroll 的历史参数名（滚动轮数上限）；工具参数名是 max。
+  // 曾在派生化改造中从全局 PARAM_KEYS 掉落（全局表由本表并集派生），导致
+  // "maxScrolls: 5" 续行不被识别 → 被拼进 text → direction 被污染成
+  // "向下滚动直到最后一个相册 maxScrolls: 5"，且 lint 因 maxScrolls 豁免而 0 error
+  // ——即"lint 放行、运行期静默失效"。本表与 lint 规则必须同步。
+  aiScroll: ['direction', 'distancePct', 'until', 'max', 'maxScrolls', 'timeout'],
   aiTapEach: ['rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile', 'timeout'],
   uiDump: ['path', 'timeout'],
   launch: ['appId', 'timeout'],
@@ -325,13 +330,15 @@ export function buildToolCall(step) {
   if (t === 'aiLongPress') return { tool: 'long_press', params: { target: step.text, ...(num(step.durationMs) != null ? { durationMs: num(step.durationMs) } : {}) } };
   if (t === 'aiKeyboardPress') return { tool: 'key', params: { name: step.keyName || step.text } };
   if (t === 'aiScroll') {
+    // maxScrolls 是用例侧历史别名，工具参数名是 max（两个都接受，max 优先）
+    const maxVal = num(step.max) ?? num(step.maxScrolls);
     return {
       tool: 'scroll',
       params: {
         direction: step.direction || step.text || 'down',
         ...(num(step.distancePct) != null ? { distancePct: num(step.distancePct) } : {}),
         ...(step.until ? { until: step.until } : {}),
-        ...(num(step.max) != null ? { max: num(step.max) } : {}),
+        ...(maxVal != null ? { max: maxVal } : {}),
       },
     };
   }

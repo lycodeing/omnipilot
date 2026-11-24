@@ -723,6 +723,6 @@ describe('写操作确认闸', () => {
       console.warn = origWarn;
     }
     assert.equal(warnings.length, 1, '同一 ctx 只告警一次');
-    assert.match(warnings[0], /未启用写操作确认/);
+    assert.match(warnings[0], /未启用操作确认/);   // 文案已覆盖写操作与敏感读取
   });
 });

@@ -1,4 +1,6 @@
 // 前台判定用 dumpsys activity 的 ResumedActivity；mCurrentFocus 不可信，禁用（§5.0.1）
+import { assertSafePackage } from './package-guard.js';
+
 export function parseResumedActivity(text) {
   const line = String(text ?? '')
     .split(/\r?\n/)
@@ -32,8 +34,11 @@ export async function assertNoCrash(adb, expectedPackage, { timeoutMs } = {}) {
   let fg;
   let alive;
   if (expectedPackage) {
+    // 包名进 shell 命令串前必须校验：adb shell 是设备端 /bin/sh -c 执行，
+    // 未校验可携带 "; ..." 之类元字符（与 launch/terminate 同一防线）。
+    const pkg = assertSafePackage(expectedPackage);
     const out = await adb
-      .shell(`dumpsys activity activities | grep -iE "resumedactivity"; pidof ${expectedPackage}`, { timeoutMs })
+      .shell(`dumpsys activity activities | grep -iE "resumedactivity"; pidof ${pkg}`, { timeoutMs })
       .catch(() => '');
     // 输出为两段拼接：dumpsys 的匹配行（可能为空）+ pidof 的 pid 行（可能为空）
     const lines = String(out).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);

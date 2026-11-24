@@ -490,3 +490,17 @@ test('aiInput 的 clear 参数被正确解析并转发（此前被拼进 text �
   assert.equal(call.tool, 'input');
   assert.equal(call.params.clear, true, 'clear 必须转发给 input 工具');
 });
+
+test('aiScroll 的 maxScrolls 参数被正确识别（派生化改造曾致其掉落）', () => {
+  // 回归用例：PARAM_KEYS 改为由 PARAM_KEYS_BY_TYPE 并集派生后，maxScrolls 只在旧
+  // 全局表里、不在分类型表里 → 掉落 → "maxScrolls: 5" 续行被拼进 text →
+  // direction 被污染成 "向下滚动直到最后一个相册 maxScrolls: 5"。
+  // 而 lint 因 maxScrolls 豁免 unreachable-scroll 而 0 error —— lint 放行、运行静默失效。
+  const c = parseCaseText('steps:\n  - aiScroll: 向下滚动直到最后一个相册\n    maxScrolls: 5');
+  assert.equal(c.steps[0].maxScrolls, 5, 'maxScrolls 应是独立数值参数');
+  assert.equal(c.steps[0].text, '向下滚动直到最后一个相册', '不得被拼进 text');
+  const call = buildToolCall(c.steps[0]);
+  assert.equal(call.tool, 'scroll');
+  assert.equal(call.params.direction, '向下滚动直到最后一个相册', 'direction 不得被污染');
+  assert.equal(call.params.max, 5, 'maxScrolls 应映射到工具的 max 参数');
+});

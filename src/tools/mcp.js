@@ -19,7 +19,7 @@ export function buildMcpTools(ctx) {
         // MCP 调用确认闸（§8.2）：MCP 服务器可暴露任意有副作用的工具（删配置、
         // 写仓库、跑 SQL），而 allowlist 是通配符、无法区分读写——故一律走确认。
         // 与原生写操作工具同一道闸：--yes 直通，否则经 ctx.confirm 征求同意。
-        const gate = await confirmWrite(ctx, t.finalName, `MCP ${t.server} / ${t.originalName}`);
+        const gate = await confirmWrite(ctx, t.finalName, `MCP ${t.server} / ${t.originalName}`, { kind: 'mcp' });
         if (!gate.allowed) return denied(t.finalName);
         const { text, truncated, bytes } = await bridge.callByName(t.finalName, params);
         return {
