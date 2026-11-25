@@ -42,7 +42,7 @@ export class Adb {
           }, budget);
         }
         Promise.resolve()
-          .then(() => this._exec(args, { binary }))
+          .then(() => this._exec(args, { binary, timeoutMs: budget }))
           .then((r) => { if (timer) clearTimeout(timer); resolve(r); }, (e) => { if (timer) clearTimeout(timer); reject(e); });
       });
     }

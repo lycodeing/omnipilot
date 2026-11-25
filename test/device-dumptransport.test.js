@@ -90,3 +90,31 @@ test('dumpToFile：双通道都无 XML 时抛错且不落盘', async () => {
   assert.ok(!existsSync(target), '失败 dump 不应写文件');
   await device.close();
 });
+
+test('dump 预算：dumpTree({timeoutMs:3000}) 各通道预算必须 ≤3000ms（C-A2 回归）', async () => {
+  // 注入 exec 捕获每次调用的 timeoutMs；uia2 注入 stub 捕获 source 预算
+  const budgets = [];
+  const exec = async (args, opts) => {
+    budgets.push({ cmd: args.join(' ').slice(0, 50), timeoutMs: opts?.timeoutMs });
+    const joined = args.join(' ');
+    if (joined.includes('get-state')) return { code: 0, stdout: 'device', stderr: '' };
+    if (joined.includes('wm size')) return { code: 0, stdout: 'Physical size: 720x1280', stderr: '' };
+    if (joined.includes('which timeout')) return { code: 0, stdout: 'NO', stderr: '' };
+    if (joined.includes('uiautomator dump')) return { code: 1, stdout: '', stderr: 'could not get idle state' };
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  const uia2 = {
+    source: async (opts) => { budgets.push({ uia2: true, timeoutMs: opts?.timeoutMs }); throw new Error('uia2 不可用'); },
+    serverPid: async () => null,
+    ensure: async () => false,
+  };
+  const device = await createDeviceWithExecutor({ serial: 'test', exec, uia2, waitReady: false });
+  await device.dumpTree({ fresh: true, timeoutMs: 3000 }).catch(() => {});
+  // 所有 dump 相关调用的预算必须 ≤3000（探测/清理命令除外——pkill 清理的匹配串里也含 "uiautomator dump"）
+  const dumpBudgets = budgets.filter((b) => b.uia2 || (/uiautomator dump/.test(b.cmd ?? '') && !/pkill/.test(b.cmd ?? '')));
+  assert.ok(dumpBudgets.length > 0, '应有 dump 调用');
+  for (const b of dumpBudgets) {
+    assert.ok(b.timeoutMs == null || b.timeoutMs <= 3000, `预算超限: ${JSON.stringify(b)}`);
+  }
+  await device.close();
+});

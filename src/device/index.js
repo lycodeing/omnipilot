@@ -110,7 +110,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     }
     cache.recordMiss();
     const t0 = Date.now();
-    const xml = await dumpXmlRaw(timeoutMs != null ? { timeoutMs } : undefined);
+    const xml = await dumpXmlRaw(timeoutMs != null ? { budgetMs: timeoutMs } : undefined);
     const dumpMs = Date.now() - t0;
     cache.recordDump();
     const text = truncateAtHierarchyEnd(xml);

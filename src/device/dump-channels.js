@@ -18,6 +18,9 @@ export function createDumpChannels({ adb, uia2 }) {
   let timeoutSupported = null; // 设备侧 timeout 可用性（null=未探测，false=降级无包裹）
 
   async function dumpXmlRaw({ budgetMs = null } = {}) {
+    // 预算起点必须在 uia2 尝试之前：uia2 source/退避重试同样消耗本次预算，
+    // 若从 legacy 段才起算，重试与 cap() 的"剩余量"会漏掉前段耗时（C-A2）。
+    const dumpT0 = Date.now();
     // 两级策略（实测 busy 弹窗态成功 dump 需 38-39s——uiautomator idle 等待本身很长）：
     // ① tty 快通道：设备侧 timeout 10s 快速失败（健康屏 ~2s 出结果；busy 屏不留孤儿——
     //    客户端超时只杀 adb，设备侧 uiautomator 会变孤儿继续持有 a11y 锁，毒化后续尝试）；
@@ -82,8 +85,9 @@ export function createDumpChannels({ adb, uia2 }) {
         // 10s 等待 + 60s source 超时，正是这段退避本要避免的 ≈140s/次成本。
         try {
           // 重试预算同样受本次 dump 预算约束——此前硬编码 60s，完全无视 budgetMs，
-          // 使 waitForElement({timeoutMs:10000}) 仍可能被拖成 60s+。
-          const retryBudget = budgetMs != null ? Math.max(1000, budgetMs) : 60_000;
+          // 使 waitForElement({timeoutMs:10000}) 仍可能被拖成 60s+。用剩余量而非全量：
+          // uia2 首次尝试与退避等待已消耗部分预算，重试再取满额会击穿总预算（C-A2）。
+          const retryBudget = budgetMs != null ? Math.max(500, budgetMs - (Date.now() - dumpT0)) : 60_000;
           const xml = await uia2.source({ timeoutMs: retryBudget });
           if (xml.includes('</hierarchy>')) {
             uia2DeadUntil = 0;   // 成功才解除退避
@@ -113,7 +117,6 @@ export function createDumpChannels({ adb, uia2 }) {
     // 预算裁剪：预算必须**跨通道共享递减**，否则 3 通道 × 2 轮各取满预算
     // → budgetMs=10000 时最坏 61s（6 倍超支），"最多等 N 毫秒"的契约被击穿。
     // cap() 取当前**剩余**预算与通道固有上限的较小者；剩余耗尽则直接失败。
-    const dumpT0 = Date.now();
     const remain = () => (budgetMs != null ? budgetMs - (Date.now() - dumpT0) : Infinity);
     const cap = (ms) => {
       if (budgetMs == null) return ms;
