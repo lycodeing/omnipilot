@@ -22,7 +22,7 @@ export function createRunContext({ device, recorder, store, opts = {} } = {}) {
     },
     secretCalls: [],            // 每次 secret_get/sms_read 调用 push {tool, provider, key, stepIndex}（§9.1 强制 fresh 的依据）
     stateMutations: [],         // 全局设备状态改动记录（§2.6：网络档位回滚用）
-    engineLog: [],              // 引擎直执行步骤的 run 内调试记录（§2.4；不进模型上下文、recorder 不消费）
+    engineLog: [],              // 引擎直执行步骤的 run 内记录（§2.4；不进模型上下文，收尾时 recorder.setEngineLog 落 run.json）
     // —— 内部扩展字段 ——
     mcp: null,                  // MCP 桥（src/mcp/bridge.js）
     confirm: null,              // 交互确认钩子（写操作 / MCP 调用）

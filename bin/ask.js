@@ -12,6 +12,7 @@ import { parseArgv } from '../src/cli/argv.js';
 import { acquireLock, releaseLock } from '../src/cli/lock.js';
 import { collectDeviceFacts } from '../src/cli/device-facts.js';
 import { pruneToolHistory } from '../src/session/image-prune.js';
+import { REPLAY_ACTION_TYPES } from '../src/tools/vocab.js';
 import { createPlanCache, planKey } from '../src/session/plan-cache.js';
 import { resolveWorkspace, ensureWorkspace } from '../src/cli/workspace.js';
 
@@ -471,6 +472,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     // 不做整体预插值——那样运行期变量永远取不到（C2 验证暴露）。
     const steps = caseObj.steps;
     let status = 'pass';
+    let engineFailed = false; // 引擎步失败标记（含降级后仍失败）：零断言用例不能因 exit 0 恒判 pass
 
     // —— 同屏批量视觉接地（性能）——
     // 一次看图为"当前步 + 后续连续引擎 tap 步"预取多个目标坐标，写入 device.vlmCache
@@ -645,11 +647,21 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             const tool = toolMap.get(call.tool);
             if (tool) {
               // 引擎直执行：0 轮模型往返（这正是拆分粗粒度 ai: 的收益来源）。
-              // 结果**不进 session**（那会多一轮 LLM 请求）；记录到 ctx.engineLog 仅作 run 内调试/排查用（recorder 不消费，引擎步的 run.json 记录来自 withRecording 包装）。
+              // 结果**不进 session**（那会多一轮 LLM 请求）；记录到 ctx.engineLog 供 run 内排查，
+              // 收尾时 setEngineLog 落 run.json（引擎步的 steps[] 记录来自 withRecording 包装）。
+              // engineStepsBefore：本步执行前的记账步数，视觉降级轮据此判断模型是否真调了动作工具。
+              // engineFailedBefore：进入本步前已有的失败标记——降级成功只撤销**本步**的标记，
+              // 不能把更早步骤的失败一并抹掉（否则前面引擎步失败的 run 又恒 pass）。
+              const engineStepsBefore = recorder.stepCount;
+              const engineFailedBefore = engineFailed;
               const res = await tool.execute(`engine-${i}`, call.params, null, null, {});
               const d = res?.details ?? {};
               ctx.engineLog.push({ step: i, type: step.type, tool: call.tool, ok: d.ok !== false, error: d.error ?? null });
               if (d.ok === false) console.warn(`[engine] ${step.type}「${step.text ?? ''}」失败：${d.error || ''}`);
+              // 引擎步失败（含降级后仍失败）必须影响终态——零断言用例的 exit 0 不代表任务完成
+              if (d.ok === false) {
+                engineFailed = true;
+              }
               // 视觉接地降级（外部框架兼容）：aiTap/aiLongPress 的定位目标是**描述性视觉短语**
               // （如"屏幕最底部导航栏中的'生活'标签"）时，引擎文本/资源定位必然 MISS。
               // 此时花**一轮** agent 往返让模型看屏接地并点击，避免整步失败。
@@ -675,6 +687,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                       ? await device.longPress(vres.bounds, Number(step.durationMs) || 800)
                       : await device.tap(vres.bounds);
                     ctx.engineLog.push({ step: i, type: step.type + '+vlm-fallback', tool: call.tool, ok: tr?.ok !== false, error: tr?.error ?? null });
+                    // VLM 降级成功 = 本步最终完成，只撤销本步的失败标记；降级仍失败则保留（终态判 fail）
+                    if (tr?.ok !== false) engineFailed = engineFailedBefore;
                     if (!flags.quiet) console.warn('[engine] ' + step.type + ' 引擎 MISS → VLM 接地 ' + (tr?.ok !== false ? '成功' : '失败'));
                     continue;
                   }
@@ -696,7 +710,14 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
                   `引擎定位失败，改用视觉接地：请在随附截屏对应的当前屏幕上找到并${verb}以下目标。**必须调用 ${call.tool} 工具完成${verb}**——只调 locate/uitree 查看不算完成本步。只这一次操作，做完即止，不要滚动/返回/做其它事：${step.text}\n若确实找不到，回复"未找到"并说明原因。`,
                   { images: fbImages },
                 );
-                ctx.engineLog.push({ step: i, type: `${step.type}+visual-fallback`, tool: 'agent', ok: true, error: null });
+                // 如实记录降级结果：检查本轮是否真产生了**成功的**动作类工具步。
+                // 只算 result==='ok'：engineStepsBefore 起算的范围里含引擎自身那条失败步
+                // （type 同为 tap/long_press），不过滤会把失败步误当"模型完成了动作"。
+                const acted = recorder.stepsSince(engineStepsBefore)
+                  .some((s) => REPLAY_ACTION_TYPES.includes(s.type) && s.result === 'ok');
+                ctx.engineLog.push({ step: i, type: `${step.type}+visual-fallback`, tool: 'agent', ok: acted, error: acted ? null : '降级轮未产生成功的动作步' });
+                // 有动作步 = 降级完成本步，只撤销本步的失败标记；无动作步 = 降级后仍失败，终态判 fail
+                engineFailed = acted ? engineFailedBefore : true;
               }
               continue;
             }
@@ -1014,8 +1035,9 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       }
     }
 
-    // 断言失败判定（exit code 1）
+    // 断言失败判定（exit code 1）；断言优先于引擎失败标记
     if (ctx.assertions.some((a) => !a.passed)) status = 'fail';
+    else if (engineFailed && status === 'pass') status = 'fail';
 
     // 运行期兜底：secret 类调用发生过 → 会话文件不得留盘（§9.1 例外）
     if (ctx.secretCalls.length > 0 && persist.strategy !== 'fresh' && session.sessionFile) {
@@ -1023,6 +1045,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     }
 
     // 收尾：报告（网络还原已移至 finally，保证异常/中断路径也执行，§2.6.2 ①）
+    recorder.setEngineLog(ctx.engineLog); // 引擎步记录落 run.json（失败排查依据；此前只留内存，run 结束即丢）
     await recorder.finish(status === 'pass' ? 'pass' : status, { exitCode: status === 'pass' ? 0 : status === 'fail' ? 1 : 2 });
     session.dispose?.();
     if (!flags.quiet) {

@@ -114,6 +114,7 @@ export class RunRecorder {
     this._assertions = [];
     this._network = [];
     this._rollbacks = [];
+    this._engineLog = [];
     this._extracts = null;
     this._contextLayers = [];
     this._uiDumps = [];
@@ -301,6 +302,13 @@ export class RunRecorder {
     this._schedulePartial();
   }
 
+  // 引擎直执行步骤的 run 内记录（ctx.engineLog）落 run.json：失败步（含降级后仍失败）
+  // 是终态判定与排查的依据，不能只留在内存里
+  setEngineLog(log) {
+    this._engineLog = Array.isArray(log) ? log : [];
+    this._schedulePartial();
+  }
+
   setExtracts(obj) {
     this._extracts = obj ?? null;
     this._schedulePartial();
@@ -329,6 +337,7 @@ export class RunRecorder {
       extracts: this._extracts,
       networkTimeline: this._network,
       rollbacks: this._rollbacks,
+      engineLog: this._engineLog,
       artifacts: {
         // 与 steps[].screenshot 同一基准（相对 runsDir）——同一 artifacts 对象内
         // 混用绝对/相对路径会让跨机消费方无法用统一规则解析

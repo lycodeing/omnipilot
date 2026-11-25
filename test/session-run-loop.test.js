@@ -17,3 +17,18 @@ test('timeout 终态：超预算 break 后 status 必须是 timeout 而非 pass'
   assert.equal(doc.exitCode, 2);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('引擎步失败终态：engineFailed 标记使零断言 run 判 fail', async () => {
+  // 终态判定纯函数抽取到 run-loop-helpers（阶段三），此处先守护 recorder 侧
+  const { RunRecorder } = await import('../src/recorder/index.js');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-engine-'));
+  const rec = new RunRecorder({ runsDir: dir, caseName: 'engine.yaml' });
+  rec.setEngineLog([{ step: 0, type: 'aiTap', tool: 'tap', ok: false, error: 'LOCATE_MISS' }]);
+  const doc = await rec.finish('fail', { exitCode: 1 });
+  assert.equal(doc.status, 'fail');
+  assert.equal(doc.engineLog[0].ok, false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

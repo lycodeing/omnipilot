@@ -279,3 +279,12 @@ test('崩溃安全：finish 与增量快照并发时不被覆盖回 _partial（�
   assert.equal(doc._partial, undefined, '已完成的 run 不得被增量快照覆盖回 _partial');
   assert.equal(doc.status, 'pass');
 });
+
+test('engineLog 落盘：setEngineLog 后 finish 产出 doc.engineLog', async (t) => {
+  const runsDir = tmpRuns(t);
+  const rec = new RunRecorder({ runsDir, caseName: 'engine.yaml' });
+  rec.startStep('aiTap', '热榜').end({ result: 'failed', error: 'LOCATE_MISS' });
+  rec.setEngineLog([{ step: 0, type: 'aiTap', tool: 'tap', ok: false, error: 'LOCATE_MISS' }]);
+  const doc = await rec.finish('fail', { exitCode: 1 });
+  assert.deepEqual(doc.engineLog, [{ step: 0, type: 'aiTap', tool: 'tap', ok: false, error: 'LOCATE_MISS' }]);
+});
