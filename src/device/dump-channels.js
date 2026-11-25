@@ -47,10 +47,10 @@ export function createDumpChannels({ adb, uia2 }) {
         // （服务活着），不是传输故障——与旧 `e?.status === undefined` 守卫语义一致。
         const kind = classifyTransportError(e);
         const transient = e?.status === undefined && (kind === 'timeout' || kind === 'connection');
-        // 槽空闲判定：protocol（HTTP 有应答但非 200，如 500）= 服务活着但 UiAutomation 没注册上
-        // → 槽空闲；ensure 失败（'uia2 不可用'）= 服务没起来 → 槽也空闲。其余（timeout/connection/
-        // 无 hierarchy）= 服务活着持槽 → legacy 是死路。
-        lastUia2SlotFree = kind === 'protocol' || /uia2 不可用/.test(lastUia2Error);
+        // 槽空闲判定（评审 #6 kind 化）：protocol（HTTP 有应答但非 200，如 500）= 服务活着
+        // 但 UiAutomation 没注册上 → 槽空闲；unavailable（ensure 失败）= 服务没起来 → 槽也空闲。
+        // 其余（timeout/connection/无 hierarchy）= 服务活着持槽 → legacy 是死路。
+        lastUia2SlotFree = kind === 'protocol' || kind === 'unavailable';
         const backoffMs = transient ? UIA2_BACKOFF.transientMs : UIA2_BACKOFF.fatalMs;
         uia2DeadUntil = Date.now() + backoffMs;
         console.warn(`[uia2] 不可用（${lastUia2Error}），${Math.round(backoffMs / 1000)}s 内走 legacy dump 通道`);
@@ -71,9 +71,9 @@ export function createDumpChannels({ adb, uia2 }) {
     // "瞬时报错"，导致"有应答但无树"（无 hierarchy/会话 id 缺失/JSON 解析失败——服务明显
     // 活着=槽被占）也掉进 140s 的注定 legacy 死路。注释判据与实现对齐到同一句话。
     // lastUia2Error 跨调用保留：跳过 uia2 尝试（退避期内）的调用也能凭上次的失败类型入守卫。
-    // 槽判定（评审 #6）：结构化 e.kind === 'protocol'（uia2 建会话 HTTP 有应答但非 200）
-    // 即"服务活着、槽空闲"；message 正则保留兜底注入/历史错误。
-    const slotHeldError = lastUia2Error && !lastUia2SlotFree && !/uia2 不可用/.test(lastUia2Error);
+    // 槽判定（评审 #6 kind 化）：lastUia2SlotFree 在每次失败时按结构化 kind 更新
+    // （protocol/unavailable = 槽空闲），退避期内的调用沿用上次值——不再依赖中文文案正则。
+    const slotHeldError = lastUia2Error && !lastUia2SlotFree;
     if (uia2 && slotHeldError) {
       const pid = await uia2.serverPid().catch(() => null);
       if (pid) {

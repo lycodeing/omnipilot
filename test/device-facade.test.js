@@ -592,6 +592,21 @@ test('通道决策：uia2 超时（槽被占）→ 退避后重试成功，不�
   await device.close();
 });
 
+// kind 化回归（评审 #6）：ensure 失败挂 e.kind='unavailable'，message 不含中文"不可用"——
+// 槽判定必须凭结构化 kind，不得依赖文案正则；服务没起来 = 槽空闲 → legacy 可用且必须走。
+// pid 非 null（服务进程残留但 ensure 失败的真实形态）：若槽被误判为占用，会进守卫做
+// 有界重试而非走 legacy——pid=null 时守卫静默放行，测不出误判。
+test('通道决策：uia2 ensure 失败（unavailable，槽空闲）→ 正常走 legacy', async () => {
+  const exec = makeExec({});
+  const stub = makeUia2Stub({ sourceImpl: async () => { const e = new Error('service not installed'); e.kind = 'unavailable'; throw e; } });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec, uia2: stub, waitReady: false });
+  const r = await device.dumpTree({ fresh: true });
+  assert.ok(r.nodes.length > 0, 'unavailable（服务没起来，槽空闲）应走 legacy 拿到树');
+  assert.ok(exec.calls.some((c) => c.includes('uiautomator dump')), '应触碰 legacy 通道');
+  assert.equal(stub.calls.source, 1, '槽空闲不应触发 busy 有界重试');
+  await device.close();
+});
+
 test('inputText：ASCII 文本 yadb 回读失败 → input text 降级重试一次（评审 #16）', async () => {
   const exec = makeExec(); // dump 回来输入框为空 → yadb 与降级路径都回读失败
   const device = await createDeviceWithExecutor({ serial: 'test', exec });

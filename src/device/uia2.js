@@ -247,13 +247,13 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
   // 30s 仍短于 legacy 的 50s file 通道，busy 页能救回来；健康页仍在 0.2-0.6s。
   const SOURCE_TIMEOUT_MS = 30000;
   async function source({ timeoutMs = SOURCE_TIMEOUT_MS } = {}) {
-    if (!(await ensure())) throw new Error('uia2 不可用');
+    if (!(await ensure())) throw withKind(new Error('uia2 不可用'), 'unavailable'); // 服务没起来 = 槽空闲，legacy 可走
     const attempt = async (sid) => {
       const r = await httpRaw(hostP, `/wd/hub/session/${sid}/source`, { timeoutMs });
       if (r.status !== 200) {
         const e = new Error(`uia2 source 失败: ${r.status}`);
         e.status = r.status;
-        throw e;
+        throw withKind(e, 'protocol'); // HTTP 有应答但非 200：服务活着、槽空闲（与建会话 500 同语义）
       }
       return String(JSON.parse(r.body).value ?? '');
     };
