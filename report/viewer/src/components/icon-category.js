@@ -28,6 +28,8 @@ export const ICON_CATEGORY = {
   aiWaitFor: 'clock',
   wait_idle: 'clock',
   wait_element: 'clock',
+  // 断言判定（ask.js 直记账步）：与历史 assert 同款图标
+  aiAssert: 'assert',
   // 数据/状态
   read: 'extract',
   data_extract: 'extract',

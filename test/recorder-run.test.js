@@ -288,3 +288,15 @@ test('engineLog 落盘：setEngineLog 后 finish 产出 doc.engineLog', async (t
   const doc = await rec.finish('fail', { exitCode: 1 });
   assert.deepEqual(doc.engineLog, [{ step: 0, type: 'aiTap', tool: 'tap', ok: false, error: 'LOCATE_MISS' }]);
 });
+
+test('addAssertion 扩展字段：screenshotId/evidenceSource/nudges 可选落盘', async (t) => {
+  const runsDir = tmpRuns(t);
+  const rec = new RunRecorder({ runsDir, caseName: 'assert.yaml' });
+  rec.addAssertion({ text: '数据集 hotlist 至少3条', passed: true, reason: '7条', screenshotId: 'runs/x/assert-0.png', evidenceSource: 'dataset', nudges: 1 });
+  rec.addAssertion({ text: '列表倒序', passed: false, reason: '白屏' });
+  const doc = await rec.finish('fail', { exitCode: 1 });
+  assert.equal(doc.assertions[0].screenshotId, 'runs/x/assert-0.png');
+  assert.equal(doc.assertions[0].evidenceSource, 'dataset');
+  assert.equal(doc.assertions[0].nudges, 1);
+  assert.equal(doc.assertions[1].screenshotId, undefined);
+});

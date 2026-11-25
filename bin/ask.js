@@ -933,9 +933,11 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             answer = lastAssistantText(session);
           }
         }
+        let assertNudges = 0; // aiAssert 催答轮数（含 chat 兜底），落 assertions[].nudges 供报告排查
         if (!answer && step.type === 'aiAssert') {
           // 断言步：模型以纯 toolCall 或空消息收尾（网关/模型偶发空响应）→ 最多催答 3 轮
           for (let nudge = 0; nudge < 3 && !answer; nudge++) {
+            assertNudges = nudge + 1;
             // 第 2 轮起附当前屏图：空响应多发生在"长上下文+无图"轮，附图可显著降低空响应率
             let imgs = [];
             if (nudge >= 1) {
@@ -952,6 +954,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
           }
           if (!answer && ctx.chat) {
             // 会话催答耗尽仍空（长上下文空响应）：无状态单发 chat 兜底判定（不依赖会话历史）
+            assertNudges++; // 兜底也是一次催答，计入轮数
             try {
               let shot2 = [];
               try {
@@ -993,9 +996,16 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         // ai 步无文本属正常（工具调用即交付），不催答
         ctx.lastThought = answer;
         if (step.type === 'aiAssert') {
+          // 断言判定独立记账（评审 C-P2）：此前只落 assertions[]，steps[]/报告时间线无该步——
+          // 耗时、终态截图、催答轮数全部不可见。这里补 startStep/end + 终态取证截图。
+          const ah = recorder.startStep('aiAssert', stepText.slice(0, 40));
           const { parseVerdict } = await import('../src/tools/ai.js');
           const verdict = parseVerdict(answer);
-          recorder.addAssertion({ text: step.text, passed: verdict.passed, reason: verdict.reason });
+          ah.end({ result: verdict.passed ? 'ok' : 'failed' });
+          attachStepShot(ah.index); // 报告取证：判定后的画面状态（走既有 step 索引机制）
+          // evidenceSource：注入了数据集事实 → dataset 口径；否则屏幕口径。
+          // screenshotId（判定输入截图独立落盘）留待 Task 14 attachAssertionShot。
+          recorder.addAssertion({ text: step.text, passed: verdict.passed, reason: verdict.reason, evidenceSource: datasetFacts ? 'dataset' : 'screen', nudges: assertNudges });
           ctx.assertions.push({ text: step.text, passed: verdict.passed, reason: verdict.reason });
         }
       } catch (e) {

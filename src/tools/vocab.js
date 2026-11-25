@@ -45,10 +45,11 @@ export const STEP_LABELS = {
   data_store: '存储',
   secret_get: '凭据读取',
   sms_read: '短信读取',
-  // —— ask.js 直记账步（非工具）：bin/ask.js sleep/net 分支与 aiWaitFor 分支 ——
+  // —— ask.js 直记账步（非工具）：bin/ask.js sleep/net 分支、aiWaitFor 分支与 aiAssert 判定段 ——
   sleep: '等待',
   net: '切网',
   aiWaitFor: '等待',
+  aiAssert: '断言判定',
   // —— tap_each_row 逐题取证子步（src/tools/action.js onQuestion） ——
   answer_row: '作答',
   // —— 历史兼容：assert 在旧版本引擎出现过 1 次（全量历史 run.json 实测）；现引擎
@@ -57,7 +58,7 @@ export const STEP_LABELS = {
 };
 
 // 引擎直记账（非工具）的步骤类型——与 ask.js/action.js 的 startStep 字面量对应
-export const ENGINE_STEP_TYPES = ['sleep', 'net', 'aiWaitFor', 'answer_row'];
+export const ENGINE_STEP_TYPES = ['sleep', 'net', 'aiWaitFor', 'aiAssert', 'answer_row'];
 
 // 回放编排的动作类步骤：有 bounds 时走 [静帧, insight, 动作帧(带指针)] 三段编排，
 // 无 bounds 走 [转圈, 动作帧]。判断依据是"这个步骤是不是一次设备写动作"，

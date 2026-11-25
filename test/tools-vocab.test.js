@@ -21,11 +21,13 @@ test('引擎专用工具（point_tap 等）有标签——它不进 EXPECTED_TOO
   }
 });
 
-test('引擎直记账步（sleep/net/aiWaitFor/answer_row）有标签', () => {
-  // 生成点：bin/ask.js sleep/net 分支、aiWaitFor 分支；src/tools/action.js onQuestion
+test('引擎直记账步（sleep/net/aiWaitFor/aiAssert/answer_row）有标签', () => {
+  // 生成点：bin/ask.js sleep/net 分支、aiWaitFor 分支、aiAssert 判定段；src/tools/action.js onQuestion
   for (const t of ENGINE_STEP_TYPES) {
     assert.ok(Object.hasOwn(STEP_LABELS, t), `词表缺引擎直记账步: ${t}`);
   }
+  // aiAssert 判定步已直记账（startStep('aiAssert')），必须进引擎步清单——漏登记则上方遍历守不到它
+  assert.ok(ENGINE_STEP_TYPES.includes('aiAssert'), 'ENGINE_STEP_TYPES 缺 aiAssert（bin/ask.js 判定段已直记账）');
 });
 
 test('回放动作类型 ⊆ 词表；且不含从未落盘的旧名（back/home/screenshot/extract）', () => {

@@ -287,8 +287,14 @@ export class RunRecorder {
     this._schedulePartial();
   }
 
-  addAssertion({ text, passed, reason = null } = {}) {
-    this._assertions.push({ text, passed, reason });
+  // 扩展字段（评审 C-P2）：screenshotId=判定输入截图相对路径、evidenceSource=判定依据
+  // （dataset/screen）、nudges=催答轮数。三者可选，缺省不落键——旧调用点与旧报告形状不变。
+  addAssertion({ text, passed, reason = null, screenshotId = null, evidenceSource = null, nudges = 0 } = {}) {
+    const a = { text, passed, reason };
+    if (screenshotId != null) a.screenshotId = screenshotId;
+    if (evidenceSource != null) a.evidenceSource = evidenceSource;
+    if (nudges > 0) a.nudges = nudges;
+    this._assertions.push(a);
     this._schedulePartial();
   }
 
