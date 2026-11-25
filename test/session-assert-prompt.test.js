@@ -9,6 +9,10 @@ test('extractDatasetNames：从断言文本提取数据集名', () => {
   assert.deepEqual(extractDatasetNames('列表按时间倒序'), []);
 });
 
+test('extractDatasetNames：连字符数据集名不截断', () => {
+  assert.deepEqual(extractDatasetNames('数据集 hotlist-v2 至少3条'), ['hotlist-v2']);
+});
+
 test('collectDatasetFacts：注入行数与样本', async () => {
   const writes = new Map([['hotlist', 7]]);
   const store = { read: async (name) => name === 'hotlist' ? [{ title: 'A' }, { title: 'B' }] : [] };

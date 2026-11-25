@@ -819,13 +819,14 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         let buildAssertPrompt = null;
         if (step.type === 'aiAssert') {
           try {
-            ({ buildAssertPrompt } = await import('../src/session/assert-prompt.js'));
-            const { collectDatasetFacts } = await import('../src/session/assert-prompt.js');
+            ({ buildAssertPrompt, collectDatasetFacts } = await import('../src/session/assert-prompt.js'));
             datasetFacts = await collectDatasetFacts(stepText, ctx.datasetWrites, ctx.store);
-          } catch { /* 事实采集失败不阻断断言 */ }
+          } catch { /* 事实采集失败不阻断断言（含模块加载失败，下方回退旧屏幕口径模板） */ }
         }
         const text = (step.type === 'aiAssert')
-          ? buildAssertPrompt({ stepText, fgNote, datasetFacts })
+          ? (buildAssertPrompt
+            ? buildAssertPrompt({ stepText, fgNote, datasetFacts })
+            : `【断言】${stepText}${fgNote}\n只依据随附的当前屏幕截图与上述系统事实判断，不要调用任何工具。只输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}。`)
           : (step.type === 'aiQuery' && step.name)
             ? `${stepText}\n（把结果用 data_extract 或 data_store 落到数据集「${step.name}」）`
             : stepText;

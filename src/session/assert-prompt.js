@@ -5,7 +5,7 @@
 // 从断言文本提取数据集名："数据集 X" / "数据集X"（中英文紧邻都认）
 export function extractDatasetNames(text) {
   const names = [];
-  const re = /数据集\s*([A-Za-z_][\w]*)/g;
+  const re = /数据集\s*([A-Za-z_][\w-]*)/g;
   let m;
   while ((m = re.exec(String(text ?? '')))) {
     if (!names.includes(m[1])) names.push(m[1]);
