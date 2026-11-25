@@ -592,6 +592,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       // 整 run 时间预算（--timeout）：到点即止，剩余步骤跳过——实测 run 曾超预算 2 倍仍不退出
       if (runDeadline && Date.now() > runDeadline) {
         console.warn(`[timeout] 已超 --timeout 预算（${Math.round(opts.timeoutMs / 1000)}s），剩余 ${steps.length - i} 步跳过`);
+        status = 'timeout';
         break;
       }
       const step = steps[i];
