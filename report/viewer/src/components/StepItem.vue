@@ -4,6 +4,7 @@
 // 图标按动作类别归组，同一 stroke 1.4 / round cap 手绘。
 import { computed } from 'vue'
 import { typeLabel } from '../utils/buildReplayScripts.js'
+import { ICON_CATEGORY } from './icon-category.js'
 
 const props = defineProps({
   task: { type: Object, default: null },
@@ -16,44 +17,6 @@ const failed = computed(() => !!props.task && props.task.status === 'failed')
 
 const label = computed(() => typeLabel((props.task && props.task.type) || ''))
 
-// 类型 → 图标类别（键集对齐 src/tools/vocab.js 的真实类型宇宙；未收录类型落 default 圆点，不猜形状。
-// 历史遗留名 screenshot/extract/query/waitFor/back/home 实测 0 次出现，不再收录；assert 出现过 1 次保留）
-const ICON_CATEGORY = {
-  // 写动作
-  tap: 'tap',
-  point_tap: 'tap',
-  long_press: 'tap',
-  input: 'input',
-  swipe: 'swipe',
-  scroll: 'swipe',
-  tap_each_row: 'pen',
-  answer_row: 'pen',
-  key: 'nav',
-  launch: 'nav',
-  terminate: 'nav',
-  // 感知/等待
-  screen: 'camera',
-  screen_diff: 'crosshair',
-  locate: 'crosshair',
-  uitree: 'crosshair',
-  ui_dump: 'crosshair',
-  sleep: 'clock',
-  aiWaitFor: 'clock',
-  wait_idle: 'clock',
-  wait_element: 'clock',
-  // 数据/状态
-  read: 'extract',
-  data_extract: 'extract',
-  data_query: 'extract',
-  data_store: 'extract',
-  secret_get: 'extract',
-  sms_read: 'extract',
-  net: 'extract',
-  net_profile: 'extract',
-  net_status: 'extract',
-  // 历史兼容
-  assert: 'assert',
-}
 const ICONS = {
   tap: 'M8 6.4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2Z M11.4 4.6a4.8 4.8 0 0 1 0 6.8 M4.6 11.4a4.8 4.8 0 0 1 0-6.8',
   input: 'M4 5h8 M4 8h8 M4 11h5',
