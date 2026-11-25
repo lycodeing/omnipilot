@@ -17,27 +17,37 @@ import { STEP_DIGEST_PREFIX } from './context-window.js';
 export function createContextGovernor({ sessionManager }) {
   function projection() { return sessionManager.buildSessionProjection(); }
 
-  // message → entryId：投影 entries 的 messages 与源 entry.message 引用共享（无 edit 时），
-  // 有 edit 时是 {...message, content} 新对象 → 按引用找不到，返回 null（调用方视为已治理，跳过）。
-  function entryIdOf(message) {
-    const proj = projection();
+  // 一次投影 → entryId 数组（与 proj.messages 一一对应，不可 edit 的 entry 为 null）。
+  // SDK 事实（session-manager.js projectContextEntry）：无 edit 的 entry 投影 messages
+  // 与 sourceEntry.message 引用共享；**有 edit 的 entry 每次投影返回新对象**
+  // {...message, content}。旧版按"投影输出对象 === 源消息"引用匹配，对已被其他治理
+  // edit 过的消息必然找不到 id → omit/editContent 静默失败（评审 C1：截断→折叠组合
+  // 残留 role:toolResult → 请求侧 role:"tool" → 网关 400）。
+  // 修复：不依赖引用相等——proj.messages 是 entries[].messages 的 flatMap（顺序一致、
+  // 分段长度已知），按位置把每条投影消息对齐回其源 entry.id。id 一旦取得即稳定
+  // （appendContextEdit 只认 id），后续批量 edit 不再受"投影重建换对象"影响。
+  // 一次构建 O(n)，消除旧版逐条 entryIdOf 重扫投影的 O(n²)（评审 M3）。
+  function resolveIds(proj) {
+    const ids = [];
     for (const entry of proj.entries) {
-      for (const m of entry.messages) {
-        if (m === message) return entry.sourceEntry.id;
-      }
+      if (entry.messages.length === 0) continue;
+      const t = entry.sourceEntry.type;
+      // 可 edit 面与 SDK appendContextEdit 校验一致：user/assistant/toolResult 消息 + custom_message；
+      // system 消息与 compaction/branch_summary 投影不可 edit → null（调用方跳过）。
+      const editable = t === 'custom_message'
+        || (t === 'message' && ['user', 'assistant', 'toolResult'].includes(entry.sourceEntry.message?.role));
+      for (let k = 0; k < entry.messages.length; k++) ids.push(editable ? entry.sourceEntry.id : null);
     }
-    return null;
+    return ids;
   }
 
-  function editContent(message, content) {
-    const id = entryIdOf(message);
+  function editContentById(id, content) {
     if (!id) return false;
     try { sessionManager.appendContextEdit(id, { content }); return true; }
     catch { return false; }
   }
 
-  function omit(message) {
-    const id = entryIdOf(message);
+  function omitById(id) {
     if (!id) return false;
     try { sessionManager.appendContextEdit(id, null); return true; }
     catch { return false; }
@@ -47,10 +57,12 @@ export function createContextGovernor({ sessionManager }) {
     sessionManager.appendCustomMessageEntry(customType, [{ type: 'text', text }], false);
   }
 
-  // 清理投影里仍可见的同类 custom 注入（digest/折叠摘要）。治理是"替换"语义：
+  // 清理投影里仍可见的同类 custom 注入（仅 digest 用）。digest 是"替换"语义：
   // 每步重放时旧注入必须先删，否则窗口折叠每次执行都追加一条新 digest（实验实证：
   // 8 步后 5 条 digest 累积、tail 计数错位把保留段原文也删光）。已 null 删除的
   // entry 投影 messages 为空，天然跳过 → 重复执行幂等。
+  // 注意：折叠摘要（ask-folded-tool-result）**不走这里**——它是增量语义（评审 I1），
+  // 清旧会把早期步/轮的摘要永久丢掉，见 foldToolRound。
   function omitCustomType(customType) {
     for (const entry of projection().entries) {
       if (entry.sourceEntry.type === 'custom_message' && entry.sourceEntry.customType === customType && entry.messages.length > 0) {
@@ -60,7 +72,9 @@ export function createContextGovernor({ sessionManager }) {
   }
 
   function pruneImages({ keepRecent = 3 } = {}) {
-    const msgs = projection().messages;
+    const proj = projection();
+    const msgs = proj.messages;
+    const ids = resolveIds(proj);
     const total = countImages(msgs);
     if (total <= keepRecent) return { total, kept: total, replaced: 0, changed: false };
     const keep = new Set();
@@ -76,18 +90,21 @@ export function createContextGovernor({ sessionManager }) {
     for (let mi = 0; mi < msgs.length; mi++) {
       const c = msgs[mi]?.content;
       if (!Array.isArray(c)) continue;
-      let changed = false;
+      let n = 0;
       const next = c.map((b, bi) => {
-        if (b?.type === 'image' && !keep.has(`${mi}:${bi}`)) { changed = true; replaced++; return placeholderFor(b); }
+        if (b?.type === 'image' && !keep.has(`${mi}:${bi}`)) { n++; return placeholderFor(b); }
         return b;
       });
-      if (changed) editContent(msgs[mi], next);
+      // M1：以 editContent 实际成功为准（与 pruneToolResults 同款），失败不虚报 replaced
+      if (n > 0 && editContentById(ids[mi], next)) replaced += n;
     }
     return { total, kept: total - replaced, replaced, changed: replaced > 0 };
   }
 
   function pruneToolResults({ keepRecent = 6, keepChars = 300 } = {}) {
-    const msgs = projection().messages;
+    const proj = projection();
+    const msgs = proj.messages;
+    const ids = resolveIds(proj);
     let replaced = 0;
     let seen = 0;
     for (let mi = msgs.length - 1; mi >= 0; mi--) {
@@ -98,7 +115,7 @@ export function createContextGovernor({ sessionManager }) {
       const c = m.content;
       if (typeof c === 'string') {
         if (c.length > keepChars && !c.startsWith(TOOLRESULT_PLACEHOLDER)) {
-          if (editContent(m, `${TOOLRESULT_PLACEHOLDER}: 原 ${c.length} 字符] ${c.slice(0, keepChars)}…`)) replaced++;
+          if (editContentById(ids[mi], `${TOOLRESULT_PLACEHOLDER}: 原 ${c.length} 字符] ${c.slice(0, keepChars)}…`)) replaced++;
         }
       } else if (Array.isArray(c)) {
         let changed = false;
@@ -109,7 +126,7 @@ export function createContextGovernor({ sessionManager }) {
           }
           return b;
         });
-        if (changed && editContent(m, next)) replaced++;
+        if (changed && editContentById(ids[mi], next)) replaced++;
       }
     }
     return { replaced, changed: replaced > 0 };
@@ -117,7 +134,9 @@ export function createContextGovernor({ sessionManager }) {
 
   // 工具轮折叠：assistant toolCall → 纯文本 content（toolCall 块消失 → 请求侧无 tool_calls）；
   // toolResult → null 删除 + user 摘要注入（role 不可改，只能删后补）。
-  function foldToolRound(msgs, fromIdx, toIdx) {
+  // ids 与 msgs 来自同一次投影（resolveIds 位置对齐），批量 appendContextEdit 只认 id，
+  // 不受"每次 edit 后投影重建换对象"影响（评审 C1）。
+  function foldToolRound(msgs, ids, fromIdx, toIdx) {
     let folded = 0;
     const summaries = [];
     for (let i = fromIdx; i < toIdx; i++) {
@@ -127,25 +146,30 @@ export function createContextGovernor({ sessionManager }) {
           .map((b) => `[调用工具 ${b.name ?? b.toolName ?? '?'} ${JSON.stringify(b.arguments ?? b.input ?? {}).slice(0, 120)}]`)
           .join(' ');
         const texts = m.content.filter((b) => b?.type === 'text').map((b) => b.text ?? '');
-        if (editContent(m, [{ type: 'text', text: [...texts, calls].filter(Boolean).join(' ') || calls }])) folded++;
+        if (editContentById(ids[i], [{ type: 'text', text: [...texts, calls].filter(Boolean).join(' ') || calls }])) folded++;
       } else if (m?.role === 'toolResult') {
         const c = m.content;
         const txt = Array.isArray(c) ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join(' ') : String(c ?? '');
-        summaries.push(`[工具结果] ${txt.slice(0, 300)}${txt.length > 300 ? '…' : ''}`);
-        if (omit(m)) folded++;
+        // 摘要先收集、omit 成功才计入（失败不注入孤儿摘要）
+        if (omitById(ids[i])) {
+          summaries.push(`[工具结果] ${txt.slice(0, 300)}${txt.length > 300 ? '…' : ''}`);
+          folded++;
+        }
       }
     }
     // 摘要按原顺序注入（每条 toolResult 一条 custom user 消息，保持时序）。
-    // 先清旧摘要再注入：步间/催答轮反复折叠时旧摘要不累积（替换语义）。
-    if (folded > 0) {
-      omitCustomType('ask-folded-tool-result');
-      for (const s of summaries) injectUserText('ask-folded-tool-result', s);
-    }
+    // **增量语义（评审 I1）**：不清旧摘要——已折叠 tr 被 null 删除后不再出现在投影，
+    // 重复折叠时本范围 summaries 为空、folded=0，不注入 → 天然幂等不累积；
+    // 而清旧会把早期步/马拉松早期轮的摘要永久删掉（第 3 轮起模型失去第 1 轮记忆）。
+    // 旧原地版摘要本就原位保留（image-prune.js m.role='user'），此处对齐该语义。
+    for (const s of summaries) injectUserText('ask-folded-tool-result', s);
     return folded;
   }
 
   function pruneToolHistory({ keepRecent = 1 } = {}) {
-    const msgs = projection().messages;
+    const proj = projection();
+    const msgs = proj.messages;
+    const ids = resolveIds(proj);
     const assistantToolIdx = [];
     for (let i = 0; i < msgs.length; i++) {
       const m = msgs[i];
@@ -153,7 +177,7 @@ export function createContextGovernor({ sessionManager }) {
     }
     const keepFrom = keepRecent === 0 ? msgs.length
       : (assistantToolIdx.length > keepRecent ? assistantToolIdx[assistantToolIdx.length - keepRecent] : 0);
-    const folded = foldToolRound(msgs, 0, keepFrom);
+    const folded = foldToolRound(msgs, ids, 0, keepFrom);
     return { folded, changed: folded > 0 };
   }
 
@@ -164,8 +188,16 @@ export function createContextGovernor({ sessionManager }) {
     // digest 是治理注入的占位消息，不属于任何步的原文 delta。分段计算前先把它
     // 从视图里剔除（等价于旧原地版 splice 后的数组形态），否则旧 digest 占一格
     // 使 tail 错位，重复执行会把保留段原文误删（幂等测试 3→2 抖动的根因）。
+    // ids 同步过滤，保持与 msgs 位置对齐（resolveIds 契约）。
     const isDigest = (m) => m?.role === 'custom' && m?.customType === 'ask-step-digest';
-    const msgs = proj.messages.filter((m) => !isDigest(m));
+    const allIds = resolveIds(proj);
+    const msgs = [];
+    const ids = [];
+    for (let i = 0; i < proj.messages.length; i++) {
+      if (isDigest(proj.messages[i])) continue;
+      msgs.push(proj.messages[i]);
+      ids.push(allIds[i]);
+    }
     if (!Array.isArray(stepCounts)) return { removed: 0, changed: false };
     const k = stepCounts.length;
     if (k <= keepSteps) return { removed: 0, changed: false };
@@ -180,7 +212,7 @@ export function createContextGovernor({ sessionManager }) {
     if (keepFrom >= msgs.length || keepFrom <= start) return { removed: 0, changed: false };
     let removed = 0;
     for (let i = start; i < keepFrom; i++) {
-      if (omit(msgs[i])) removed++;
+      if (omitById(ids[i])) removed++;
     }
     // 替换语义：先删旧 digest 再注入新 digest（整体描述每步更新，只保留最新一条）
     const hadDigest = proj.messages.some(isDigest);
