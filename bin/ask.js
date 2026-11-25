@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgv } from '../src/cli/argv.js';
 import { acquireLock, releaseLock } from '../src/cli/lock.js';
 import { collectDeviceFacts } from '../src/cli/device-facts.js';
-import { pruneToolHistory } from '../src/session/image-prune.js';
+import { createContextGovernor } from '../src/session/context-governor.js';
 import { REPLAY_ACTION_TYPES } from '../src/tools/vocab.js';
 import { createPlanCache, planKey } from '../src/session/plan-cache.js';
 import { resolveWorkspace, ensureWorkspace } from '../src/cli/workspace.js';
@@ -186,14 +186,8 @@ function lastAssistantText(session) {
 // 步内/轮内追加 prompt 前的网关防护（同步）：把历史里的 role:'tool' 轮全折叠为纯文本。
 // 网关对含 role:tool 的历史返回 400（对照实验实证）；每步 finally 的步间折叠覆盖不到
 // "同一步/同一问答内第 2 轮 prompt"，催答/续作/视觉确认轮必须自带本折叠。
-// 必须同步执行（折叠完成前不得发出 prompt），故调用方需已持有 pruneToolHistory。
-export function foldToolHistoryForFollowup(session) {
-  try {
-    const msgs = session?.agent?.state?.messages ?? session?.messages ?? null;
-    if (Array.isArray(msgs)) return pruneToolHistory(msgs, { keepRecent: 0 }).folded;
-  } catch { /* 折叠失败不阻断 */ }
-  return 0;
-}
+// 评审 C-A1：折叠经 governor 落 appendContextEdit（对实际请求生效）；旧原地改写版
+// foldToolHistoryForFollowup 已删除——SDK 每次请求前重建投影，原地改写从未到达模型。
 
 // —— 设备事实采集见 src/cli/device-facts.js（已抽出以便单测） ——
 
@@ -439,6 +433,10 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       // 模型仍被禁止给像素坐标（tap.description 即 2026-09-24 裁定原文）
       tools: runTools,
     });
+    // 上下文治理执行后端（评审 C-A1）：四道治理经 appendContextEdit 对实际请求生效，
+    // 持久化历史保留原文（append-only）。旧原地改写 state.messages 的版本被 SDK
+    // 请求前投影重建覆盖，治理从未到达模型——governor 是唯一执行路径。
+    const gov = createContextGovernor({ sessionManager });
 
     // 引擎直执行步骤用：工具名 → 工具。契约工具与引擎专用工具（point_tap）合并，
     // 使 buildToolCall 产出的坐标调用也能命中有记账包装的实例。
@@ -562,11 +560,13 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     if (!contextAll && Number.isFinite(ctxNum) && ctxNum < 1) console.warn(`[warn] --context-steps ${contextCfgRaw} 非法（<1），已回退 3`);
     if (!contextAll && Number.isFinite(ctxNum) && !Number.isInteger(ctxNum)) console.warn(`[warn] --context-steps ${contextCfgRaw} 非整数，已取整为 ${contextKeep}`);
     if (flags['context-steps'] === true) console.warn('[warn] --context-steps 需要一个值（n 或 all），已回退 3');
-    // SDK 消息数组双路径兼容（旧版 SDK 挂 session.messages）：取不到时治理整体 no-op，须有告警
+    // SDK 消息数组双路径兼容（旧版 SDK 挂 session.messages）：取不到时 delta 记账为 0，须有告警。
+    // 治理执行已迁 governor（读投影），本闭包只服务步间 delta 记账；每步 finally 治理后
+    // refreshContext 把投影同步回 state.messages，记账与请求侧视图一致。
     let _msgsWarned = false;
     const getMsgs = () => {
       const m = session?.agent?.state?.messages ?? session?.messages ?? null;
-      if (!Array.isArray(m) && !_msgsWarned) { _msgsWarned = true; console.warn('[warn] 未取到会话消息数组（SDK 路径变更？），上下文治理本轮全部跳过'); }
+      if (!Array.isArray(m) && !_msgsWarned) { _msgsWarned = true; console.warn('[warn] 未取到会话消息数组（SDK 路径变更？），步骤 delta 记账本轮全部跳过'); }
       return Array.isArray(m) ? m : null;
     };
     ctx.stepMsgCounts = []; // 每步产生的消息数（delta），供 pruneStepHistory 分段（delta 跨多轮剪枝稳定）
@@ -585,10 +585,11 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     };
     // 步内第 2 轮起的 prompt（催答/续作/视觉确认）自带本轮原始 role:'toolResult' 历史，
     // 网关对 role:tool 历史返回 400（对照实验实证）→ 每次追加 prompt 前先同步全折叠为纯文本。
-    const foldForGateway = () => { foldToolHistoryForFollowup(session); };
+    // governor 落 appendContextEdit：SDK 请求前重建投影时折叠必然生效（旧原地改写被覆盖）。
+    const foldForGateway = () => { try { gov.foldToolHistory(); } catch { /* 折叠失败不阻断 */ } };
 
     // --continue/--session 恢复的历史可能含 role:tool 轮（网关 400）：主循环前先折叠一次
-    try { const rm = getMsgs(); if (rm) pruneToolHistory(rm, { keepRecent: 0 }); } catch { /* 折叠失败不阻断 */ }
+    try { gov.foldToolHistory(); session.refreshContext?.(); } catch { /* 折叠失败不阻断 */ }
 
     for (let i = 0; i < steps.length; i++) {
       // 整 run 时间预算（--timeout）：到点即止，剩余步骤跳过——实测 run 曾超预算 2 倍仍不退出
@@ -1019,28 +1020,25 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         // 文字占位符，避免 prompt tokens 随历史线性膨胀（实测 20 张图 → 67k tokens / 单轮 26s）。
         // 三层剪枝**必须先于窗口折叠**执行：折叠删除消息段时，被删段与保留段都已是纯文本，
         // 不依赖"两段在同一同步 finally 内执行"的顺序巧合（role:'tool' 残留会触发网关 400）。
+        // 评审 C-A1：全部经 governor 落 appendContextEdit（对实际请求生效，持久化历史留原文）。
         try {
-          const msgs = getMsgs();
-          if (msgs) {
-            const { pruneImages, pruneToolResults } = await import('../src/session/image-prune.js');
-            const keepN = Number(flags['keep-images']); const pr = pruneImages(msgs, { keepRecent: Number.isFinite(keepN) && keepN >= 1 ? keepN : 3 });
-            if (pr.replaced > 0) ctx.imagesPruned = (ctx.imagesPruned || 0) + pr.replaced;
-            // 旧工具结果截断：uitree/screen_diff 单条 20-40KB，长 run 累积数 MB 进上下文，
-            // 实测诱发模型空响应；只保留最近 1 条完整（当前步所需），更早截断为 300 字符摘要
-            const pr2 = pruneToolResults(msgs, { keepRecent: 1, keepChars: 300 });
-            if (pr2.replaced > 0) ctx.toolResultsPruned = (ctx.toolResultsPruned || 0) + pr2.replaced;
-            // 旧工具轮折叠为纯文本：网关对 role:tool 历史返回 400（对照实验实证），
-            // 步间全折叠为纯文本（keepRecent=0）：网关对 role:tool 历史偶发 400/空响应；
-            const pr3 = pruneToolHistory(msgs, { keepRecent: 0 });
-            if (pr3.folded > 0) ctx.toolHistoryFolded = (ctx.toolHistoryFolded || 0) + pr3.folded;
-          }
+          const keepN = Number(flags['keep-images']); const pr = gov.pruneImages({ keepRecent: Number.isFinite(keepN) && keepN >= 1 ? keepN : 3 });
+          if (pr.replaced > 0) ctx.imagesPruned = (ctx.imagesPruned || 0) + pr.replaced;
+          // 旧工具结果截断：uitree/screen_diff 单条 20-40KB，长 run 累积数 MB 进上下文，
+          // 实测诱发模型空响应；只保留最近 1 条完整（当前步所需），更早截断为 300 字符摘要
+          const pr2 = gov.pruneToolResults({ keepRecent: 1, keepChars: 300 });
+          if (pr2.replaced > 0) ctx.toolResultsPruned = (ctx.toolResultsPruned || 0) + pr2.replaced;
+          // 旧工具轮折叠为纯文本：网关对 role:tool 历史返回 400（对照实验实证），
+          // 步间全折叠为纯文本（keepRecent=0）：网关对 role:tool 历史偶发 400/空响应；
+          const pr3 = gov.pruneToolHistory({ keepRecent: 0 });
+          if (pr3.folded > 0) ctx.toolHistoryFolded = (ctx.toolHistoryFolded || 0) + pr3.folded;
         } catch { /* 剪枝失败不阻断 */ }
         // 步骤上下文窗口（第四道治理，调研 docs/CONTEXT-COMPRESSION-RESEARCH.md）：
         // 超过 keepSteps 个"有内容步"时，把最旧步骤的原文整体删除，替换为一条确定性
         // 整体描述（进度/最近步骤行/断言计数/数据集/变量），只保留最近 N 步原文。0 额外 LLM 轮次。
         try {
           if (Number.isFinite(contextKeep) && ctx.stepMsgCounts.length > contextKeep) {
-            const { pruneStepHistory, buildStepDigest } = await import('../src/session/context-window.js');
+            const { buildStepDigest } = await import('../src/session/context-window.js');
             const digest = buildStepDigest({
               caseName: caseObj.name,
               caseTotal: steps.length,
@@ -1049,11 +1047,15 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
               vars: ctx.vars,
               datasets: ctx.datasetWrites ?? null,
             });
-            const msgs = getMsgs();
-            const pr = msgs ? pruneStepHistory(msgs, ctx.stepMsgCounts, { keepSteps: contextKeep, digest }) : { changed: false };
+            const pr = gov.pruneStepHistory(ctx.stepMsgCounts, { keepSteps: contextKeep, digest });
             if (pr.changed && !flags.quiet) console.warn(`[context] 窗口折叠：移除最旧 ${pr.removed} 条消息，保留最近 ${contextKeep} 步原文 + 整体描述`);
           }
         } catch { /* 窗口治理失败不阻断 */ }
+        // 治理后同步 state.messages ← 投影（SDK 公开 API refreshContext，即 _refreshFinalizedContext）。
+        // appendContextEdit 不触发刷新，state 会滞后于投影：delta 记账（pushStepMsgDelta/_msgStart）
+        // 与 lastAssistantText 都读 state，不同步则窗口分段错位、回答读取取到旧数组。
+        // 实验实证：refresh 后八步序列 delta 恒 2、digest 恒 1 条、answer 每步正确。
+        try { session.refreshContext?.(); } catch { /* 刷新失败不阻断（下轮 prompt 请求侧仍用投影） */ }
       }
     }
 
@@ -1161,19 +1163,22 @@ async function cmdAsk({ positional, flags }) {
     for (const w of prompt.warnings) console.warn(`[warn] ${w}`);
     // 只读工具白名单过滤
     const filtered = buildTools(ctx).filter((t) => READ_ONLY.has(t.name));
+    const askSessionManager = await createSessionManager({ strategy: 'fresh', cwd: PROJECT_ROOT });
     const session = await createAskSession(ctx, {
       systemPrompt: prompt.systemPrompt,
-      sessionManager: await createSessionManager({ strategy: 'fresh', cwd: PROJECT_ROOT }),
+      sessionManager: askSessionManager,
       model,
       modelRuntime,
       tools: filtered,
     });
+    // 治理执行后端（评审 C-A1，与 runOne 同款）：催答轮折叠经 appendContextEdit 对请求生效
+    const gov = createContextGovernor({ sessionManager: askSessionManager });
     await session.prompt(question);
     // 回显回答：复用 lastAssistantText（否则命令静默退出，用户看不到答案）
     let answer = lastAssistantText(session) ?? '';
     for (let nudge = 0; nudge < 2 && !answer; nudge++) {
       // 模型以纯 toolCall 或空消息收尾：催答重试拿最终文本；催答前折叠 role:tool 历史（网关 400 防护，与 runOne 同款）
-      foldToolHistoryForFollowup(session);
+      try { gov.foldToolHistory(); } catch { /* 折叠失败不阻断 */ }
       await session.prompt('不要再调用工具。直接用一段文本回答上面的问题。', { images: [] });
       answer = lastAssistantText(session) ?? '';
     }

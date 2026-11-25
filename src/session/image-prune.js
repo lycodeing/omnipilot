@@ -9,8 +9,8 @@
 
 export const PLACEHOLDER_PREFIX = '[截图已省略';
 
-// 占位符构造（唯一来源）：pruneImages 与 replaceImagesWithPlaceholder 共用
-function placeholderFor(block) {
+// 占位符构造（唯一来源）：pruneImages / replaceImagesWithPlaceholder / context-governor 共用
+export function placeholderFor(block) {
   const kb = block?.data ? Math.round(String(block.data).length * 3 / 4 / 1024) : 0;
   return { type: 'text', text: `${PLACEHOLDER_PREFIX}: ${block?.mimeType || 'image'}${kb ? ' ~' + kb + 'KB' : ''}（历史步骤，已省略以省 token）]` };
 }
@@ -41,6 +41,9 @@ export function countImages(messages) {
 
 // 主入口：保留最近 keepRecent 张图，其余替换为占位符（原地改写传入的消息对象）。
 // 返回 { total, kept, replaced, changed }。
+// @deprecated 原地改写对 Pi 1.6.0 的实际请求不生效（SDK 请求前用 buildSessionProjection
+// 重建消息数组，state.messages 的改写被覆盖）。执行路径请用 context-governor.js 的
+// createContextGovernor().pruneImages；本函数保留供决策逻辑单测与无 sessionManager 的回退。
 export function pruneImages(messages, { keepRecent = 3 } = {}) {
   const total = countImages(messages);
   if (total <= keepRecent) return { total, kept: total, replaced: 0, changed: false };
@@ -84,6 +87,8 @@ export const TOOLRESULT_PLACEHOLDER = '[工具结果已截断';
 // 表现为模型"空响应"。对策：把**旧的**工具轮折叠为纯文本消息（assistant toolCall→文本描述、
 // toolResult→user 文本），只保留最近 keepRecent 轮原始形态（模型需要看到自己上一次调用的结果）。
 // 折叠后历史无 tool role → 网关接受；语义保留（模型仍知道调过什么、结果大意）。
+// @deprecated 原地改写对 Pi 1.6.0 的实际请求不生效（同 pruneImages 说明）。执行路径请用
+// context-governor.js 的 pruneToolHistory/foldToolHistory；本函数保留供决策逻辑单测。
 export function pruneToolHistory(messages, { keepRecent = 1 } = {}) {
   if (!Array.isArray(messages)) return { folded: 0, changed: false };
   // 从后往前数"工具轮"（assistant 含 toolCall 块 或 role=toolResult 的消息）
@@ -127,6 +132,8 @@ export function pruneToolHistory(messages, { keepRecent = 1 } = {}) {
   return { folded, changed: folded > 0 };
 }
 
+// @deprecated 原地改写对 Pi 1.6.0 的实际请求不生效（同 pruneImages 说明）。执行路径请用
+// context-governor.js 的 pruneToolResults；本函数保留供决策逻辑单测。
 export function pruneToolResults(messages, { keepRecent = 6, keepChars = 300 } = {}) {
   let replaced = 0;
   // 从后往前数 toolResult，前 keepRecent 条保留

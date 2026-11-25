@@ -16,6 +16,10 @@
 
 export const STEP_DIGEST_PREFIX = '【整体进展】';
 
+// @deprecated 原地改写（splice）对 Pi 1.6.0 的实际请求不生效：SDK 请求前用
+// buildSessionProjection 重建消息数组，state.messages 的改写被覆盖。执行路径请用
+// context-governor.js 的 pruneStepHistory（appendContextEdit 删除 + digest 注入）；
+// 本函数保留供决策逻辑单测与无 sessionManager 的回退。
 export function pruneStepHistory(messages, stepCounts, { keepSteps = 3, digest = '' } = {}) {
   if (!Array.isArray(messages) || !Array.isArray(stepCounts)) return { removed: 0, changed: false };
   const k = stepCounts.length;
