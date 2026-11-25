@@ -813,8 +813,19 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
             if (fg?.package) fgNote = `\n（系统事实：当前前台包名为 ${fg.package}，Activity 为 ${fg.activity ?? '未知'}）`;
           } catch { /* 前台事实缺失不阻断 */ }
         }
+        // 数据类断言分流（C-P2）：文本引用数据集时注入行数与样本事实，
+        // 不再让模型只凭屏幕截图猜测"数据集 X 至少 N 条"（系统性误判源）。
+        let datasetFacts = null;
+        let buildAssertPrompt = null;
+        if (step.type === 'aiAssert') {
+          try {
+            ({ buildAssertPrompt } = await import('../src/session/assert-prompt.js'));
+            const { collectDatasetFacts } = await import('../src/session/assert-prompt.js');
+            datasetFacts = await collectDatasetFacts(stepText, ctx.datasetWrites, ctx.store);
+          } catch { /* 事实采集失败不阻断断言 */ }
+        }
         const text = (step.type === 'aiAssert')
-          ? `【断言】${stepText}${fgNote}\n只依据随附的当前屏幕截图与上述系统事实判断，不要调用任何工具。只输出一行 JSON：{"passed": true/false, "reason": "不超过30字"}。`
+          ? buildAssertPrompt({ stepText, fgNote, datasetFacts })
           : (step.type === 'aiQuery' && step.name)
             ? `${stepText}\n（把结果用 data_extract 或 data_store 落到数据集「${step.name}」）`
             : stepText;
