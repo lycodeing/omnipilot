@@ -55,7 +55,7 @@ export class Yadb {
     return this.adb.shell(yadbClearCommand(this.remote));
   }
 
-  // 清空+输入合并为一条 adb shell（性能）：旧实现 inputText 付两次 spawn+队列等待。
+  // 清空+输入合并为一条 adb shell（性能）：省一次 spawn+队列等待。
   // 语义不变：先 keyboardClear 再 keyboard（同一 shell 内顺序执行）。
   async clearAndType(text) {
     await this.ensureReady();

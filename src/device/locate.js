@@ -32,10 +32,8 @@ export function parseTarget(target) {
   if ((m = /^text=(.+?)(?:#index=(\d+))?$/i.exec(t))) {
     return { kind: 'exact_text', text: m[1], index: m[2] ? Number(m[2]) : 0 };
   }
-  // text*= 前缀匹配（包含）。此前 parseTarget 无此分支 → 落入 auto 把整个
-  // "text*=xx" 当字面量搜 → 永不命中。而 matchNodeSelector 与工具层文档
-  // （ai_wait_for 的 selector 说明）都承诺支持 text*= —— waitForElement 等
-  // 走 parseTarget 的路径会静默等到超时。两套语法必须一致。
+  // text*= 前缀匹配（包含）。matchNodeSelector 与工具层文档（ai_wait_for 的 selector 说明）
+  // 都承诺支持 text*= —— waitForElement 等走 parseTarget 的路径必须同一套语法。
   if ((m = /^text\*=(.+?)(?:#index=(\d+))?$/i.exec(t))) {
     return { kind: 'contains', text: m[1], field: null };
   }
@@ -95,7 +93,7 @@ export function findByContains(flat, text, field = null) {
 //
 // 判据用**逐字符扫描**而非整模式正则匹配——嵌套组会让"组 + 量词"的正则匹配
 // 失效（`[^()]*` 遇嵌套括号即断），黑名单式整模式匹配挡不住所有形态：
-// 实测 (a|aa)+$、(?:a{1,10}){1,10}$、(a{2,})+$ 都能绕过"嵌套量词"检测，
+// (a|aa)+$、(?:a{1,10}){1,10}$、(a{2,})+$ 都能绕过"嵌套量词"检测，
 // 其中 (?:a{1,10}){1,10}$ 只需 36 字符即 5.5s（36 字符 × 数百节点 = 整轮挂死）。
 //
 // 扫描规则（每个量词看它的作用对象）：
@@ -349,7 +347,7 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
     }
     const flat = flattenNodes(tree.nodes);
     // getSize 必须在 try 内：冷启动期 wm size 不可用（服务未就绪/超时）时应结构化返回，
-    // 不能让异常逃出 locate（曾导致整个 run 被判 error，见 VERIFICATION-REPORT §10）。
+    // 不能让异常逃出 locate（否则整个 run 会被判 error，见 VERIFICATION-REPORT §10）。
     // 返回形状严守契约 §1.1（不新增字段），"设备未就绪"由 error 文本表达。
     let size;
     try {

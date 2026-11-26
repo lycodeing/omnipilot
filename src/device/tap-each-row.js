@@ -35,9 +35,8 @@ export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) 
       result.error = `verifyColor 无法解析: ${effVerifyColor}（应为 '#RRGGBB' 或 [r,g,b] 或 'auto'）`;
       return result;
     }
-    // 就绪等待预算（2026-11-02 实证）：调用方往往在"点进问卷"的同一步里紧接着调本工具，
-    // 此时页面可能还在转场/首屏渲染，树里**一行都没有**。旧实现见到 0 行立刻按"无行可答"
-    // 收尾返回 ok（实测 11s 就 ok 退出，整轮其余断言全灭）。改为：从未 tap 过且树中
+    // 就绪等待预算：调用方往往在"点进问卷"的同一步里紧接着调本工具，
+    // 此时页面可能还在转场/首屏渲染，树里**一行都没有**。从未 tap 过且树中
     // 0 行时，在 readyWaitMs 内反复等，不当成"到底/无行"。
     const readyWaitMs = Math.max(0, Math.min(120_000, Number(prof?.readyTimeoutMs ?? 30_000) || 0));
     const readyDeadline = Date.now() + readyWaitMs;
@@ -69,7 +68,7 @@ export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) 
           const png = decodePng(buffer);
           const b = p.bounds;
           const cx = p.center[0]; const cy = p.center[1];
-          // 无 bounds 兜底采样半径：屏宽 2%（1080 宽 ≈ 22px，比例化适配其它分辨率，评审 #7）
+          // 无 bounds 兜底采样半径：屏宽 2%（1080 宽 ≈ 22px，比例化适配其它分辨率）
           const sz = await getSize().catch(() => null);
           const fallbackR = Math.max(4, Math.round((sz?.w ?? 1080) * 0.02));
           const rx = b ? Math.max(4, Math.round((b[2] - b[0]) * 0.2)) : fallbackR;
@@ -120,7 +119,7 @@ export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) 
       }
       // 本轮这次 dump 同时充当**上一轮 tap 的回执**（延迟验证）：tap 后没必要立刻再 dump
       // 一次——下一轮开头本来就要取同一棵树。单题成本因此从 2 次 dump 降到 1 次
-      // （uia2 下单次 1-6s，27 题实测省约一半作答时间）。
+      // （uia2 下单次 1-6s，27 题省约一半作答时间）。
       await finishPending(hash0);
       if (hangRounds >= 2) {
         result.error = `renderer_unresponsive: 连续两次 tap 后页面无响应（树未变且选项未变为选中色 ${effVerifyColor ?? 'auto'}），渲染器疑似挂死`;
@@ -128,7 +127,7 @@ export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) 
         return result;
       }
       const size = await getSize().catch(() => null);
-      // size=null 时 vis 已短路跳过在屏检查——不需要"兜底屏高"假值（评审 #7 移除 ?? 2400）
+      // size=null 时 vis 已短路跳过在屏检查——不需要"兜底屏高"假值
       // 零面积（隐藏预渲染层 bounds=[0,0,0,0]）先排除，再看中心点是否在屏
       const areaOk = (n) => Array.isArray(n.bounds) && n.bounds.length === 4 && n.bounds[2] - n.bounds[0] > 0 && n.bounds[3] - n.bounds[1] > 0;
       const vis = (n) => areaOk(n) && (!size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= size.h));
@@ -158,7 +157,7 @@ export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) 
         cl.key = n === 1 ? cl.text : `${cl.text}#${n}`;
       }
       // 选项带下界 = 下一行的 cy（下一行的选项必在其行 cy 之下，天然不含邻行选项）；
-      // 末行/无下一行时回退屏高比例（实测标定 1080×2340 上为 400px，按比例适配其它分辨率，评审 #7）
+      // 末行/无下一行时回退屏高比例（标定 1080×2340 上为 400px，按比例适配其它分辨率）
       const bandFallback = Math.round((size?.h ?? 2340) * (400 / 2340));
       const bandEndOf = (i) => {
         const cl = clusters[i];
@@ -173,8 +172,8 @@ export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) 
           .sort((a, b) => a.center[0] - b.center[0]);
       };
       // 就绪门（见上方 readyWaitMs 说明）：还没 tap 过任何行、且树上 0 个行节点 = 页面大概
-      // 还没到位（转场/首屏渲染中）。此时**不能**按"无行可答"收尾，否则 11s 就 ok 退出、
-      // 后续断言全灭（实测 run-20261102-213839）。等一小段再重新观测，直到预算耗尽。
+      // 还没到位（转场/首屏渲染中）。此时**不能**按"无行可答"收尾，否则会 ok 退出、
+      // 后续断言全灭。等一小段再重新观测，直到预算耗尽。
       if (clusters.length === 0 && result.taps === 0 && Date.now() < readyDeadline) {
         const nap = Math.min(1000, Math.max(200, Math.round((readyDeadline - Date.now()) / 10)));
         await new Promise((r) => setTimeout(r, nap));

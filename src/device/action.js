@@ -29,9 +29,8 @@ export function regionPoint(name, size) {
 }
 
 // 按距离滚动起止点（§2.4）：distancePct 为屏高百分比。
-// 关键约束（真机实测）：**纵向滚动的起止点必须避开屏幕最上/最下缘**——
-//   从 y < 0.10h 起手会触发系统「下拉通知栏」（实测把 App 顶出前台，后续点击全失效）；
-//   且需在屏内。故纵向安全区取 [0.12h, 0.88h]，横向取屏宽的 [0.05w, 0.95w]。
+// 纵向滚动的起止点必须避开屏幕最上/最下缘——从 y < 0.10h 起手会触发系统下拉通知栏把 App 顶出前台；
+// 且需在屏内。故纵向安全区取 [0.12h, 0.88h]，横向取屏宽的 [0.05w, 0.95w]。
 // 本函数吃**手指滑动方向**（'up'=手指上滑=看更多下方内容）；device.scroll 对外是内容语义，
 // 内部换算后传入本函数。与 regionPoint 的 from/to 区域一致。
 export function scrollDistancePoints(direction, size, distancePct = 60) {
@@ -107,7 +106,7 @@ export async function tap(adb, [x, y], { timeoutMs } = {}) {
   return runWrite(adb, `input tap ${x} ${y}`, { timeoutMs });
 }
 
-// 实测 input swipe 同点 + duration 即长按（§5.4.4）
+// input swipe 同点 + duration 即长按（§5.4.4）
 export async function longPress(adb, [x, y], durationMs = 800, { timeoutMs } = {}) {
   return runWrite(adb, `input swipe ${x} ${y} ${x} ${y} ${durationMs}`, { timeoutMs });
 }

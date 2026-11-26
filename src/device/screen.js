@@ -1,4 +1,4 @@
-// screencap → PNG Buffer；wm size 解析（§3.0.1 实测 480ms 通道）
+// screencap → PNG Buffer；wm size 解析（§3.0.1 480ms 通道）
 // screencap 须经 exec-out 传输：`adb -s X screencap` 会报 unknown command（adb.exe 无此子命令）
 export async function screencap(adb, { timeoutMs } = {}) {
   const buf = await adb.execOut(['exec-out', 'screencap', '-p'], { timeoutMs, binary: true });
@@ -18,7 +18,7 @@ export function parseWmSize(text) {
 }
 
 // 判定 wm size 输出是否属"设备/服务未就绪"（冷启动期 window 服务未起、shell 报错等），
-// 与"输出格式异常"区分开，便于排查（曾把冷启动失败误报成解析 bug）
+// 与"输出格式异常"区分开，便于排查（否则冷启动失败会误报成解析 bug）
 export function isDeviceNotReady(text) {
   const s = String(text ?? '').trim();
   if (!s) return true; // 空输出：服务未就绪的典型表现

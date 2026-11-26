@@ -2,11 +2,10 @@
 // 只做"恢复现场"：不计入 run 的 steps、不产生断言（§2.7.4）。
 // 依赖：device 门面（foreground/dumpTree/locate/tap/key/waitIdle/getProp）。
 //
-// 类型分类（2026-11-10 通用性评审落地）：「Android 系统弹窗」是一个设备类型，其知识
+// 类型分类：「Android 系统弹窗」是一个设备类型，其知识
 // 按两个正交维度收敛为数据，引擎逻辑只认接口——
 //   ① 弹窗族（谁在弹）：SYSTEM_DIALOG_PACKAGES，权限控制器/安装器/systemui；
 //   ② locale 文案包（按钮长什么样）：POPUP_WORD_PACKS，zh/en 两包。
-// 此前两份中文词表内联：英文设备上检测永不命中、dismiss 退化盲按 back 且无任何告警。
 // 新增 locale = 加一个词表键；新增弹窗族 = 包集合加一项；引擎逻辑零改。
 // 自定义 locale 可用环境变量 ASK_POPUP_LOCALE 强制（CI/测试/多语言真机）。
 import { flattenNodes } from './uitree.js';
@@ -99,8 +98,8 @@ export function isSystemDialogForeground(fg) {
 // —— 内嵌权限框检测的复合判据 ——
 // 文本命中（严格子集）**且**该节点自身或其祖先可点击——真实按钮在 a11y 树里叶子文本常
 // clickable=false、可点的是父容器（两侧都要认）；而纯静态文案（"您需同意…才能继续"段落）
-// 整条链都不可点，旧实现会被 includes 误判为权限框、写动作前被自动点掉（用户协议页/
-// 支付确认等合法步骤遭殃）。WebView 整屏容器 clickable=true 时判据退化回旧行为（不劣于旧）。
+// 整条链都不可点，按 includes 误判会把用户协议页/支付确认等合法步骤在写动作前自动点掉。
+// WebView 整屏容器 clickable=true 时判据退化回包含匹配。
 function hasClickableAllowText(nodes, texts, ancestorClickable = false) {
   for (const n of nodes || []) {
     const t = String(n.text || n.contentDesc || '').trim();
@@ -117,7 +116,7 @@ function hasClickableAllowText(nodes, texts, ancestorClickable = false) {
 // 按设备分键（WeakMap）：--parallel 多设备并发时互不串用。
 const negCacheByDevice = new WeakMap();
 const NEG_TTL_MS = 1000;
-// 树派生前台的新鲜度上限（终审 Important #1）：缓存树超过此龄不用来判前台，
+// 树派生前台的新鲜度上限：缓存树超过此龄不用来判前台，
 // 回落 dumpsys，避免 4s 树 TTL 窗口内新弹系统弹窗被漏检一次。
 const MAX_TREE_STALE_MS = 1000;
 
@@ -130,8 +129,8 @@ export async function detectDialog(device) {
   }
   // 优先从 UI 树派生前台包（根节点 package= 即前台应用，uitree 已保留 pkg 字段）：
   // 写动作路径上 detectDialog 之后 locate 必然要 dump 同一棵树（缓存命中），
-  // 故先 dump 不浪费；省掉旧实现每次写动作前的一次 dumpsys 往返（~0.3-0.5s）。
-  // 新鲜度上限（终审 Important #1）：缓存树超过 MAX_TREE_STALE_MS 时不用它派生前台
+  // 故先 dump 不浪费；省掉每次写动作前的一次 dumpsys 往返（~0.3-0.5s）。
+  // 新鲜度上限：缓存树超过 MAX_TREE_STALE_MS 时不用它派生前台
   // （否则 4s TTL 窗口内新弹的系统弹窗会被漏检一次）——回落实时 foreground()。
   let fg = null;
   let tree = null;

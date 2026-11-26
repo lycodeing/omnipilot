@@ -40,9 +40,9 @@ export function parseHexColor(s) {
 
 // 屏幕内容签名（scroll 等"画面变没变"判定用）：等距采样 RGB 后 sha1 取前 16 位。
 // 为什么不用整树 hash：busy WebView 上一次 a11y dump 要 4-30s（uia2）乃至 38-55s（legacy），
-// 而截图+解码+采样实测 0.5-1s（解码 116-141ms / 采样 1-2ms）。签名对 CSS 动画、选中高亮等
+// 而截图+解码+采样 0.5-1s（解码 116-141ms / 采样 1-2ms）。签名对 CSS 动画、选中高亮等
 // **不改 a11y 树**的变化同样敏感，恰好覆盖 WebView 类页面。
-// 采样步长 40px、上下各跳过 6%（实测 1080×2400 约 1400 采样点）。步长过大漏小面积变化，
+// 采样步长 40px、上下各跳过 6%（1080×2400 约 1400 采样点）。步长过大漏小面积变化，
 // 过小收益递减。
 export function screenSignature(buf, { step = 40, marginPct = 0.06 } = {}) {
   const png = decodePng(buf);

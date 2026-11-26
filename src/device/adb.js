@@ -91,9 +91,7 @@ export class Adb {
   }
 
   // 串行队列：同设备命令排队执行；断连时重连一次后重试一次。
-  // 超时统一由 _runRaw 内部定时器负责（它持有 child 句柄能 kill）；旧实现外层再包
-  // _withTimeout 的 race：到点只 reject 不 kill，泄漏的 adb.exe 子进程会在设备侧与
-  // 下一条命令交错（低概率高危害）。
+  // 超时由 _runRaw 内部定时器负责（它持有 child 句柄能 kill）。
   _enqueue(args, opts = {}) {
     const task = async () => {
       let res = await this._runRaw(args, opts);
@@ -109,7 +107,7 @@ export class Adb {
   }
 
   // TCP 序列号用 connect，USB 用 reconnect offline。
-  // in-flight 去重：队列中多条命令相继判定断连时共享同一次 reconnect（旧实现会并发多次）。
+  // in-flight 去重：队列中多条命令相继判定断连时共享同一次 reconnect。
   async reconnect() {
     if (this._reconnecting) return this._reconnecting;
     const args = String(this.serial).includes(':') ? ['connect', this.serial] : ['reconnect', 'offline'];

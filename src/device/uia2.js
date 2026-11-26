@@ -1,7 +1,5 @@
-// uia2 通道终版（终评 P1×2 + P3 修复）：
-// ① httpRaw 半途断连挂起修复（实证 P1）：res error/aborted 监听 + 客户端整体 deadline；
-// ② hostPort 线性探测防碰撞（多设备并行哈希撞槽 → 串台读别的设备的树）；
-// ③ started 死变量删除；模块级 usedPorts 进程内去重。
+// uia2 通道：httpRaw 监听 res error/aborted + 客户端整体 deadline 防半途断连挂起；
+// hostPort 线性探测 + 模块级 usedPorts 防多设备并行哈希碰撞串台。
 import http from 'node:http';
 import { withKind } from './errors.js';
 
@@ -27,7 +25,7 @@ const noKeepAgent = new http.Agent({ keepAlive: false }); // 共享 agent：keep
 
 function httpRaw(hostP, p, { method = 'GET', body = null, timeoutMs = 8000 } = {}) {
   return new Promise((resolve, reject) => {
-    // 整体 deadline：响应头已到但 body 半途断连时 end/error 都不触发（实证挂起），
+    // 整体 deadline：响应头已到但 body 半途断连时 end/error 都不触发，
     // 客户端限时兜底 + req.destroy；socket 级 timeout 只管 idle，管不住这种场景
     let settled = false;
     const req = http.request(
@@ -52,9 +50,9 @@ function httpRaw(hostP, p, { method = 'GET', body = null, timeoutMs = 8000 } = {
   });
 }
 
-// readyPoll：冷启动轮询参数（{ tries, intervalMs }）。默认 15×1s=15s——实测 `-w` 启动到
-// /status ready 需 5-9s（进程拉起 + a11y 注册 + netty 监听），原 6×800ms=4.8s 会在临界点误判
-// 不可达并进入 10 分钟退避。测试注入小值以免空等真实时间。
+// readyPoll：冷启动轮询参数（{ tries, intervalMs }）。默认 15×1s=15s——`-w` 启动到
+// /status ready 需 5-9s（进程拉起 + a11y 注册 + netty 监听），预算过短会在临界点误判
+// 不可达并进入退避。测试注入小值以免空等真实时间。
 export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll = {} } = {}) {
   // port 显式注入（测试 DI）优先；缺省按 serial 哈希+线性探测派生 host 转发端口
   let hostP = port ?? hostPort(serial);
@@ -85,7 +83,7 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
     else await adb.execOut(args, { timeoutMs: 8000, binary: false }); // 老注入执行器兜底
   }
 
-  // forward + 串台防护（2026-11-04 评审 P1-2）：bind 失败**不得**吞掉——adb 的 forward
+  // forward + 串台防护：bind 失败**不得**吞掉——adb 的 forward
   // 监听按本地端口全局唯一，跨进程哈希撞端口时 status() 会命中**别台设备**的隧道，
   // 静默读错树。bind 失败 → 换端口重试一次 → 仍失败则 ensure 返回 false（不信任 status）。
   async function ensureForward() {
@@ -117,17 +115,16 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
   }
 
   async function startServer() {
-    // `-w` 必须带（实证：2026-11-02 两台设备各 3/3 复现）。不带 `-w` 时 am 拿到结果是立刻
-    // 返回、不等 instrumentation 就绪，随后 uia2 建会话必报
-    // "Got null UiAutomation from instrumentation"——因为 `Registering UiTestAutomationService`
-    // 根本没发生（logcat 无该行）；带 `-w` 时必然出现该注册行、会话创建 3/3 成功。
-    // 设备侧 `( ... &)` 后台化让 adb shell 立即返回（实测 77ms），不会阻塞 timeoutMs 预算；
+    // `-w` 必须带：不带 `-w` 时 am 拿到结果立刻返回、不等 instrumentation 就绪，随后 uia2
+    // 建会话必报 "Got null UiAutomation from instrumentation"——`Registering UiTestAutomationService`
+    // 根本没发生（logcat 无该行）；带 `-w` 时必然出现该注册行、会话创建成功。
+    // 设备侧 `( ... &)` 后台化让 adb shell 立即返回（77ms），不会阻塞 timeoutMs 预算；
     // 服务进程独立于被测 App，只有设备重启才需要重启服务。
     const cmd = `(am instrument -w -e serverPort ${DEVICE_PORT} io.appium.uiautomator2.server.test/androidx.test.runner.AndroidJUnitRunner >/dev/null 2>&1 &)`;
     await adb.shell(cmd, { timeoutMs: 10000 }).catch(() => {});
   }
 
-  // 服务进程"存活但已残废"的自愈（2026-11-02 实证）：旧代码（无 `-w`）启动的服务进程会一直
+  // 服务进程"存活但已残废"的自愈：无 `-w` 启动的服务进程会一直
   // 活着、/status 恒 `"ready":true`，但内部 a11y 从未注册 → 每次 POST /session 都 500
   // `Got null UiAutomation`。只看 status 的 ensure() 永远不会重启它，整轮跑只能退化 legacy。
   // 因此建会话 500 时记录一次，达到阈值就 force-stop + 按当前命令重启一次服务。
@@ -167,14 +164,12 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
     if (await status()) return true;
     // status 拒连：转发可能失效（设备重连等），下次重建
     bound = false;
-    // 关键（2026-11-02 实证）：`am instrument` 会**先杀掉**同名旧进程再启动——对"正忙但
-    // 健康"的服务重复调用等于自杀。logcat 铁证：
+    // `am instrument` 会**先杀掉**同名旧进程再启动——对"正忙但健康"的服务重复调用等于自杀：
     //   Killing <pid>:io.appium.uiautomator2.server (adj 0): stop ... due to start instr
-    // 实测该路径让健康服务被反复杀 25 次，legacy 三通道全败时直接整轮崩盘。
     // 因此：进程还活着就**绝不**重启，只在"进程确实不存在"时才 startServer。
     const pid = await serverPid();
     if (pid) {
-      // 进程在，但 /status 没就绪：是在忙，不是在死（评审 P2-1：15s 窗口短于 busy 页
+      // 进程在，但 /status 没就绪：是在忙，不是在死（15s 窗口短于 busy 页
       // worst-case 38-55s，会在长 busy 期把正在出活的健康服务杀掉）。给 60s 墙钟预算，
       // 到点才允许按"卡死"重启。
       const busyDeadline = Date.now() + 60_000;
@@ -221,9 +216,9 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
     const j = JSON.parse(r.body);
     sessionId = j.value?.sessionId ?? null;
     if (!sessionId) throw new Error('uia2 会话 id 缺失');
-    // 会话级 settings（Appium Settings API，server 10.6.6 实测 200，settings 按**会话**生效）：
+    // 会话级 settings（Appium Settings API，server 10.6.6，settings 按**会话**生效）：
     // waitForIdleTimeout=0 跳过 a11y idle 盲等——busy WebView 页 source 从 4-30s 降到
-    // 0.3-0.4s（2026-11-04 真机实测；openatx 出厂默认即 0）。失败不阻断：老 server 无此
+    // 0.3-0.4s（openatx 出厂默认即 0）。失败不阻断：老 server 无此
     // 端点时仅退回旧行为。
     try {
       await httpRaw(hostP, `/wd/hub/session/${sessionId}/appium/settings`, {
@@ -239,11 +234,9 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
 
   // 页面源（uiautomator dump 兼容格式，包在 JSON value 字段里）
   //
-  // 超时预算 12s → 30s（2026-11-02 实证）：uia2 服务端取 /source 时内部仍会等一次
-  // accessibility idle，busy 弹窗页（问卷提交、自愈尾）可达 15-25s。旧 12s 预算在这些
-  // 关键时刻先超时，随即降级到 legacy——而 legacy 三通道在同类 busy 页**全败**
-  // （实测 run-20261102-125547：8 个断言全灭，失败步 #7/#17/#18/#49 全是
-  //  "uiautomator dump 三通道均无 hierarchy"），uia2 的意义恰好被超时抵消。
+  // 超时预算 30s：uia2 服务端取 /source 时内部仍会等一次
+  // accessibility idle，busy 弹窗页（问卷提交、自愈尾）可达 15-25s，预算过短会先超时降级到
+  // legacy——而 legacy 三通道在同类 busy 页**全败**，uia2 的意义恰好被超时抵消。
   // 30s 仍短于 legacy 的 50s file 通道，busy 页能救回来；健康页仍在 0.2-0.6s。
   const SOURCE_TIMEOUT_MS = 30000;
   async function source({ timeoutMs = SOURCE_TIMEOUT_MS } = {}) {

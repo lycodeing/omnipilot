@@ -1,9 +1,8 @@
-// 传输/通道错误分类（2026-11-10 评审 #6）：此前控制流靠匹配引擎**自己生成的中文报错串**
-//（/超时|连接|中断/、/建会话失败: 500/）——文案一改分类即静默失效。统一为结构化：
+// 传输/通道错误分类：控制流用结构化标注，避免依赖中文报错串匹配（文案一改即静默失效）。
 //   e.kind  —— 本引擎错误源显式标注（uia2.js httpRaw/建会话等）：'timeout'|'connection'|'protocol'|'unavailable'
 //   e.code  —— node 原生错误码（ETIMEDOUT/ECONNRESET/…）与 adb.js 的 ETIMEDOUT 约定
 // message 正则仅作兜底（测试注入执行器/历史错误对象无结构时仍可分类），标注为 deprecation。
-// 分类语义与旧正则逐位对齐，调用方（dumpXmlRaw 退避、槽判定）行为不变。
+// 调用方（dumpXmlRaw 退避、槽判定）依赖分类语义。
 
 export function classifyTransportError(e) {
   if (!e) return 'unknown';

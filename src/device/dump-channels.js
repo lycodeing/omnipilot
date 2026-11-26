@@ -21,18 +21,17 @@ export function createDumpChannels({ adb, uia2 }) {
     // 预算起点必须在 uia2 尝试之前：uia2 source/退避重试同样消耗本次预算，
     // 若从 legacy 段才起算，重试与 cap() 的"剩余量"会漏掉前段耗时（C-A2）。
     const dumpT0 = Date.now();
-    // 两级策略（实测 busy 弹窗态成功 dump 需 38-39s——uiautomator idle 等待本身很长）：
+    // 两级策略（busy 弹窗态成功 dump 需 38-39s——uiautomator idle 等待本身很长）：
     // ① tty 快通道：设备侧 timeout 10s 快速失败（健康屏 ~2s 出结果；busy 屏不留孤儿——
     //    客户端超时只杀 adb，设备侧 uiautomator 会变孤儿继续持有 a11y 锁，毒化后续尝试）；
     // ② file 耐久通道：设备侧 50s 等满 idle 等待，&& 串联 cat（dump 失败非零退出不会 cat
     //    陈旧文件）。粘性通道记住上次成功的形态，健康屏仍走快通道。
-    // 通道 0：uia2 server（busy 态 157-958ms vs 38-55s，调研落地 2026-11-01）。
+    // 通道 0：uia2 server（busy 态 157-958ms vs 38-55s）。
     // 失败退避后重试探测；期间走 legacy 三通道。lastTreeHash 基线在两通道间通用
     // （都是同一棵 a11y 树的 hash）。返回形状与 legacy 完全一致。
     //
-    // 退避时长按错误类型区分（2026-11-02 实证）：uia2 source 超时是 busy 页的**瞬时抖动**
-    // （服务端内部仍要等一次 a11y idle），而 legacy 三通道在同类 busy 页会全败。若超时也
-    // 退避 60s，一次抖动就让整轮退化成"引擎全盲"，实测 run-20261102-125547 因此 8 断言全灭。
+    // 退避时长按错误类型区分：uia2 source 超时是 busy 页的**瞬时抖动**
+    // （服务端内部仍要等一次 a11y idle），而 legacy 三通道在同类 busy 页会全败。
     // 传输类错误（超时/断连）只退避 5s（下一两次 dump 就回来），只有服务真的起不来才 60s。
     if (uia2 && Date.now() >= uia2DeadUntil) {
       try {
@@ -42,12 +41,12 @@ export function createDumpChannels({ adb, uia2 }) {
         throw new Error('uia2 无 hierarchy');
       } catch (e) {
         lastUia2Error = String(e?.message ?? e).slice(0, 100);
-        // 传输类判定（评审 #6）：结构化 e.kind/e.code 优先（classifyTransportError），
+        // 传输类判定：结构化 e.kind/e.code 优先（classifyTransportError），
         // message 正则仅兜底注入执行器/历史错误。e.status 非 undefined = HTTP 有应答
-        // （服务活着），不是传输故障——与旧 `e?.status === undefined` 守卫语义一致。
+        // （服务活着），不是传输故障。
         const kind = classifyTransportError(e);
         const transient = e?.status === undefined && (kind === 'timeout' || kind === 'connection');
-        // 槽空闲判定（评审 #6 kind 化）：protocol（HTTP 有应答但非 200，如 500）= 服务活着
+        // 槽空闲判定：protocol（HTTP 有应答但非 200，如 500）= 服务活着
         // 但 UiAutomation 没注册上 → 槽空闲；unavailable（ensure 失败）= 服务没起来 → 槽也空闲。
         // 其余（timeout/connection/无 hierarchy）= 服务活着持槽 → legacy 是死路。
         lastUia2SlotFree = kind === 'protocol' || kind === 'unavailable';
@@ -56,23 +55,10 @@ export function createDumpChannels({ adb, uia2 }) {
         console.warn(`[uia2] 不可用（${lastUia2Error}），${Math.round(backoffMs / 1000)}s 内走 legacy dump 通道`);
       }
     }
-    // —— 关键平台约束（2026-11-03 双向实验证实）——
-    // Android 11 的 UiAutomation 注册槽**排他**：uia2 服务健康持槽时，shell 的
-    // `uiautomator dump` 去注册第二个 → AccessibilityManagerService 抛 RemoteException →
-    // uiautomator 未捕获自爆（logcat: Sending signal PID SIG:9）→ rc=137。
-    // 实验证据：停服务 → dump 立刻成功（106KB）；起服务 → dump 必 rc=137。
-    // 槽被占的判定：服务进程存活 **且** 本次失败不是"建会话失败: 500"（500=服务活着但
-    // UiAutomation 没注册上 → 槽空闲 → legacy 可用）。槽被占时 legacy 三通道是**注定的
-    // 死路**（exec-out/shell 崩 + file 通道 50s 白等 + 二轮重试 ≈ 140s/次，实测
-    // run-20261102-220327 被 37 次超时 × 140s 拖到 3323s）。此时唯一正路是**等退避结束
-    // 再试 uia2**（60s 预算，对齐历史 busy 页 38-55s 的 worst-case）。
-    // 槽被占的判定（2026-11-04 评审修正 P1-1）：**服务进程存活 且 失败不是"建会话失败: 500"**
-    // （500=服务活着但 UiAutomation 没注册上 → 槽空闲 → legacy 可用）。旧实现把守卫收窄到
-    // "瞬时报错"，导致"有应答但无树"（无 hierarchy/会话 id 缺失/JSON 解析失败——服务明显
-    // 活着=槽被占）也掉进 140s 的注定 legacy 死路。注释判据与实现对齐到同一句话。
-    // lastUia2Error 跨调用保留：跳过 uia2 尝试（退避期内）的调用也能凭上次的失败类型入守卫。
-    // 槽判定（评审 #6 kind 化）：lastUia2SlotFree 在每次失败时按结构化 kind 更新
-    // （protocol/unavailable = 槽空闲），退避期内的调用沿用上次值——不再依赖中文文案正则。
+    // Android 11 UiAutomation 槽排他：uia2 持槽时 legacy dump 必 rc=137，只能等退避后重试 uia2。
+    // 500=服务活着但 UiAutomation 没注册上 → 槽空闲 → legacy 可用。
+    // lastUia2SlotFree 在每次失败时按结构化 kind 更新（protocol/unavailable = 槽空闲），
+    // 退避期内的调用沿用上次值；lastUia2Error 跨调用保留，跳过 uia2 尝试也能凭上次失败类型入守卫。
     const slotHeldError = lastUia2Error && !lastUia2SlotFree;
     if (uia2 && slotHeldError) {
       const pid = await uia2.serverPid().catch(() => null);
@@ -84,9 +70,8 @@ export function createDumpChannels({ adb, uia2 }) {
         // 下次 dumpTree 直接跳过退避（Date.now() >= 0 恒真）→ 立刻再付
         // 10s 等待 + 60s source 超时，正是这段退避本要避免的 ≈140s/次成本。
         try {
-          // 重试预算同样受本次 dump 预算约束——此前硬编码 60s，完全无视 budgetMs，
-          // 使 waitForElement({timeoutMs:10000}) 仍可能被拖成 60s+。用剩余量而非全量：
-          // uia2 首次尝试与退避等待已消耗部分预算，重试再取满额会击穿总预算（C-A2）。
+          // 重试预算同样受本次 dump 预算约束：用剩余量而非全量——uia2 首次尝试与退避等待
+          // 已消耗部分预算，重试再取满额会击穿总预算（C-A2）。
           const retryBudget = budgetMs != null ? Math.max(500, budgetMs - (Date.now() - dumpT0)) : 60_000;
           const xml = await uia2.source({ timeoutMs: retryBudget });
           if (xml.includes('</hierarchy>')) {
@@ -139,7 +124,7 @@ export function createDumpChannels({ adb, uia2 }) {
       return xml;
     };
     const tryFile = async () => {
-      // 前置 rm -f：实测 `uiautomator dump <不可写路径>` 仍打印成功且 exit 0，
+      // 前置 rm -f：`uiautomator dump <不可写路径>` 仍打印成功且 exit 0，
       // 此时 && 不生效、cat 会吐上一轮残留的合法 XML（被当当前树用）——必须清旧文件
       const xml = await adb.shell(`rm -f /sdcard/ask-uidump.xml; ${tw(50)}uiautomator dump /sdcard/ask-uidump.xml && cat /sdcard/ask-uidump.xml`, { timeoutMs: cap(55000) });
       if (!String(xml).includes('</hierarchy>')) throw new Error('file 无 hierarchy');
@@ -152,7 +137,7 @@ export function createDumpChannels({ adb, uia2 }) {
     };
     // 粘性通道直走；失败则按 execout → shell → file 顺序重探。
     // WebView 模态态下 uiautomator idle 等待是**间歇性**失败（同一通道时好时坏），
-    // 单轮全败后隔 600ms 再补一轮（file 形式绕开 tty pipe 限制，实测弹窗态稳定可用）
+    // 单轮全败后隔 600ms 再补一轮（file 形式绕开 tty pipe 限制，弹窗态稳定可用）
     if (dumpChannel) {
       try { return await tryChannel[dumpChannel](); } catch { dumpChannel = null; }
     }
@@ -167,7 +152,7 @@ export function createDumpChannels({ adb, uia2 }) {
       if (pass === 0) await new Promise((r) => setTimeout(r, 600));
     }
     // 全败：客户端超时只会杀 adb 进程，设备侧 uiautomator 可能已成孤儿并**持有 a11y 锁**，
-    // 毒化后续所有 dump（实测：孤儿存在时 uia2 建会话报 "Got null UiAutomation"）。
+    // 毒化后续所有 dump（孤儿存在时 uia2 建会话报 "Got null UiAutomation"）。
     // 非 root 无法杀他人进程，但可杀**本 shell 用户**起的历史 uiautomator（同一 u0_aXXX uid 下
     // 新起的 dump 进程属同一 uid，pkill 只影响自己这一侧残留），尽力清理后交下一轮重试。
     try {

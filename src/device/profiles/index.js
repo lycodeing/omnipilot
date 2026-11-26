@@ -75,8 +75,7 @@ export async function loadProfile(name, { dir = process.env.ASK_PROFILE_DIR || n
 export const PROFILE_NAMES = Object.keys(BUILTIN);
 
 // tap_each_row 两形态（selector / 视觉）共用的时序优先级：显式参数 > profile > 内置缺省。
-// 此前视觉形态没接 profile，settle/maxRounds/verifyColor 在 visual-answer.js 另写一份缺省，
-// 与本文件 questionnaire 预设数值分叉——分类点已建、知识未下沉的典型。收敛到这一个函数。
+// 两形态共用一个函数，避免 settle/maxRounds/verifyColor 缺省值分叉。
 // settleMs 不暴露为工具参数（点击后停留时长属场景预设职责，用例作者不该逐用例调），
 // 只认 profile 与缺省；maxRounds / verifyColor 允许用例显式覆盖。
 export function resolveTiming({ maxRounds = null, verifyColor = null } = {}, prof = null) {

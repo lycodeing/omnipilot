@@ -12,7 +12,7 @@ import * as state from './state.js';
 import * as net from './net-profile.js';
 import { screenSignature } from './png.js';
 
-// uia2 退避预算（评审 #5/#6：时序常量命名成组，不再散落字面量）
+// uia2 退避预算：时序常量命名成组，不再散落字面量
 import { createUia2 } from './uia2.js';
 import { createTapEachRow } from './tap-each-row.js';
 import { createDumpChannels } from './dump-channels.js';
@@ -43,7 +43,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   // waitFor* 专用：matchSelector + 在屏过滤 + WebView 标记。
   // uni-app/WebView 壳会把未打开的页面预渲染进 accessibility 树（bounds 在屏内但不可见），
   // 不过滤会让 aiWaitFor 对"尚未到达的页面"误报 appeared；但**可见元素也可能报零面积
-  // bounds**（实测首页导航栏 [0,0][0,0]），一律按 inScreen 过滤会永远匹配不到。
+  // bounds**（首页导航栏 [0,0][0,0]），一律按 inScreen 过滤会永远匹配不到。
   // 故：零面积 = 几何未知 → 放行并标记 inWebView 交视觉确认；非零面积才做在屏过滤。
   async function matchOnScreen(flat, sel) {
     const m = matchSelector(flat, sel);
@@ -76,15 +76,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   const getSize = createSizeProbe({ adb, bootSize });
 
   // /dev/tty dump 在新版 platform-tools 上 shell 通道 stdout 只有提示行，XML 须走 exec-out 通道；
-  // exec-out 失败或返回不含 </hierarchy>（同为 shell 通道的病征）时回退 legacy shell（旧镜像/redroid 兼容）。
-  // 通道粘性（性能）：旧实现每次 dump 都先试 exec-out、失败再回退 shell——在 exec-out 不可用的
-  // 设备上每次 dump 付双倍成本（2.2s→4.4s+）。首次探测成功后记住通道，后续直走；失败再重置重探。
-  // 第三级回退：文件形式 dump + cat。实测（API 30 x86 + uni-app 模态弹窗） tty 两通道全部
+  // exec-out 失败或返回不含 </hierarchy> 时回退 legacy shell（旧镜像/redroid 兼容）。
+  // 通道粘性（性能）：记住上次成功的通道，后续直走；失败再重置重探，
+  // 避免在 exec-out 不可用的设备上每次 dump 都付双倍成本。
+  // 第三级回退：文件形式 dump + cat。API 30 x86 + uni-app 模态弹窗下 tty 两通道全部
   // 返回无 hierarchy（UI busy / pipe 限制），文件形式稳定可用——没有它，弹窗态整个引擎失明。
-  // 测试注入 exec 时跳过 uia2（单测走 legacy 路径保持确定性；真机不受影响）
-  // uia2 注入缝（2026-11-04 评审：dumpXmlRaw 通道决策层是唯一零覆盖的关键分支，根因是
-  // 注入 exec 就硬性 uia2=null）。显式传 uia2 stub 即可测通道决策（槽守卫/瞬态分类/busy
-  // 重试），与 exec 注入的 adb stub 组合使用。
+  // 测试注入 exec 时跳过 uia2（单测走 legacy 路径保持确定性；真机不受影响）；
+  // 显式传 uia2 stub 即可测通道决策（槽守卫/瞬态分类/busy 重试），与 exec 注入的 adb stub 组合使用。
   const uia2 = uia2Inject ?? (exec ? null : createUia2({ adb, serial, log: (m) => console.warn('[uia2] ' + m) }));
 
   // UI 树抓取（通道策略见 dump-channels.js）：uia2 退避状态、粘性通道与
@@ -206,7 +204,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         if (doClear) {
           // 条件清空（性能）：聚焦 tap **之前**读定位阶段的缓存树（fresh）取输入框当前文本；
           // 已为空则跳过 keyboardClear（省一次设备侧 app_process JVM 冷启动 ~300-600ms）。
-          // tap 会置脏缓存，故必须在 tap 前读；缓存不可用时保守清空（语义与旧实现一致）。
+          // tap 会置脏缓存，故必须在 tap 前读；缓存不可用时保守清空。
           const preTree = cache.peek();
           if (preTree) {
             const cur = readTextAt(flattenNodes(preTree.nodes), xy);
@@ -229,7 +227,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         const okNow = () => isPassword
           ? (readBack == null || readBack.length === want.length)
           : readBack === want;
-        // ASCII 降级（评审 #16）：yadb 依赖设备 ABI/app_process，vendor 二进制与设备 ABI
+        // ASCII 降级：yadb 依赖设备 ABI/app_process，vendor 二进制与设备 ABI
         // 不符时 inputText 全挂且无替代路径。纯 ASCII 可走原生 `input text` 重试一次
         //（空格 %s、shell 元字符转义）；非 ASCII 不降级（input text 对中文静默失败，§5.4.5）。
         // 密码框不走降级：降级会二次输入，且掩码回读无法证伪，反而把凭据重放一遍。
@@ -292,11 +290,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       const dirKey = String(direction ?? 'down').toLowerCase();
       const dir = moves[dirKey] ? dirKey : 'down';
       const [fromRegion, toRegion] = moves[dir];
-      // 变化检测：**像素签名快通道 + 树 hash 兜底**（2026-11-02 性能修复）。
-      // 动机：整树 dump 在 busy WebView 上要 4-30s（uia2）/ 38-55s（legacy），实测 scroll
-      // 因此 170s/次，把 uia2 省下的取树时间全吃掉；截图+解码+采样实测 0.5-1s（解码 116-141ms、
+      // 变化检测：**像素签名快通道 + 树 hash 兜底**。
+      // 动机：整树 dump 在 busy WebView 上要 4-30s（uia2）/ 38-55s（legacy），scroll
+      // 因此 170s/次，把 uia2 省下的取树时间全吃掉；截图+解码+采样 0.5-1s（解码 116-141ms、
       // 采样 1-2ms），快 1-2 个数量级。
-      // 但不能只用签名：实测该 App 的 WebView 会**停止出帧**（screencap 连续返回逐字节相同的
+      // 但不能只用签名：该 App 的 WebView 会**停止出帧**（screencap 连续返回逐字节相同的
       // 陈旧画面）而 a11y 树仍在更新——此时签名恒等，单靠它会误判"到底"并提前中断。
       // 所以签名只作**单向判据**：签名变了 ⇒ 一定变了（不问树）；签名没变 ⇒ 必须树确认。
       //
@@ -340,9 +338,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         }
         // ② 签名不变/不可用（冻帧或截图失败）：树 hash 判定。
         // 基线可能已被快通道轮置 null（签名变化即清空）——此时无法证伪"没动"，保守按
-        // moved=true 处理（2026-11-04 评审实证：判 false 会让冻帧切换点跳过树确认误判
-        // "到底"，帧=[变,冻,冻]+树逐轮变 → 第 2 轮 break）。代价仅一轮多滚，下一轮起
-        // 基线恢复，比较恢复正常。
+        // moved=true 处理（判 false 会让冻帧切换点跳过树确认误判"到底"）。代价仅一轮多滚，
+        // 下一轮起基线恢复，比较恢复正常。
         const curHash = await hashNow();
         const moved = prevHash == null ? true : curHash !== prevHash;
         prevHash = curHash; // 无论是否 moved 都推进基线（下轮与当前状态比）
@@ -356,7 +353,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       return { scrolls, changed };
     },
     // 小步滚动直到 selector 在屏可见（内容语义 direction，默认 down 前进）。
-    // WebView fling 惯性大：单次大距离 swipe 会过冲整段（实测 70% 屏 swipe 越过特征段），
+    // WebView fling 惯性大：单次大距离 swipe 会过冲整段（70% 屏 swipe 越过特征段），
     // 定量距离不可靠；小步（30% 屏）+ 每步树检可见才停，天然抗过冲。
     async scrollUntil(selector, { direction = 'down', max = 12, distancePct = 30 } = {}) {
       const result = { scrolls: 0, found: false, changed: false, error: null };
@@ -378,8 +375,8 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     },
     // 逐行作用域批量点击（引擎确定性，0 模型往返）：表单/问卷作答场景。App 无关：
     // 行/选项/终止标记全部由 selector 表达；选项带按邻行几何推导；选中色可配。
-    // 关键事实（实测）：① WebView 选中态不进 a11y 树，adb tap 无回执；② 选中会触发
-    // scroll-into-view，**tap 后整页滚动**，同轮内后续行的坐标立即失效（也是历史"点错行"根因）。
+    // 关键事实：① WebView 选中态不进 a11y 树，adb tap 无回执；② 选中会触发
+    // scroll-into-view，**tap 后整页滚动**，同轮内后续行的坐标立即失效。
     // 因此每轮只 tap 一行：dump → 取文档序第一个未答行 → tap 其行内最左在屏选项 → 等渲染 →
     // 双信号验证（树 hash 变化=页面响应；或原坐标像素变为选中色）→ 记 answered；
     // 双信号皆无 = 渲染器挂死计数（连续 2 次报错退出，不再空转记假已答）。
@@ -450,11 +447,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       let failStreak = 0; // dump 连续失败退避（设备离线期避免每 intervalMs 白 spawn 一次 adb）
       while (Date.now() - t0 < timeoutMs) {
         // dump 失败（转场中/uiautomator idle 超时，§20.4 已知）当作"未稳定"继续等，
-        // 不再让异常逃出（曾使整条用例在 aiWaitFor 步判 error 中断，VERIFICATION-OVERVIEW §7）
+        // 不让异常逃出（否则整条用例会在 aiWaitFor 步判 error 中断，VERIFICATION-OVERVIEW §7）
         let h = null;
         try {
           // 把剩余预算传给 dump：单次 fresh dump 可达 4-155s（uia2 退避/重试路径），
-          // 不设上限会让 waitIdle({timeoutMs:10000}) 实测跑出 155s。
+          // 不设上限会让 waitIdle({timeoutMs:10000}) 跑出 155s。
           const remain = timeoutMs - (Date.now() - t0);
           h = (await dumpTree({ fresh: true, timeoutMs: Math.max(1000, remain) })).hash; // 必须强制新树，缓存命中会使判定失真
         } catch { /* 未稳定，继续等 */ }
@@ -592,7 +589,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       const xml = await dumpXmlRaw();
       const text = truncateAtHierarchyEnd(xml);
       if (!text.includes('</hierarchy>')) {
-        // 取证文件不能静默落非 XML 内容（评审 Minor：失败 dump 落盘提示行会误导取证）
+        // 取证文件不能静默落非 XML 内容（失败 dump 落盘提示行会误导取证）
         throw new Error(`uiautomator dump 未返回 XML: ${text.trim().slice(0, 120)}`);
       }
       await writeFile(path, text, 'utf8');
@@ -645,8 +642,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         return '';
       }
     },
-    // 一次 shell 读多个属性（性能）：旧实现每个属性各 spawn 一次 adb（设备事实采集
-    // 曾 4 次串行 adb 调用）。失败返回空串不抛错。
+    // 一次 shell 读多个属性（性能）：避免每个属性各 spawn 一次 adb。失败返回空串不抛错。
     //
     // 必须用分隔符而非按行拆：getprop 对**不存在的属性**会输出空行，按行拆会让
     // 后续所有属性值整体前移一位（ro.product.model 丢失、被空行顶替）——
