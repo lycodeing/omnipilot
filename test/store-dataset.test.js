@@ -191,8 +191,8 @@ test('非法输入：数据集名与行形状', async (t) => {
 });
 
 test('并发 append 与 upsert 交错：增量零丢失、upsert 不丢、磁盘与缓存一致（文件锁回归）', async (t) => {
-  // 回归（2026-11-02）：append 走增量追加、upsert 走全量重写，两者都"读快照→写"，
-  // 无互斥时全量重写方用陈旧快照覆盖并发追加内容（实测静默丢写）。
+  // 守护：append 走增量追加、upsert 走全量重写，两者都"读快照→写"，
+  // 须有互斥，否则全量重写方会用陈旧快照覆盖并发追加内容（静默丢写）。
   const dir = tmpDir(t, 'ds-race-');
   const store = openDataset({ dataDir: dir });
   await store.append('t', [{ k: 'a', v: 1 }]);
@@ -221,8 +221,8 @@ test('并发 clear 与 append：清除后不再有旧数据复活', async (t) =>
 });
 
 test('坏行跳过而非摧毁整个数据集：末行截断（写入中断）时其余行仍可读', async (t) => {
-  // 回归用例：append 走非原子 appendFile，进程中途被杀会留下截断的末行。
-  // 原实现对坏行直接 throw → 该数据集此后永久不可读（只能手工删文件）。
+  // 守护：append 走非原子 appendFile，进程中途被杀会留下截断的末行；
+  // 坏行须跳过而非 throw，否则该数据集此后永久不可读。
   const dir = tmpDir(t, 'ask-ds-bad-');
   const ds = openDataset({ dataDir: dir });
   await ds.append('t', [{ v: 1 }, { v: 2 }]);

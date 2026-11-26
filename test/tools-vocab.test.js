@@ -1,7 +1,6 @@
 // 步骤类型词表单一来源（src/tools/vocab.js）的一致性守护。
 // vocab 刻意保持纯数据（viewer 浏览端可 import），与真实注册表的同步只能靠测试锁：
-// 引擎新增工具/记账步而词表漏补 → 这里红。历史教训：viewer 本地词表缺
-// tap_each_row/point_tap/launch/terminate，新类型在报告端静默降级成静帧。
+// 引擎新增工具/记账步而词表漏补 → 这里红，避免新类型在报告端静默降级成静帧。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 

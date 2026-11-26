@@ -421,9 +421,9 @@ test('readText：text=x#index=N 等值 MISS 后兜底剥 #index 做包含匹配'
   await device.close();
 });
 
-// 回归（2026-11-02 真机实证）：该 App 的 WebView 会**停止出帧**——screencap 连续返回逐字节
-// 相同的陈旧画面，而 a11y 树仍在更新。纯像素签名会因此恒判"无变化"、把 scroll 误停在第一轮。
-// 修复后签名只作单向快通道（变了 ⇒ 一定变了），签名没变时必须用树 hash 确认。
+// 守护：WebView 会**停止出帧**（screencap 返回逐字节相同的陈旧画面，而 a11y 树仍在更新），
+// 纯像素签名会恒判"无变化"把 scroll 误停在第一轮。签名只作单向快通道（变了 ⇒ 一定变了），
+// 签名没变时必须用树 hash 确认。
 test('scroll：签名不变时回落树 hash（防 WebView 冻帧误判到底）', async () => {
   // screencap 固定返回同一张 PNG（模拟冻帧），树按脚本变化
   const device = await makeDevice({ dumpScript: [FIXTURE, FIXTURE_B, FIXTURE_B] });
@@ -479,9 +479,8 @@ test('scroll：无既有树基线时先补一次基线（max=1 也能识别真�
   await device.close();
 });
 
-// 回归（2026-11-02 真机实证）：调用方常在"点进问卷"同一步紧接着调 tapEachRow，此时页面
-// 还在转场/首屏渲染，树里一行都没有。旧实现见到 0 行立刻按"无行可答"收尾返回 ok
-// （实测 11s 就 ok 退出，整轮后续断言全灭）。修复：从未 tap 过且 0 行时先等页面就绪。
+// 守护：调用方常在"点进问卷"同一步紧接着调 tapEachRow，页面转场/首屏渲染时树里一行都没有；
+// 此时不能按"无行可答"收尾，从未 tap 过且 0 行时先等页面就绪。
 test('tapEachRow：0 行且未 tap 过 → 先等页面就绪（不立刻 ok 退出）', async () => {
   // 前两次 dump 是空树（模拟转场中），第 3 次起出现行与选项
   const empty = '<?xml version="1.0"?><hierarchy rotation="0"><node index="0" text="加载中" resource-id="" class="android.widget.TextView" clickable="false" bounds="[0,600][720,660]" /></hierarchy>';
@@ -506,8 +505,8 @@ test('tapEachRow：始终 0 行 → 就绪预算耗尽后收尾（不挂死）',
   await device.close();
 });
 
-// 回归（自查发现的隐患）：就绪等待**不得消耗** maxRounds 配额。否则 questionnaire profile
-// 的 45s 就绪预算会吃掉 45 轮，YAML 的 maxRounds: 60 只剩 15 轮给 27 题（表现为答到一半
+// 守护：就绪等待**不得消耗** maxRounds 配额。否则 questionnaire profile
+// 的 45s 就绪预算会吃掉 45 轮，YAML 的 maxRounds: 60 只剩 15 轮给 27 题（答到一半
 // exhausted，且与就绪快慢耦合）。
 test('tapEachRow：就绪等待不消耗 maxRounds 配额', async () => {
   // 前 3 次 dump 无行（转场），之后出现完整行/选项；maxRounds 设很小（2）也能答完
@@ -520,9 +519,9 @@ test('tapEachRow：就绪等待不消耗 maxRounds 配额', async () => {
   await device.close();
 });
 
-// 回归（2026-11-04 双代理评审实证复现）：快通道命中（签名变化）会把树基线置 null；
-// 紧接着的冻帧轮进树确认分支时若无基线，moved 恒 false → 误判"到底"提前 break。
-// 修复后循环顶部在 swipe 前补基线。帧=[变,冻,冻]、树逐轮都变 → 必须跑满 max 轮。
+// 守护：快通道命中（签名变化）会把树基线置 null；紧接着的冻帧轮进树确认分支时若无基线，
+// moved 恒 false → 会误判"到底"提前 break。循环顶部在 swipe 前补基线，帧=[变,冻,冻]、
+// 树逐轮都变时必须跑满 max 轮。
 test('scroll：快通道→冻帧切换点仍做树确认（不误判到底）', async () => {
   const frames = [
     makePng(40, 40, [200, 30, 40]), // 基线
@@ -542,7 +541,7 @@ test('scroll：快通道→冻帧切换点仍做树确认（不误判到底）',
 });
 
 // ===== dumpXmlRaw 通道决策（uia2 注入缝）=====
-// 评审（2026-11-04）：这是整个引擎的可用性命门，此前因"注入 exec 就硬性 uia2=null"零覆盖。
+// 守护：通道决策层是引擎可用性命门，显式传 uia2 stub 覆盖槽守卫/瞬态分类/busy 重试。
 
 function makeUia2Stub({ sourceImpl, pid = '4242' }) {
   const calls = { source: 0, pid: 0 };
@@ -567,7 +566,7 @@ test('通道决策：uia2 成功 → 直接返回，不碰 legacy', async () => 
   await device.close();
 });
 
-// P1 回归（评审 P1-1）：uia2 "有应答但无树"（无 hierarchy）时服务必活着=槽被占，
+// 守护：uia2 "有应答但无树"（无 hierarchy）时服务必活着=槽被占，
 // 不得掉进注定的 legacy 三通道；应走有界 uia2 重试。重试仍失败 → 抛"槽被占"错误，
 // 且全程零 legacy dump 调用。
 test('通道决策：uia2 无 hierarchy（槽被占）→ 有界重试，绝不碰 legacy', async () => {
@@ -607,7 +606,7 @@ test('通道决策：uia2 超时（槽被占）→ 退避后重试成功，不�
   await device.close();
 });
 
-// kind 化回归（评审 #6）：ensure 失败挂 e.kind='unavailable'，message 不含中文"不可用"——
+// 守护：ensure 失败挂 e.kind='unavailable'（message 不含中文"不可用"）时，
 // 槽判定必须凭结构化 kind，不得依赖文案正则；服务没起来 = 槽空闲 → legacy 可用且必须走。
 // pid 非 null（服务进程残留但 ensure 失败的真实形态）：若槽被误判为占用，会进守卫做
 // 有界重试而非走 legacy——pid=null 时守卫静默放行，测不出误判。
@@ -634,7 +633,7 @@ test('inputText：ASCII 文本 yadb 回读失败 → input text 降级重试一�
 });
 
 test('inputText：ASCII 降级时 % 不被反斜杠转义（设备端只认 %s，不认 \\）', async () => {
-  // 回归用例：AOSP 的 input text 用 escapeFlag 机制——% 后的字符是 s 才解成空格，
+  // 守护：AOSP 的 input text 用 escapeFlag 机制——% 后的字符是 s 才解成空格，
   // 其它情况 % 与后字符都保留；反斜杠设备端完全不认。
   // 故降级路径绝不能反斜杠转义 %（会多出字面反斜杠），也不能自造 %% 编码
   // （AOSP 会原样保留两个 %）。字面 % 属平台限制，靠回读校验如实报错。

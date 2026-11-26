@@ -1,10 +1,10 @@
-// 回归（2026-10-27 真机验证发现）：dump/screencap 的 adb 传输通道钉死
+// 守护 dump/screencap 的 adb 传输通道：
 //   - `adb shell uiautomator dump /dev/tty` 在新版 platform-tools 上 stdout 只有提示行，XML 须走
 //     `adb exec-out uiautomator dump /dev/tty`；exec-out 失败或返回不含 </hierarchy> 时回退 legacy shell
 //   - screencap 必须走 exec-out 传输：`adb -s X screencap -p` 会报 unknown command（adb.exe 无此子命令）
 //   - dumpToFile 不得把非 XML 内容静默落盘
-//   - 2026-10-31：新增设备侧 timeout 包裹（防 busy 弹窗态孤儿锁）+ file&&cat 第三通道（tty
-//     在 busy 态只回提示行时，file 形式等满 idle 可用，实测 38s）
+//   - 设备侧 timeout 包裹（防 busy 弹窗态孤儿锁）+ file&&cat 第三通道（tty
+//     在 busy 态只回提示行时，file 形式等满 idle 可用，38s）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync } from 'node:fs';

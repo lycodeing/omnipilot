@@ -117,8 +117,8 @@ test('pickDefaultHome：unix 新名存在且可写时用新名（即便旧名也
 });
 
 test('pickDefaultHome：unix 新名不存在但 /opt 可写时，仍应回落历史工作区', () => {
-  // 回归用例：曾用「父目录 /opt 可写」当作新名可用的判据，导致新名不存在时
-  // 直接返回新目录、跳过旧名探测 → 老用户工作区被孤立，设备锁目录迁移、互斥失效
+  // 守护：不能以「父目录 /opt 可写」当作新名可用的判据——新名不存在时须继续探测旧名，
+  // 否则老用户工作区会被孤立，设备锁目录迁移、互斥失效
   const home = pickDefaultHome({
     platform: 'darwin',
     env: { HOME: '/h' },
@@ -161,8 +161,8 @@ test('pickDefaultHome：unix 无任何可用目录时回退用户目录', () => 
 // ---- 工作区路径逃逸防护（ASK_DATE / ASK_INSTANCE 白名单）----
 
 test('resolveWorkspace：ASK_DATE 含 ".." 时拒绝（不得逃逸工作区根）', () => {
-  // 回归用例：date/instance 会被拼进工作区根，若允许 ".."，
-  // 环境变量（CI 流水线变量常由外部拼接）即可把 run 产物写到工作区之外。
+  // 守护：date/instance 会被拼进工作区根，须拒绝 ".."——
+  // 环境变量（CI 流水线变量常由外部拼接）否则可把 run 产物写到工作区之外。
   assert.throws(
     () => resolveWorkspace({ env: { ASK_HOME: '/base', ASK_DATE: '../../etc' } }),
     /工作区日期非法/,

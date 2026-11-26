@@ -200,7 +200,7 @@ describe('schema bridge', () => {
 // —— 写操作确认闸与 schema required 保真 ——
 
 test('MCP 工具走确认闸：用户拒绝时不调用 MCP 服务器', async () => {
-  // 回归用例：MCP 工具此前完全绕过确认钩子——MCP 服务器可暴露任意有副作用的
+  // 守护：MCP 工具须走确认闸——MCP 服务器可暴露任意有副作用的
   // 工具（删配置/写仓库/跑 SQL），allowlist 是通配符无法区分读写。
   const bridge = await createMcpBridge({
     config: { servers: { srv: { name: 'srv', transport: 'stdio', command: 'x' } }, allowTools: ['srv_*'], toolPrefix: true },
@@ -243,8 +243,8 @@ test('MCP 工具：--yes 直通确认闸', async () => {
 });
 
 test('jsonSchemaToTypeBox 尊重 required：可选参数不得变成必填', () => {
-  // 回归用例：原实现把所有属性转成非 optional，typebox 因而视全部为必填——
-  // Pi 的校验器会拒绝缺可选参数的合法调用，且模型被告知该参数必填而臆造值。
+  // 守护：jsonSchemaToTypeBox 须尊重 required，可选参数不得转成必填——
+  // 否则 Pi 校验器会拒绝缺可选参数的合法调用，且模型被告知该参数必填而臆造值。
   const tb = jsonSchemaToTypeBox({
     type: 'object',
     properties: { msg: { type: 'string' }, count: { type: 'number' } },

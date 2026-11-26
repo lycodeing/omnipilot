@@ -509,7 +509,7 @@ describe('contract shapes', () => {
     const ctx = makeCtx({ recorder });
     const tool = buildTools(ctx).find((t) => t.name === 'terminate');
     const r = await tool.execute('id1', { packageName: 'com.x' }, undefined, undefined, {});
-    // 断言被测对象本身：terminate 结果形状 + 记账链路（旧版两条恒真断言已删）
+    // 断言被测对象本身：terminate 结果形状 + 记账链路
     const body = JSON.parse(r.content[0].text);
     assert.equal(body.ok, true);
     assert.deepEqual(ended.map((e) => e.type), ['terminate']);
@@ -698,8 +698,7 @@ test('tap_each_row 工具：参数透传 + maxRounds 交由设备层/profile 兜
   assert.match(body.error, /屏幕尺寸未就绪/);
 });
 
-// —— 视觉形态接 profile（回归：此前 profile 只在 selector 形态生效，
-// visual-answer.js 另写一份缺省与 profiles/questionnaire 数值分叉） ——
+// —— 视觉形态接 profile（两形态共用 profiles.resolveTiming，缺省值不分叉） ——
 test('tap_each_row 视觉形态：未知 profile 报结构化错误（不静默忽略拼写）', async () => {
   const ctx = makeCtx({ chat: async () => '' });
   ctx.modelCfg = { family: 'deepseek' };
@@ -711,7 +710,7 @@ test('tap_each_row 视觉形态：未知 profile 报结构化错误（不静默�
 
 test('tap_each_row 视觉形态：合法 profile 通过加载与 strategy 解析（进入主循环前置）', async () => {
   // screenSize 置 null → runVisualAnswer 在 profile 加载/timing 解析之后、首轮截图前
-  // 以确定性错误返回；以此证明 profile 接线通路完好（此前该通路不存在）。
+  // 以确定性错误返回；以此证明 profile 接线通路完好。
   const device = makeFakeDevice();
   device.screenSize = async () => null;
   const ctx = makeCtx({ device, chat: async () => '' });
@@ -725,8 +724,8 @@ test('tap_each_row 视觉形态：合法 profile 通过加载与 strategy 解析
 
 describe('写操作确认闸', () => {
   test('data_extract collection 模式走确认闸：用户拒绝时不滚动设备', async () => {
-    // 回归用例：collection 模式会滚动设备（写操作：改变屏幕状态），
-    // 此前完全绕过确认钩子——用户明确拒绝仍执行了 3 次滚动。
+    // 守护：collection 模式会滚动设备（写操作：改变屏幕状态），须走确认闸——
+    // 用户明确拒绝时不得滚动。
     let scrolls = 0;
     const device = makeFakeDevice();
     device.scroll = async () => { scrolls += 1; return { scrolls: 1, changed: true }; };

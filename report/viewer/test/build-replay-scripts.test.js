@@ -14,7 +14,7 @@ test('ACTION_TYPES：从引擎词表派生（REPLAY_ACTION_TYPES），覆盖全�
     'tap', 'point_tap', 'long_press', 'input', 'swipe', 'scroll',
     'key', 'launch', 'terminate', 'tap_each_row',
   ]);
-  // 历史旧名（实测 0 次落盘）不再混入
+  // 历史旧名（0 次落盘）不再混入
   assert.ok(!ACTION_TYPES.includes('back'));
   assert.ok(!ACTION_TYPES.includes('home'));
 });
@@ -25,7 +25,7 @@ test('typeLabel：词表标签；未收录类型（如 MCP 动态工具名）原
   assert.equal(typeLabel('swipe'), '滑动');
   assert.equal(typeLabel('point_tap'), '坐标点击'); // 引擎专用工具也落 run.json，须有标签
   assert.equal(typeLabel('tap_each_row'), '逐行点击');
-  assert.equal(typeLabel('assert'), '断言'); // 历史兼容（旧版引擎出现过 1 次）
+  assert.equal(typeLabel('assert'), '断言'); // 历史兼容（保留旧报告渲染）
   assert.equal(typeLabel('screen'), '截图');
   assert.equal(typeLabel('sleep'), '等待');
   assert.equal(typeLabel('data_extract'), '提取');
@@ -64,7 +64,7 @@ test('夹具编排：key 无 bounds → 仅 spinning-pointer（无图 img 被跳
   assert.equal(s3.kind, 'spinning-pointer');
   assert.equal(s3.durationMs, DUR.spinningPointer);
   assert.equal(s3.screenshotId, null);
-  assert.equal(s3.title, '按键'); // 词表标签（此前词表缺 key，裸回退）
+  assert.equal(s3.title, '按键'); // 词表标签（须覆盖 key，不裸回退）
   assert.equal(s3.subTitle, 'back');
   assert.equal(s3.pointer, undefined);
 });

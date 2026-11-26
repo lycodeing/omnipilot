@@ -1,12 +1,5 @@
-// 回归（2026-10-27 缺陷 #11）：冷启动期 wm size 不可用导致整个 run 被判 error
-//
-// 现象：8 槽并发冷启动时 7 条用例齐刷刷停在 wm size 探测。根因不是超时/并发竞争，而是：
-//   1. locate.js 的 getSize() 在 try 外 → 异常逃出 locate → 工具上抛 → run 步骤级 catch → status=error + break
-//   2. withRecording 把工具异常 throw e 上抛，一个瞬时错误杀死整个 run
-//   3. getSize() 无退避/负缓存：每失败一次，后续每个工具都立刻重撞
-//   4. screen.js 把"服务未就绪"误报成"解析失败"，误导排查
-//   5. createDevice 从不等待设备系统服务就绪（无 boot_completed / wm size 就绪判定）
-// 本测试用注入 executor 复现冷启动窗口，逐项钉死修复后的行为。
+// 守护：冷启动期 wm size 不可用时，locate 结构化返回、工具异常不上抛、尺寸探测有负缓存、
+// 服务未就绪与解析失败可区分、createDevice 等待设备服务就绪。用注入 executor 复现冷启动窗口。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

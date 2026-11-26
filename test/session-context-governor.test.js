@@ -72,9 +72,8 @@ test('governor 幂等：重复执行不重复删除/注入', () => {
   assert.equal(n1, n2, '重复执行消息数不变');
 });
 
-// —— 评审 C1/I1 回归测试（brief 四测试之上追加）——
-// C1 根因：有 edit 的 entry 每次投影返回新对象，旧版按投影输出引用匹配找不到 id →
-// 截断（pruneToolResults）先 edit 旧 tr 后，折叠（pruneToolHistory）omit 静默失败 →
+// —— 上下文治理守护（brief 四测试之上追加）——
+// 有 edit 的 entry 每次投影返回新对象，按引用匹配找不到 id 会让折叠 omit 静默失败 →
 // 投影残留 role:toolResult → 请求侧 role:"tool" → 网关 400。以下用真实 finally 顺序覆盖。
 
 const atcN = (id, name) => ({ role: 'assistant', content: [{ type: 'toolCall', id, name, arguments: {} }], timestamp: Date.now(), provider: 'p', model: 'm', api: 'openai-completions', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 }, stopReason: 'toolUse' });
@@ -100,7 +99,7 @@ test('governor C1：截断+折叠组合（单步两轮 uitree→tap，真实 fin
   sm.appendMessage(trN('c2', 'tap', '{"ok":true}'));
   const gov = createContextGovernor({ sessionManager: sm });
   const pr2 = gov.pruneToolResults({ keepRecent: 1, keepChars: 300 }); // 先截断：uitree tr 成为已 edit entry
-  const pr3 = gov.pruneToolHistory({ keepRecent: 0 }); // 再折叠：旧版此处 omit 全部失败
+  const pr3 = gov.pruneToolHistory({ keepRecent: 0 }); // 再折叠：omit 须对已 edit entry 生效
   assert.ok(pr2.replaced >= 1, '长工具结果确实被截断');
   assert.ok(pr3.folded >= 4, '两条 assistant + 两条 toolResult 全部折叠');
   const r = residueOf(sm);
@@ -186,7 +185,7 @@ test('governor I1：跨步折叠早期摘要保留（步1 A 折叠 → 步3 B �
   sm.appendMessage(u('第3题引用第1题'));
   sm.appendMessage(atcN('b1', 'read'));
   sm.appendMessage(trN('b1', 'read', '答案B：7'));
-  gov.foldToolHistory(); // 再折叠 B：旧版 omitCustomType 清掉 A 摘要（永久丢失）
+  gov.foldToolHistory(); // 再折叠 B：早期轮摘要 A 不得被清掉（永久丢失）
   const texts = foldedSummaries(sm);
   assert.equal(texts.length, 2, '摘要恰好 2 条（不丢不重）');
   assert.ok(texts.some((t) => t.includes('答案A：42')), '早期轮摘要 A 仍在投影');

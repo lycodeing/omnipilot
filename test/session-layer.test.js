@@ -285,7 +285,7 @@ describe('midscene naming', () => {
     assert.equal(normalizeType('aiAssert'), 'aiAssert');
   });
 
-  // —— 坐标步 + allowCoords 逃生口（DESIGN.md:449 / 2026-09-24 裁定） ——
+  // —— 坐标步 + allowCoords 逃生口（DESIGN.md:449 / DESIGN.md:978） ——
   describe('坐标步与 allowCoords', () => {
     test('parseCoords：对象/裸数字对/引号形态都认，语义文本返回 null', () => {
       assert.deepEqual(parseCoords('{ x: 135, y: 2115 }'), { x: 135, y: 2115 });
@@ -298,7 +298,7 @@ describe('midscene naming', () => {
     });
 
     test('未声明 allowCoords：坐标步报解析错，不再静默降级为 ai', () => {
-      // 回归：旧行为把 "tap: { x, y }" 整行当 ai 任务文本喂模型，点击从未发生且无告警
+      // 守护：坐标步不得被当 ai 任务文本喂模型（点击不会发生且无告警），须报解析错
       assert.throws(() => parseCaseText('steps:\n  - tap: { x: 135, y: 2115 }\n'), /坐标步骤[\s\S]*allowCoords/);
       const src = 'steps:\n  - tap: { x: 135, y: 2115 }\n';
       assert.throws(() => parseCaseText(src), (e) => e.name === 'CaseParseError');
@@ -446,7 +446,7 @@ test('interpolate：数组/对象值 JSON 序列化（data_extract rows）', () 
   assert.equal(interpolate('${n}', vars), '3');
 });
 
-  // —— 显式 loop 参数（resolveLoopPlan，评审 #1①：引擎只读字段不猜词） ——
+  // —— 显式 loop 参数（resolveLoopPlan：引擎只读字段不猜词） ——
   describe('显式 loop 参数与 resolveLoopPlan', () => {
     test('解析：ai 步的 until/maxRounds/batch 参数行被收集（batch 新增 PARAM_KEYS）', () => {
       const c = parseCaseText('steps:\n  - ai: 逐题作答\n    until: text=提交\n    maxRounds: 4\n    batch: false\n');
@@ -493,8 +493,7 @@ test('interpolate：数组/对象值 JSON 序列化（data_extract rows）', () 
 // ---- 未知命令必须报错 / 参数不得被静默吞掉 ----
 
 test('未知步骤命令抛错，不静默降级为自然语言任务', () => {
-  // 回归用例："aiTapp: 点击登录"（拼写错误）曾被整行当任务喂给 agent，
-  // 命令语义消失、断言全灭且无任何告警。
+  // 守护：拼写错误的命令（如 "aiTapp"）须报"未知步骤命令"，不得整行当自然语言任务喂给 agent。
   assert.throws(() => parseCaseText('steps:\n  - aiTapp: 点击登录'), /未知步骤命令/);
 });
 
@@ -516,10 +515,8 @@ test('aiInput 的 clear 参数被正确解析并转发（此前被拼进 text �
 });
 
 test('aiScroll 的 maxScrolls 参数被正确识别（派生化改造曾致其掉落）', () => {
-  // 回归用例：PARAM_KEYS 改为由 PARAM_KEYS_BY_TYPE 并集派生后，maxScrolls 只在旧
-  // 全局表里、不在分类型表里 → 掉落 → "maxScrolls: 5" 续行被拼进 text →
-  // direction 被污染成 "向下滚动直到最后一个相册 maxScrolls: 5"。
-  // 而 lint 因 maxScrolls 豁免 unreachable-scroll 而 0 error —— lint 放行、运行静默失效。
+  // 守护：maxScrolls 须在 PARAM_KEYS_BY_TYPE 分类型表里（全局表由它并集派生），
+  // 否则 "maxScrolls: 5" 续行会被拼进 text 污染 direction；lint 也须能识别该参数。
   const c = parseCaseText('steps:\n  - aiScroll: 向下滚动直到最后一个相册\n    maxScrolls: 5');
   assert.equal(c.steps[0].maxScrolls, 5, 'maxScrolls 应是独立数值参数');
   assert.equal(c.steps[0].text, '向下滚动直到最后一个相册', '不得被拼进 text');

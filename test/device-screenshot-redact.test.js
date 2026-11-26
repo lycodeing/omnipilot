@@ -25,7 +25,7 @@ test('redactScreenshot：无 password 节点原样返回', () => {
 });
 
 // encodePng 只支持输出 RGB(2)/RGBA(6)，造不出灰度 PNG；灰度样本手工构造（colorType=0、filter 0）。
-// 回归：decodePng 支持灰度(0) 但 encodePng 不支持灰度重编码——遮罩若直接回传 colorType=0
+// 守护：decodePng 支持灰度(0) 但 encodePng 不支持灰度重编码——遮罩若直接回传 colorType=0
 // 会因 stride 按 3 通道计算而越界抛错。模块内部将灰度膨胀为 RGB 后再编码，遮罩仍生效。
 function makeGrayPng(width, height, value) {
   const raw = Buffer.alloc(height * (width + 1));

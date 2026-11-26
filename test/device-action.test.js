@@ -62,7 +62,7 @@ test('scrollDistancePoints：距离换算 + 方向 + 避开通知栏安全区（
   const [from, to] = scrollDistancePoints('down', size, 50);
   assert.equal(from[0], 500, '水平居中');
   assert.ok(to[1] > from[1], 'down：终点 y 大于起点 y（手指向下滑，看下方内容）');
-  // ★ 安全区回归：起点不能贴近顶部（y<0.10h 会触发下拉通知栏，真机实测把 App 顶出前台）
+  // ★ 安全区守护：起点不能贴近顶部（y<0.10h 会触发下拉通知栏把 App 顶出前台）
   assert.ok(from[1] >= Math.round(size.h * 0.12), `起点 y=${from[1]} 应 ≥ 0.12h（避开通知栏），否则会下拉出系统面板`);
   const [uf, ut] = scrollDistancePoints('up', size, 50);
   assert.ok(ut[1] < uf[1], 'up：终点 y 小于起点 y');
@@ -87,9 +87,8 @@ test('scrollDistancePoints：down 100% 位移不超出安全区', async () => {
 // —— 写操作必须检查设备侧退出码 ——
 
 test('tap：设备侧失败（退出码非 0）必须抛错而非报成功', async () => {
-  // 回归用例：input tap 失败（如缺 INJECT_EVENTS 权限）时 stdout 为空、错误在 stderr，
-  // 退出码非 0。原先不检查退出码 → tap 报成功 → 引擎误以为点击生效，
-  // 后续报出 renderer_unresponsive 之类指向错误方向的诊断。
+  // 守护：input tap 失败（如缺 INJECT_EVENTS 权限）时 stdout 为空、错误在 stderr、退出码非 0，
+  // 须按退出码判定失败，否则引擎会误以为点击生效并报出错误方向的诊断。
   const adb = {
     shell: async () => ({ code: 1, stdout: '', stderr: 'Error: Injecting to another application requires INJECT_EVENTS permission' }),
   };

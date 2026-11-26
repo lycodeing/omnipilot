@@ -219,10 +219,9 @@ test('within 行内作用域定位：scope 行内的目标按钮', async () => {
 // ---- re: selector 的 ReDoS 防护 ----
 
 test('compileSafeRegex：拒绝灾难性回溯模式（含绕过形态）', () => {
-  // 回归用例：selector 可由用例文本/模型产出提供，是"外部输入 → 正则执行器"的
+  // 守护：selector 可由用例文本/模型产出提供，是"外部输入 → 正则执行器"的
   // 直连通道。危险正则会在 UI 树每个节点上触发灾难性回溯，单次 locate 可挂死。
-  //
-  // 原实现只挡"嵌套量词"一种形态，实测可被系统性绕过：
+  // 需拒绝的绕过形态：
   //   (a|aa)+$          交替歧义
   //   (?:a{1,10}){1,10}$ {n,m} 型嵌套（36 字符即 5.5s）
   //   (a{2,})+$         {n,} 型嵌套
@@ -254,8 +253,7 @@ test('findByRegex：危险模式返回空结果而非卡死', () => {
 });
 
 test('locate 失败信息可操作：含目标、已尝试策略、相关度排序的候选', async () => {
-  // 回归用例：原实现只返回"未找到目标"，模型既不知道搜的是什么、也不知道试过
-  // 哪些策略；candidates 还是 DFS 顺序的前 8 个（与目标无关的节点），无法自纠。
+  // 守护：失败信息须含目标、已尝试策略、相关度排序的候选（而非 DFS 顺序前 8 个），模型才能自纠。
   const tree = {
     nodes: [
       { index: 0, text: '', cls: 'FrameLayout', resourceId: '', contentDesc: '', clickable: false, bounds: [0, 0, 720, 1280], children: [
@@ -279,9 +277,7 @@ test('locate 失败信息可操作：含目标、已尝试策略、相关度排�
 });
 
 test('两套 selector 语法对 text*= 判定一致', () => {
-  // 回归用例：parseTarget 无 text*= 分支 → 落入 auto 把整个 "text*=xx" 当字面量
-  // 搜 → waitForElement 等走 parseTarget 的路径永不命中（静默等到超时）。
-  // 而 matchNodeSelector 与工具层文档都承诺支持 text*=。
+  // 守护：parseTarget 与 matchNodeSelector 两套语法对 text*= 判定一致（工具层文档承诺支持）。
   const flat = [{ index: 0, text: '热度榜', contentDesc: '', resourceId: '', cls: 'TextView', clickable: false, bounds: [0, 0, 100, 50], children: [] }];
   assert.ok(matchSelector(flat, 'text*=热度'), 'matchSelector 应支持 text*= 前缀匹配');
   assert.ok(flat.some((n) => matchNodeSelector(n, 'text*=热度')), 'matchNodeSelector 应支持 text*=');

@@ -86,7 +86,7 @@ test('buildDump 按 §19.5 映射表逐字段转换', () => {
   assert.deepEqual(t3.locate, { ...run.steps[3].locate, screenshotId: 'uuid-3' });
 
   // secret 步的 result 是脱敏标记 [REDACTED:provider:key]（recorder 为防密钥落盘覆写），
-  // 不是失败——旧实现按"未知值→failed"处理，把一次**成功**的 secret_get 报成 failed。
+  // 不是失败——按"未知值→failed"处理会把一次**成功**的 secret_get 报成 failed。
   // 脱敏标记必须识别为 finished。
   assert.equal(exec.tasks[4].status, 'finished');
   // 脱敏标记里的 provider/key 保留到 param（CONTRACT §5.1：param.key ?? param.provider）
@@ -188,9 +188,9 @@ test('makeDumpTag 转义 </script>、保留中文、可 round-trip', () => {
 });
 
 test('makeDumpTag：HTML 解析器状态安全（jsdom 实测）', () => {
-  // 回归用例：只转义 </ 不够——`<!--<script>` 会让 HTML 解析器进入
+  // 守护：只转义 </ 不够——`<!--<script>` 会让 HTML 解析器进入
   // "script data double escaped" 状态，此后 </script> 不再闭合标签，
-  // 后续全部内容被吞进 script 元素，整份报告损坏（实测报"报告数据缺失"）。
+  // 后续全部内容被吞进 script 元素，整份报告损坏。
   const payloads = [
     '<!--<script>',
     '<!--<script>x',
@@ -213,8 +213,8 @@ test('makeDumpTag：HTML 解析器状态安全（jsdom 实测）', () => {
 });
 
 test('loadShell 不内联 dist 目录外的文件（路径穿越防护）', () => {
-  // 回归用例：path.resolve 会让 ../ 逃出 dist，导致 dist 外任意文件被读进
-  // 报告（报告是会被分享的产物）。
+  // 守护：path.resolve 会让 ../ 逃出 dist，须拒绝——
+  // 否则 dist 外任意文件会被读进报告（报告是会被分享的产物）。
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-shell-'));
   const dist = path.join(root, 'dist');
   fs.mkdirSync(dist);

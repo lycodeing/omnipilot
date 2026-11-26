@@ -1,7 +1,7 @@
-// 步骤图标类别与词表的漂移守护（评审发现项）。
+// 步骤图标类别与词表的漂移守护。
 //
 // STEP_LABELS 是步骤类型的单一来源（src/tools/vocab.js），ICON_CATEGORY 是 viewer
-// 的图标映射。两者此前无守护：新增步骤类型时图标会静默落 default 圆点，无人察觉。
+// 的图标映射。新增步骤类型时图标会静默落 default 圆点，须有测试守护。
 // 本测试把关系锁死——ICON_CATEGORY 的键必须是 STEP_LABELS 的子集；词表里未映射
 // 图标的类型以**显式白名单**记录（新增类型时须来此登记，避免静默降级）。
 import test from 'node:test'

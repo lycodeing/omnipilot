@@ -107,9 +107,9 @@ test('detectDialog：树根 pkg 是系统弹窗包 → 从树即可判弹窗（�
   assert.equal(fgCalls, 0);
 });
 
-// —— 弹窗族 registry（2026-11-10 通用性评审）：locale 文案包 + 复合判据 ——
-// 此前两份中文词表内联：英文设备检测永不命中、dismiss 盲按 back 且无告警；
-// 内嵌检测纯词表匹配会把"您需同意…"静态文案/合法协议页误判成权限框自动点掉。
+// —— 弹窗族 registry：locale 文案包 + 复合判据 ——
+// 守护：词表按 locale 分包（英文设备也命中），内嵌检测须复合可点击判据，避免把
+// "您需同意…"静态文案/合法协议页误判成权限框自动点掉。
 import { POPUP_WORD_PACKS, resolvePopupTexts } from '../src/device/popup.js';
 
 test('resolvePopupTexts：完整 tag / 语言前缀 / 未识别 locale 并集兜底', () => {
@@ -211,9 +211,8 @@ test('dismissDialog：en 设备按 en 包点按（优先长语）', async () => 
 });
 
 test('detectDialog：多窗口树（应用 + 权限弹窗）应识别出系统弹窗', async () => {
-  // 回归用例：uiautomator dump 每窗口一个根，权限弹窗叠在应用上时解析出两个根。
-  // 原实现只取 nodes[0]（底层应用窗口），于是"前台是系统弹窗"永不成立——
-  // 恰恰是弹窗处理存在的场景被漏掉。
+  // 守护：uiautomator dump 每窗口一个根，权限弹窗叠在应用上时解析出两个根，
+  // 须识别出"前台是系统弹窗"（不能只认 nodes[0] 底层应用窗口）。
   const device = {
     foreground: async () => ({ package: 'com.daimajia.gold' }),
     dumpTree: async () => ({ nodes: [
@@ -227,9 +226,8 @@ test('detectDialog：多窗口树（应用 + 权限弹窗）应识别出系统�
 });
 
 test('detectDialog：systemui 常驻窗口根不误判为系统弹窗', async () => {
-  // 回归用例：uiautomator dump 的多根来自多窗口，systemui（状态栏/导航栏）是
-  // **常驻**窗口，App 前台时也会作为根出现。原实现把"任一系统包根"判为弹窗
-  // → dismissDialog 盲按 back 键 → 把目标 App 顶出去，用例失败。
+  // 守护：uiautomator dump 的多根来自多窗口，systemui（状态栏/导航栏）是
+  // **常驻**窗口，App 前台时也会作为根出现；不能把任一系统包根判为弹窗而误按 back。
   const device = {
     foreground: async () => ({ package: 'com.daimajia.gold' }),
     dumpTree: async () => ({ nodes: [

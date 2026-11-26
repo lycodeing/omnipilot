@@ -112,8 +112,8 @@ function fakeHeader(width, height) {
 }
 
 test('decodePng：尺寸超上限时抛错（防伪造头致巨额分配）', () => {
-  // 回归用例：width/height 来自文件头（不可信输入），unfilter 按 stride*height
-  // 分配像素缓冲——68 字节的伪造头声明 20000×20000 就能触发 1.5GB 分配（实测）。
+  // 守护：width/height 来自文件头（不可信输入），unfilter 按 stride*height
+  // 分配像素缓冲——68 字节的伪造头声明 20000×20000 就能触发 1.5GB 分配，须拒绝。
   assert.throws(() => decodePng(fakeHeader(20000, 20000)), /尺寸过大/);
 });
 

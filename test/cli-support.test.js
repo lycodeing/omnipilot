@@ -189,7 +189,7 @@ test('releaseLock shared：只删本进程的 shared 锁，不动他人', () => 
   assert.ok(existsSync(otherPath), '他人 shared 锁不得删除');
 });
 
-// —— cancelled 终态（Task 1 评审裁定）：SIGINT/SIGTERM 中断时 run 不应留 _partial 残留 ——
+// —— cancelled 终态：SIGINT/SIGTERM 中断时 run 不应留 _partial 残留 ——
 test('finish(cancelled)：写终态，覆写增量快照的 _partial 残留', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ask-runs-'));
   const rec = new RunRecorder({ runsDir: root, caseName: 'cases/中断.yaml' });
@@ -361,11 +361,11 @@ test('preflight 顺序约束：grant 前必须终止目标 App（真机实测 gr
   assert.equal(r.granted.length, 1);
 });
 
-// —— 取值型 flag 缺值必须报错（此前静默取 true）——
+// —— 取值型 flag 缺值必须报错 ——
 
 test('parseArgv：取值型 flag 缺值时抛错（--timeout --yes）', () => {
-  // 回归用例：缺值时 flags.timeout === true → 消费方 Number(true)*1000 = 1000ms，
-  // 整个 run 的超时预算变成 1 秒且无任何报错。
+  // 守护：缺值时若静默取 true，消费方 Number(true)*1000 = 1000ms，
+  // 整个 run 的超时预算会变成 1 秒且无报错。
   assert.throws(() => parseArgv(['run', '--timeout', '--yes']), /--timeout 需要一个值/);
   assert.throws(() => parseArgv(['run', '--out']), /--out 需要一个值/);
 });

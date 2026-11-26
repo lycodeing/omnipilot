@@ -16,8 +16,8 @@ describe('lint rules', () => {
     assert.ok(r.some((i) => i.rule === 'pixel-coords' && i.level === 'error' && i.line === 3));
   });
 
-  // 回归：步骤命令对象形态 { x: N, y: N } 此前漏网（两个数之间隔着 "y:"，裸数字对正则不命中），
-  // 导致 learning-daily-recommend.yaml 的坐标点击 lint 报 0 error 却静默失效。
+  // 守护：步骤命令对象形态 { x: N, y: N } 须被拦（两个数之间隔着 "y:"，裸数字对正则不命中），
+  // 否则坐标点击会 lint 报 0 error 却静默失效。
   test('E1b pixel-coords：坐标步 { x, y } 被拦（旧写法漏网回归）', () => {
     const r = lintCaseText('steps:\n  - tap: { x: 135, y: 2115 }');
     assert.ok(r.some((i) => i.rule === 'pixel-coords' && i.level === 'error' && i.line === 2));
@@ -138,8 +138,8 @@ test('assert-after-click：否定语境剥离（不要/请勿/严禁）不误报
 });
 
 test('lint 与 parser 对 allowCoords 位置判定一致：steps 之后的 allowCoords 不放行', () => {
-  // 回归用例：lint 原先扫全文找 allowCoords，parser 却要求它在 steps 之前——
-  // lint 报 0 error 但 run 时硬失败，作者按 lint 修完仍跑不起来。
+  // 守护：lint 与 parser 须一致只在 steps 前缀里找 allowCoords——
+  // 否则 lint 放行、run 时硬失败，作者按 lint 修完仍跑不起来。
   const text = ['steps:', '  - tap: {x: 135, y: 2115}', 'allowCoords: true'].join('\n');
   const findings = lintCaseText(text);
   assert.ok(findings.some((f) => f.rule === 'pixel-coords' && f.level === 'error'),

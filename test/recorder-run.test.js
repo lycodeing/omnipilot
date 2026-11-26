@@ -198,8 +198,8 @@ test('tmp+rename 原子写：立即无 .json、finish 后有、tmp 清理、不�
 });
 
 test('崩溃安全：未 finish 时增量快照仍留下可解析的 run.json（含步骤与断言）', async (t) => {
-  // 回归用例：run.json 原先只在 finish() 落盘，SIGKILL/OOM 会让整条 run 的
-  // 步骤、断言、网络时间线全部丢失（只剩孤儿截图）。增量快照保证崩溃后仍可读。
+  // 守护：run.json 须记账后增量落盘——SIGKILL/OOM 时不能只靠 finish() 落盘，
+  // 否则整条 run 的步骤、断言、网络时间线会全部丢失。增量快照保证崩溃后仍可读。
   const runsDir = tmpRuns(t);
   const rec = new RunRecorder({ runsDir, caseName: 'c.yaml' });
   rec.startStep('tap', 'x').end();
@@ -252,10 +252,9 @@ test('无 device/model 时字段为 null，size 支持描述对象形态', async
 });
 
 test('崩溃安全：finish 与增量快照并发时不被覆盖回 _partial（竞态回归）', async (t) => {
-  // 回归用例：_flushPartial 原先先 await _buildDoc（内部 snapshotDevice 是真实设备
-  // IO）才赋值 _partialWriting —— 那个窗口里 finish 看到 _partialWriting 仍是 null
-  // 而不等待，于是 finish 先写最终态、迟到的快照再 rename 覆盖 → 已完成的 run
-  // 变成 status:'running' + _partial:true（已复现）。
+  // 守护：_flushPartial 须在 await _buildDoc 之前就赋值 _partialWriting——
+  // 否则 finish 在该窗口看到 null 不等待，先写最终态、迟到的快照再 rename 覆盖，
+  // 已完成的 run 会变成 status:'running' + _partial:true。
   const runsDir = tmpRuns(t);
   let screenCalls = 0;
   const rec = new RunRecorder({

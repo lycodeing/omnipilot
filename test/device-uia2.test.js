@@ -73,9 +73,8 @@ test('uia2：source 404 → 抛错并清空 sessionId 重建', async () => {
   } finally { close(); }
 });
 
-// 回归（2026-11-02 真机实证）：uia2 服务在 App 重装/设备重连/服务重启后会让旧 sessionId 作废，
-// 但 /status 仍 ready。旧实现只在下一轮 dump 才重建，导致当前轮白白降级 legacy（38-55s）并
-// 进入 60s 退避——整轮跑因此退回 legacy 通道。修复：404 时清 id + 立即重建再取一次。
+// 守护：uia2 服务在 App 重装/设备重连/服务重启后会让旧 sessionId 作废、但 /status 仍 ready；
+// source 404 时须清 id + 立即重建再取一次，不把可自愈的会话失效升级成一轮 legacy 降级。
 test('uia2：source 404 时立即重建会话并重取（不把可自愈的会话失效升级成一轮降级）', async () => {
   let sourceCalls = 0;
   const { port, close } = await stubOn({
@@ -91,10 +90,9 @@ test('uia2：source 404 时立即重建会话并重取（不把可自愈的会�
   } finally { close(); }
 });
 
-// 回归（2026-11-02 真机实证，两台设备各 3/3 复现）：
-// `am instrument` 不带 `-w` 时 am 立刻返回、不等 instrumentation 就绪，随后建会话必报
+// 守护：`am instrument` 不带 `-w` 时 am 立刻返回、不等 instrumentation 就绪，建会话必报
 //   "Got null UiAutomation from instrumentation"（logcat 无 `Registering UiTestAutomationService` 行）。
-// 带 `-w` 时该注册行必现、会话 3/3 成功。启动命令因此必须带 `-w` 且设备侧后台化（不阻塞 10s 预算）。
+// 带 `-w` 时该注册行必现。启动命令须带 `-w` 且设备侧后台化（不阻塞 10s 预算）。
 test('uia2：启动命令必须带 -w 且设备侧后台化（否则 UiAutomation 永不注册）', async () => {
   const calls = [];
   const { port, close } = await stubOn({});
@@ -109,9 +107,9 @@ test('uia2：启动命令必须带 -w 且设备侧后台化（否则 UiAutomatio
   } finally { close(); }
 });
 
-// 回归（2026-11-02 真机实证）：`adb shell forward tcp:X tcp:Y` 是在**设备**上找 forward 命令，
+// 守护：`adb shell forward tcp:X tcp:Y` 是在**设备**上找 forward 命令，
 // 恒 exit 127（/system/bin/sh: forward: inaccessible or not found）→ 转发表从未建立，
-// 所有 /wd/hub 请求连接被拒，uia2 全链静默退化为 legacy。必须走 host 侧 adb 子命令。
+// 所有 /wd/hub 请求连接被拒。必须走 host 侧 adb 子命令。
 test('uia2：adb forward 必须走 host 侧通道（走 shell 会 exit 127 使转发永不建立）', async () => {
   // 注意：不能预先调用 hostPort(serial) 算端口——它每次调用都会在进程内占一个槽位，
   // 与 createUia2 内部派生的端口不是同一个。这里内联同样的哈希公式（usedPorts 为空时等价）。
@@ -151,10 +149,9 @@ test('uia2：adb forward 必须走 host 侧通道（走 shell 会 exit 127 使�
   }
 });
 
-// 回归（2026-11-02 真机实证）：旧代码（无 `-w`）启动的服务进程会一直活着、/status 恒 ready，
-// 但内部 a11y 从未注册 → 每次 POST /session 都 500 "Got null UiAutomation"。只看 status 的
-// ensure() 永远不会重启它，整轮跑只能退化 legacy（实测 5556 因此白跑一轮）。修复：建会话
-// 连续 500 达阈值 → force-stop + 按当前命令重启服务一次。
+// 守护：无 `-w` 启动的服务进程会一直活着、/status 恒 ready，但内部 a11y 从未注册 →
+// 每次 POST /session 都 500 "Got null UiAutomation"。只看 status 的 ensure() 不会重启它，
+// 故建会话连续 500 达阈值时须 force-stop + 按当前命令重启服务一次。
 test('uia2：建会话连续 500 → force-stop 并重启服务一次（存活但残废的服务可自愈）', async () => {
   const shellCalls = [];
   let statusCalls = 0;
@@ -186,10 +183,9 @@ test('uia2：建会话连续 500 → force-stop 并重启服务一次（存活�
   } finally { close(); }
 });
 
-// 回归（2026-11-02 真机实证，logcat 铁证）：`am instrument` 会**先杀掉同名旧进程**再启动——
+// 守护：`am instrument` 会**先杀掉同名旧进程**再启动——
 //   Killing <pid>:io.appium.uiautomator2.server (adj 0): stop ... due to start instr
-// 对"正忙但健康"的服务重复调用等于自杀：实测健康服务被反复杀 25 次，legacy 三通道全败时
-// 整轮崩盘（2378s / 6-9）。修复：进程还活着就绝不重启，只在 pidof 确认不存在时才启动。
+// 对"正忙但健康"的服务重复调用等于自杀。进程还活着就绝不重启，只在 pidof 确认不存在时才启动。
 test('uia2：进程存活但 /status 不就绪 → 不重启（避免 am instrument 自杀），只延长等待', async () => {
   const shellCalls = [];
   const adb = {
@@ -233,9 +229,9 @@ test('uia2：pidof 确认进程不存在 → 正常 startServer', async () => {
   } finally { close(); }
 });
 
-// 回归（2026-11-04 评审 P1-2）：forward bind 失败不得吞掉——adb forward 监听按本地端口
+// 守护：forward bind 失败不得吞掉——adb forward 监听按本地端口
 // 全局唯一，跨进程哈希撞端口时 status() 会命中**别台设备**的隧道静默读错树。
-// 修复：bind 失败 → 换下一端口重试；换端口也失败则 ensure false（绝不探测不明归属端口）。
+// bind 失败 → 换下一端口重试；换端口也失败则 ensure false（绝不探测不明归属端口）。
 test('uia2：forward bind 失败 → 换端口重试并成功（不吞错防串台）', async () => {
   const serial = 'rebind-' + Date.now();
   let h = 0;
@@ -268,8 +264,8 @@ test('uia2：forward 全部失败 → ensure false（不探测不明归属端口
   assert.equal(await uia2.ensure(), false);
 });
 
-// 回归（2026-11-04 业界调研落地，Appium/openatx 同款）：waitForIdleTimeout=0 跳过 a11y
-// idle 盲等——busy WebView 页 source 从 4-30s 降到 0.3-0.4s（真机实测）。settings 按
+// 守护（Appium/openatx 同款）：waitForIdleTimeout=0 跳过 a11y
+// idle 盲等——busy WebView 页 source 从 4-30s 降到 0.3-0.4s。settings 按
 // **会话**生效，故每次新建会话后必须注入一次；失败不阻断（老 server 无此端点）。
 test('uia2：新建会话后注入 waitForIdleTimeout=0 settings（不阻断）', async () => {
   const posts = [];
@@ -295,8 +291,7 @@ test('uia2：新建会话后注入 waitForIdleTimeout=0 settings（不阻断）'
 // —— hostPort 槽位耗尽守卫 ——
 
 test('hostPort：槽位耗尽时抛错而非死循环', async () => {
-  // 回归用例：线性探测无耗尽检查 → 槽全占满后 while 绕圈，
-  // 这是同步函数里的无限循环，会卡死 event loop 且无法中断（无超时无报错）。
+  // 守护：线性探测须有耗尽检查——槽全占满后无检查会 while 绕圈卡死 event loop。
   // 本文件其它用例已占用部分槽位，故不按绝对计数断言，只要求「最终抛错」。
   const taken = new Set();
   let exhausted = false;
