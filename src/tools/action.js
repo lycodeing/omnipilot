@@ -362,8 +362,11 @@ export function buildActionTools(ctx) {
   const launch = defineTool({
     name: 'launch',
     label: 'launch',
-    description: '冷启动应用（包名或 包名/activity）。',
-    parameters: Type.Object({ appId: Type.String() }),
+    description: '冷启动应用（包名或 包名/activity）。clean=true 时启动后自动清掉系统弹窗（权限/安装器）。',
+    parameters: Type.Object({
+      appId: Type.String(),
+      clean: Type.Optional(Type.Boolean({ description: '启动后自动清弹窗（detectDialog + dismissDialog 最多 3 轮）' })),
+    }),
     execute: async (_id, params) => {
       // 包名白名单（第一道防线）：appId 会进 adb shell 命令串，而 adb shell 是设备端
       // /bin/sh -c 执行的。设备层也有同样的校验（最后防线），但在工具层拦住能给出
@@ -378,6 +381,15 @@ export function buildActionTools(ctx) {
       const gate = await confirmWrite(ctx, 'launch', params.appId);
       if (!gate.allowed) return denied('launch');
       const r = await device.launch(params.appId);
+      // clean：冷启动常伴随权限/安装器弹窗，复用写动作前的同一套 detectDialog+dismissDialog
+      // 循环关闭（最多 3 轮，弹窗消失或前台离开弹窗包即停），不再靠用例里的防御咒语。
+      if (params.clean && r.ok) {
+        for (let i = 0; i < 3; i++) {
+          await handlePopupBeforeAction(ctx, device);
+          const fg = await device.foreground().catch(() => null);
+          if (!fg?.package || !/permissioncontroller|packageinstaller/.test(fg.package)) break;
+        }
+      }
       return { content: [{ type: 'text', text: JSON.stringify({ ...r, appId: params.appId }) }], details: { ok: r.ok } };
     },
   });

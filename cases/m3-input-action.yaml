@@ -6,12 +6,12 @@
 #         / 引擎步骤失败后的 agent 兜底自愈 / aiAssert
 name: M3-输入与动作参数巡礼
 steps:
-  # 状态归一化：强停后冷启动，消除上一个用例遗留的页面状态
+  # 状态归一化：强停后冷启动，消除上一个用例遗留的页面状态；clean:true 启动后自动清弹窗
   - terminate: com.daimajia.gold
   - launch: com.daimajia.gold
+    clean: true
   - aiWaitFor: 等「搜索稀土掘金」出现
     timeout: 20000
-  - ai: 让掘金处于前台首页且无遮挡：若有活动/新人/升级弹窗就关闭；若掘金不在前台或进程已退出（崩溃属已知偶发），就重新启动 com.daimajia.gold（最多重试2次，每次等15秒）；全程不要打开掘金以外的应用。看到「搜索稀土掘金」搜索框可见后停止
 
   # —— 第一次搜索：引擎输入英文（value 参数）+ 引擎回车（keyName 参数）——
   - aiTap: 搜索稀土掘金

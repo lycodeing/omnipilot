@@ -24,19 +24,19 @@ export const PARAM_KEYS_BY_TYPE = {
   aiScroll: ['direction', 'distancePct', 'until', 'max', 'maxScrolls', 'timeout'],
   aiTapEach: ['rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile', 'timeout'],
   uiDump: ['path', 'timeout'],
-  launch: ['appId', 'timeout'],
+  launch: ['appId', 'clean', 'timeout'],
   terminate: ['package', 'packageName', 'timeout'],
   aiWaitFor: ['timeout', 'quiet', 'selector'],
   aiQuery: ['name', 'mode', 'quiet', 'timeout'],
   aiAssert: ['timeout'],
-  sleep: [],
+  sleep: ['ms'],
   net: ['profile'],
 };
 export const PARAM_KEYS = new Set(Object.values(PARAM_KEYS_BY_TYPE).flat());
-export const NUMBER_KEYS = new Set(['seconds', 'max', 'timeout', 'maxScrolls', 'durationMs', 'distancePct']);
-// 布尔型参数：只收工具 schema 明确声明 Type.Boolean 的那些（clear / verify）。
+export const NUMBER_KEYS = new Set(['seconds', 'ms', 'max', 'timeout', 'maxScrolls', 'durationMs', 'distancePct']);
+// 布尔型参数：只收工具 schema 明确声明 Type.Boolean 的那些（clear / verify / clean）。
 // 不收 batch —— 它在 resolveLoopPlan 里按 String(s.batch) 正则判定，字符串语义是既有契约。
-export const BOOLEAN_KEYS = new Set(['clear', 'verify']);
+export const BOOLEAN_KEYS = new Set(['clear', 'verify', 'clean']);
 
 export function unquote(v) {
   const t = String(v ?? '').trim();
@@ -50,7 +50,7 @@ export function coerce(key, val) {
     const n = Number(v);
     return Number.isFinite(n) ? n : v;
   }
-  // 布尔参数（clear / verify / batch 等）：工具 schema 声明的是 Type.Boolean，
+  // 布尔参数（clear / verify / clean）：工具 schema 声明的是 Type.Boolean，
   // 字符串 "true" 会被 typebox 校验拒绝——必须在此转成真布尔。
   if (BOOLEAN_KEYS.has(key)) {
     if (/^(true|yes|on|1)$/i.test(v)) return true;

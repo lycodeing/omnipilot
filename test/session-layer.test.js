@@ -393,6 +393,14 @@ test('外部框架兼容：flow: 顶层键等价 steps:，sleep 毫秒换算', (
   assert.ok((c.warnings || []).some((w) => /毫秒/.test(w)), '毫秒换算有 warn');
 });
 
+test('sleep ms 显式参数：steps 形态 >100 报错，ms 参数行生效', () => {
+  assert.throws(() => parseCaseText('steps:\n  - sleep: 3000'), /毫秒|ms/);
+  const c = parseCaseText('steps:\n  - sleep:\n    ms: 3000');
+  assert.equal(c.steps[0].seconds, 3);
+  const c2 = parseCaseText('steps:\n  - sleep: 2');
+  assert.equal(c2.steps[0].seconds, 2);
+});
+
 test('外部框架兼容：ai 步的 timeout 参数保留但 warn 忽略；aiWaitFor 不 warn', () => {
   const c = parseCaseText('name: X\nsteps:\n  - ai: 做某事\n    timeout: 300000\n  - aiWaitFor: 等「x」出现\n    timeout: 30000\n');
   assert.equal(c.steps.length, 2);

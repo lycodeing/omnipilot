@@ -787,3 +787,40 @@ describe('包名白名单（工具层）', () => {
     assert.equal(launched, 'com.normal.app');
   });
 });
+
+// —— Task 19：launch clean 清弹窗 + extractUi 容器自动发现 ——
+test('launch clean:true：启动后清弹窗（detectDialog → dismissDialog）', async () => {
+  let dismissed = 0;
+  const device = makeFakeDevice();
+  device.foreground = async () => ({ package: 'com.google.android.permissioncontroller', activity: 'Grant' });
+  device.locate = async (t) => t === '允许'
+    ? { ok: true, bounds: [0, 0, 10, 10], center: [5, 5], strategy: 'exact_text', treeCacheHit: false, vlmCacheHit: false, dumpMs: 1, identity: null, error: null }
+    : { ok: false, bounds: null, center: null, strategy: 'none', treeCacheHit: false, vlmCacheHit: false, dumpMs: 1, identity: null, error: 'miss' };
+  device.tap = async () => { dismissed++; return { ok: true, latencyMs: 1, error: null }; };
+  device.dumpTree = async () => ({ nodes: [], hash: 'h', dumpMs: 1, fromCache: false });
+  const ctx = makeCtx({ device });
+  const tool = buildTools(ctx).find((t) => t.name === 'launch');
+  const r = await tool.execute('id1', { appId: 'com.demo', clean: true }, undefined, undefined, {});
+  assert.equal(getContent(r).ok, true);
+  assert.ok(dismissed >= 1, 'clean 应触发弹窗关闭');
+});
+
+test('extractUi 无 container：重复卡片结构自动发现，多行提取', async () => {
+  const device = makeFakeDevice();
+  device.dumpTree = async () => ({
+    nodes: [makeNode(0, 'page', 'android.widget.FrameLayout', '', [0, 0, 720, 1280], true, '', [
+      makeNode(1, 'card1', 'android.view.ViewGroup', 'com.x:id/card', [0, 0, 720, 200], true, '', [
+        makeNode(2, '春游', 'android.widget.TextView', 'com.x:id/title', [0, 0, 300, 60]),
+      ]),
+      makeNode(3, 'card2', 'android.view.ViewGroup', 'com.x:id/card', [0, 200, 720, 400], true, '', [
+        makeNode(4, '秋游', 'android.widget.TextView', 'com.x:id/title', [0, 200, 300, 260]),
+      ]),
+    ])],
+    hash: 'h1', dumpMs: 2, fromCache: false,
+  });
+  const ctx = makeCtx({ device, store: makeFakeStore() });
+  const tool = buildTools(ctx).find((t) => t.name === 'data_extract');
+  const r = await tool.execute('id1', { name: 'list', mode: 'ui', fields: [{ name: 'title', from: 'text', selector: 'resourceId=com.x:id/title' }] }, undefined, undefined, {});
+  const body = getContent(r);
+  assert.equal(body.count, 2, '无 container 也应发现 2 张卡片');
+});

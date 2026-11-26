@@ -36,17 +36,19 @@ export function waitSelectorFromText(text) {
 //     maxRounds: 8           # 催促轮数上限（缺省 10）
 //     batch: false           # false=逐个处理（显式缺省，防"依次逐个"被催成整屏并行误点）；true=每轮并行
 //
-// 兼容形态（legacy）：步骤文本含 直到/重复/逐题/每一题/依次 触发，批量催促 +
-// "直到…「xxx」"引号提取标记——英文用例静默不触发、"依次"类任务被误催成并行，
-// 均为已知缺陷，仅为不破坏存量用例保留；新用例一律用显式参数。
+// 兼容形态（DEPRECATED，仅为存量用户用例保留，不删除）：步骤文本含
+// 直到/重复/逐题/每一题/依次 触发，批量催促 + "直到…「xxx」"引号提取标记。
+// 英文用例静默不触发、"依次"类任务被误催成并行，均为已知缺陷。交付用例（c3/m1 等）
+// 已全部迁移为显式 until/maxRounds/batch；新用例一律用显式参数，勿再依赖关键词猜测。
 export function resolveLoopPlan(step, stepText) {
   const text = String(stepText ?? '');
   const s = step || {};
   const hasExplicit = s.until != null || s.maxRounds != null || s.batch != null;
+  // DEPRECATED：keyword 路径只作存量用例兼容，见上方说明；新用例请挂显式参数。
   const keyword = /直到|重复|逐题|每一题|依次/.test(text);
   if (!hasExplicit && !keyword) return null;
   // 终止标记：显式 until 优先（显式 selector 原样、裸文本直接作 auto 链 selector）；
-  // keyword 路径维持"直到…「xxx」"引号提取。
+  // keyword 兼容路径维持"直到…「xxx」"引号提取。
   let marker = null;
   if (s.until != null && String(s.until).trim()) {
     marker = waitSelectorFromText(String(s.until)) || String(s.until).trim();

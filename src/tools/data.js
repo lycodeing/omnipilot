@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
-import { flattenNodes, findBySelector, findAllBySelector, textResult } from './perception.js';
+import { flattenNodes, findBySelector, findAllBySelector, matchSelector, textResult } from './perception.js';
 import { denied, confirmWrite } from './action.js';
 import { repairJson } from './ai.js';
 import { compressForContext } from '../image/png.js';
@@ -31,6 +31,36 @@ async function extractUi(device, params) {
       // 统一走 selector 匹配器（评审 #14）：此前自造 class= 相等比较，除 class= 外的
       // 选择器方言（text=、resourceId=、re:）全部静默失配，'#index=' 语义也被忽略
       scopes.push(...findAllBySelector(flat, params.container));
+    }
+  }
+
+  // 无 container 时自动发现"重复结构"容器：按字段 selector 找命中节点，对每个命中
+  // 节点用 bounds 包含关系向上找最小祖先（不依赖 parent 引用——某些 device 的 makeNode
+  // 不挂 parent），把同 cls+resourceId 的兄弟聚成组；≥2 个且各自含字段命中的组即为
+  // 卡片列表，取这组兄弟为 scopes。无重复结构时回退整屏 1 行（现状）。
+  if (!scopes.length && fields.length) {
+    const area = (n) => Math.max(0, n.bounds[2] - n.bounds[0]) * Math.max(0, n.bounds[3] - n.bounds[1]);
+    const contains = (p, n) => Array.isArray(p.bounds) && Array.isArray(n.bounds)
+      && p.bounds[0] <= n.bounds[0] && p.bounds[1] <= n.bounds[1]
+      && p.bounds[2] >= n.bounds[2] && p.bounds[3] >= n.bounds[3];
+    // 最小包含祖先：面积最小的那个包含节点（排除自身）
+    const ancestorOf = (n) => flat.filter((p) => p !== n && contains(p, n))
+      .sort((a, b) => area(a) - area(b))[0];
+    const hitByAncestor = (a) => fields.some((f) => flat.some((n) => n !== a && contains(a, n) && matchSelector(n, f.selector)));
+    const groups = new Map();
+    for (const f of fields) {
+      for (const n of flat) {
+        if (!matchSelector(n, f.selector)) continue;
+        const a = ancestorOf(n);
+        if (!a || !a.cls) continue;
+        const key = `${a.cls}::${a.resourceId ?? ''}`;
+        if (!groups.has(key)) groups.set(key, new Set());
+        groups.get(key).add(a);
+      }
+    }
+    for (const [, set] of groups) {
+      // 兄弟 ≥2 且各自含字段命中才认作重复卡片结构
+      if (set.size >= 2 && [...set].every(hitByAncestor)) { scopes.push(...set); break; }
     }
   }
 

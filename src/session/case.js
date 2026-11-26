@@ -93,6 +93,7 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
   // CLI --allow-coords 覆盖（true=强制放行 / false=强制拒绝 / null=按 YAML 顶层键）
   if (allowCoords === true) caseObj.allowCoords = true;
   let inSteps = false;
+  let isFlow = false;
   let current = null;
 
   for (let i = 0; i < lines.length; i++) {
@@ -128,8 +129,14 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
       caseObj.targetPackage = unquote(trimmed.replace(/^targetPackage\s*[:：]/, '')).trim();
       continue;
     }
-    // 步骤区起始：steps: 或 flow:（外部框架别名，兼容健康自测类用例）
-    if (/^(?:steps|flow)\s*[:：]?\s*$/.test(trimmed)) { inSteps = true; continue; }
+    // 步骤区起始：steps: 或 flow:（外部框架别名，兼容健康自测类用例）。
+    // flow: 形态标记 isFlow——sleep 值 >100 在该形态下仍按毫秒兼容（外部框架资产），
+    // steps: 形态则要求 ≤100 秒或显式 ms: 参数行（见 sleep 分支）。
+    if (/^(?:steps|flow)\s*[:：]?\s*$/.test(trimmed)) {
+      inSteps = true;
+      if (/^flow\s*[:：]?\s*$/.test(trimmed)) isFlow = true;
+      continue;
+    }
     if (!inSteps) continue;
 
     const item = trimmed.match(/^-\s*(.*)$/);
@@ -164,13 +171,18 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
           }
           current = { type };
           if (type === 'sleep') {
-            // 兼容毫秒写法（外部框架 sleep: 3000 = 3s）：>100 一律视为毫秒换算，
-            // 否则 3000 会被当 3000 秒（静默睡 50 分钟的灾难）
             const rawV = Number(unquote(kv[2])) || 0;
-            if (rawV > 100) {
-              current.seconds = rawV / 1000;
-              caseObj.warnings.push(`${source}:${i + 1} sleep 值 ${rawV} 按毫秒解释为 ${current.seconds}s（外部框架写法）`);
+            if (isFlow) {
+              // flow 形态（外部框架）：>100 按毫秒兼容（sleep: 3000 = 3s）
+              if (rawV > 100) {
+                current.seconds = rawV / 1000;
+                caseObj.warnings.push(`${source}:${i + 1} sleep 值 ${rawV} 按毫秒解释为 ${current.seconds}s（外部框架写法）`);
+              } else current.seconds = rawV;
             } else {
+              // steps 形态：>100 秒/毫秒歧义，一律报错，要求显式 ms: 或 ≤100 秒
+              if (rawV > 100) {
+                throw new CaseParseError(`${source}:${i + 1} sleep 值 ${rawV} 歧义（秒还是毫秒？）：秒请直接写 ≤100，毫秒请用参数行 ms: ${rawV}`);
+              }
               current.seconds = rawV;
             }
           } else if (type === 'net') current.profile = unquote(kv[2]);
@@ -208,6 +220,8 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
       const p = trimmed.match(/^([\w-]+)\s*[:：]\s*(.*)$/);
       if (p && PARAM_KEYS.has(p[1])) {
         current[p[1]] = coerce(p[1], p[2]);
+        // sleep 的 ms 参数行：显式毫秒 → 秒（与 flow 形态的隐式换算同口径）
+        if (current.type === 'sleep' && p[1] === 'ms') current.seconds = Number(current.ms) / 1000;
         // timeout 仅 aiWaitFor 支持；外部框架常给 ai/aiTap 步挂 timeout（毫秒），
         // 静默忽略会让作者误以为生效——装载期显式 warn（整 run 时长由 --timeout 控制）
         if (p[1] === 'timeout' && !WAIT_TYPES.has(current.type)) {
