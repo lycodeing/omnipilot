@@ -64,6 +64,20 @@ function targetOf(params = {}) {
     ?? params.selector ?? (Array.isArray(params.selectors) ? params.selectors.join('|') : null) ?? null;
 }
 
+// 截图入档前遮罩：用最近一次 dumpTree 的缓存树（cache.peek()）找 password 节点 bounds，
+// 把凭据图像面填灰。无缓存树 / 遮罩失败一律用原图（尽力而为，不额外 dump、不阻断取证）。
+async function redactShot(buf, ctx) {
+  try {
+    const cached = ctx.device.cachePeek?.();
+    if (cached?.nodes) {
+      const { redactScreenshot } = await import('../device/screenshot-redact.js');
+      const { flattenNodes } = await import('../device/uitree.js');
+      return redactScreenshot(buf, flattenNodes(cached.nodes));
+    }
+  } catch { /* 遮罩失败用原图（尽力而为） */ }
+  return buf;
+}
+
 // 记账包装：不动工具自身逻辑，只在外层记 step（§14.1）
 export function withRecording(tool, ctx) {
   const recorder = ctx?.recorder;
@@ -104,7 +118,7 @@ export function withRecording(tool, ctx) {
               for (let i = 0; i < 3; i++) {
                 try {
                   const shot = await ctx.device.screencap();
-                  recorder.attachScreenshot(handle.index, shot.buffer);
+                  recorder.attachScreenshot(handle.index, await redactShot(shot.buffer, ctx));
                   return;
                 } catch { if (i < 2) await new Promise((r) => setTimeout(r, 2000)); }
               }

@@ -41,6 +41,9 @@ function makeNode(attrs) {
     contentDesc: decodeXml(attrs['content-desc'] ?? ''),
     clickable: attrs.clickable === 'true',
     enabled: attrs.enabled !== 'false',
+    // 密码框：uiautomator 的 password="true" 标记。凭据图像面（截图遮罩）与
+    // 回读面（readTextAt 掩码）靠它识别；缺省/非 "true" 一律 false。
+    password: attrs.password === 'true',
     // 附加字段（契约 §1.1 之外的增量）：节点所属包名。uiautomator XML 每节点自带 package=，
     // 根节点 package 即前台应用包——供弹窗检测从树派生前台，省一次 dumpsys 往返（性能审计 #2）。
     pkg: attrs.package ?? '',

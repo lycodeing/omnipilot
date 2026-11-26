@@ -84,5 +84,8 @@ export function findNodeAtPoint(flat, [x, y]) {
 export function readTextAt(flat, point) {
   const n = findNodeAtPoint(flat, point);
   if (!n) return null;
+  // 密码框：a11y text 常是掩码串或恒空，且可能含真实凭据（部分 ROM）。
+  // 一律返回等长掩码串，不把节点 text 透出到回读结果/报错文案（凭据回读面脱敏）。
+  if (n.password) return '\u2022'.repeat(String(n.text ?? '').length);
   return n.text ?? ''; // 只回读 text；content-desc 是提示语不是输入内容
 }

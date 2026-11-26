@@ -7,7 +7,7 @@ import { TreeCache } from './cache.js';
 import { createLocator, matchSelector, inScreen, matchNodeSelector as matchNode } from './locate.js';
 
 import * as action from './action.js';
-import { Yadb, readTextAt } from './input.js';
+import { Yadb, readTextAt, findNodeAtPoint } from './input.js';
 import * as state from './state.js';
 import * as net from './net-profile.js';
 import { screenSignature } from './png.js';
@@ -220,11 +220,20 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
         beforeAction();
         let tree = await dumpTree({ fresh: true }); // 回读校验强制用新树（§5.4.5）
         let readBack = readTextAt(flattenNodes(tree.nodes), xy);
+        // 密码框判定：回读树里该坐标处的节点 password=true。密码框 a11y text 通常是
+        // 掩码串或恒空，逐字等值比对必然失败；改用「掩码长度一致或恒空回读放行」，
+        // 且后续报错文案不得带输入明文（凭据回读面脱敏，Task 17）。
+        const node = findNodeAtPoint(flattenNodes(tree.nodes), xy);
+        const isPassword = !!node?.password;
+        const okNow = () => isPassword
+          ? (readBack == null || readBack.length === want.length)
+          : readBack === want;
         // ASCII 降级（评审 #16）：yadb 依赖设备 ABI/app_process，vendor 二进制与设备 ABI
         // 不符时 inputText 全挂且无替代路径。纯 ASCII 可走原生 `input text` 重试一次
         //（空格 %s、shell 元字符转义）；非 ASCII 不降级（input text 对中文静默失败，§5.4.5）。
+        // 密码框不走降级：降级会二次输入，且掩码回读无法证伪，反而把凭据重放一遍。
         let usedFallback = false;
-        if (readBack !== want && /^[\x20-\x7E]+$/.test(want)) {
+        if (!okNow() && !isPassword && /^[\x20-\x7E]+$/.test(want)) {
           // 转义集贴合 AOSP `input text` 的真实协议（Input.sendText 的 escapeFlag 机制）：
           //   - 空格 → `%s`（设备端 %s 解码为空格）
           //   - 字面 `%`：AOSP **不支持**转义它——% 后跟 's' 才被吞成空格，其它情况
@@ -241,11 +250,14 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
           tree = await dumpTree({ fresh: true });
           readBack = readTextAt(flattenNodes(tree.nodes), xy);
         }
-        const ok = readBack === want;
+        const ok = okNow();
         const res = {
           ok,
           readBack,
-          error: ok ? null : readBack == null ? '回读失败：未在输入位置找到节点' : `回读不一致: 期望「${text}」实际「${readBack}」`,
+          error: ok ? null
+            : isPassword ? '密码框回读长度不一致（掩码比对）'
+            : readBack == null ? '回读失败：未在输入位置找到节点'
+            : `回读不一致: 期望「${text}」实际「${readBack}」`,
           ...(usedFallback ? { strategy: 'input-text-fallback' } : {}),
         };
         return res;
@@ -569,6 +581,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     },
     cacheStats() {
       return cache.stats();
+    },
+    // 只读取最近一次缓存树（{nodes,hash} 或 null），不触发 dump；供 withRecording
+    // 动作后截图前找 password 节点做遮罩（Task 17，凭据图像面脱敏，尽力而为）。
+    cachePeek() {
+      return cache.peek();
     },
     async dumpToFile(path) {
       const xml = await dumpXmlRaw();

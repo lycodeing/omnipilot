@@ -85,7 +85,15 @@ test('XML 实体解码与 parent 指针', () => {
 
 test('自闭合与空树边界', () => {
   assert.deepEqual(parseXmlDump('<hierarchy><node index="0" text="s" class="A" bounds="[1,2][3,4]"/></hierarchy>'), [
-    { index: 0, text: 's', cls: 'A', resourceId: '', contentDesc: '', clickable: false, enabled: true, pkg: '', bounds: [1, 2, 3, 4], center: [2, 3], children: [] },
+    { index: 0, text: 's', cls: 'A', resourceId: '', contentDesc: '', clickable: false, enabled: true, password: false, pkg: '', bounds: [1, 2, 3, 4], center: [2, 3], children: [] },
   ]);
   assert.deepEqual(parseXmlDump(''), []);
+});
+
+test('makeNode：password 属性解析（true/false）', () => {
+  const xml = '<hierarchy><node index="0" text="•••" class="android.widget.EditText" password="true" bounds="[0,0][100,50]"/></hierarchy>';
+  const nodes = parseXmlDump(xml);
+  assert.equal(nodes[0].password, true);
+  const xml2 = '<hierarchy><node index="0" text="x" class="android.widget.EditText" password="false" bounds="[0,0][100,50]"/></hierarchy>';
+  assert.equal(parseXmlDump(xml2)[0].password, false);
 });

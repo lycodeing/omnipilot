@@ -82,3 +82,11 @@ test('readTextAt：找包含点的最小节点做回读', () => {
   assert.equal(readTextAt([outer], [9999, 9999]), null);
   assert.deepEqual(findNodeAtPoint([field, outer], [360, 1180]), field, '取最小面积');
 });
+
+test('readTextAt：password 节点返回等长掩码串，不泄明文', () => {
+  const field = { bounds: [16, 1140, 704, 1220], text: 'S3cret', password: true, contentDesc: '' };
+  const plain = { bounds: [0, 100, 100, 200], text: '普通文本', contentDesc: '' };
+  assert.equal(readTextAt([field, plain], [360, 1180]), '••••••', 'password 节点回读为与 text 等长的掩码');
+  assert.equal(readTextAt([field, plain], [50, 150]), '普通文本', '非 password 节点行为不变');
+  assert.equal(readTextAt([{ bounds: [0, 0, 10, 10], text: 'abc', password: true }], [900, 900]), null, '点外无节点仍返回 null');
+});

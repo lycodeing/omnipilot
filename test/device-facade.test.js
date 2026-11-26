@@ -17,6 +17,11 @@ const FIXTURE_B = FIXTURE.replace(
 );
 // 输入回读变体：输入框已有文字
 const FIXTURE_INPUT = FIXTURE.replace('<node index="2" text="" resource-id="com.lgdg:id/search_input"', '<node index="2" text="中文测试" resource-id="com.lgdg:id/search_input"');
+// 密码框变体：search_input 节点为 password 且 text 为掩码串（Android a11y 常见形态）
+const FIXTURE_PASSWORD = FIXTURE.replace(
+  '<node index="2" text="" resource-id="com.lgdg:id/search_input"',
+  '<node index="2" text="••••" password="true" resource-id="com.lgdg:id/search_input"'
+);
 
 const DUMPSYS = '  mResumedActivity: ActivityRecord{948c168 u0 com.lgdg.fourt/io.dcloud.PandoraEntryActivity t123}\n';
 
@@ -208,6 +213,16 @@ test('inputText：回读不一致 → ok=false（input text 假成功的防线�
   assert.equal(r.ok, false);
   assert.equal(r.readBack, '');
   assert.match(r.error, /回读不一致/);
+  await device.close();
+});
+
+test('inputText：password 节点掩码回读，长度一致即 ok，不泄明文', async () => {
+  const exec = makeExec({ dumpScript: [FIXTURE_PASSWORD] });
+  const device = await createDeviceWithExecutor({ serial: 'test', exec });
+  const r = await device.inputText([16, 1140, 704, 1220], 'abcd');
+  assert.equal(r.ok, true, '掩码长度 4 = 输入长度 4 → ok');
+  assert.equal(r.readBack, '••••');
+  assert.ok(!JSON.stringify(r).includes('abcd'), '结果不得含明文');
   await device.close();
 });
 
