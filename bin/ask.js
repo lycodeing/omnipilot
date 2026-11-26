@@ -42,6 +42,9 @@ async function gracefulExit(sig) {
         await restoreNetwork(run.device, run.ctx).catch(() => {});
         try { await run.ctx?.locateWithCache?.flush?.(); } catch { /* ignore */ }
         try { await run.ctx?.recorder?.flushPending?.(); } catch { /* ignore */ }
+        // 中断也落终态 cancelled（而非留 _partial 增量快照残留）：还原/flush 后、close 前写。
+        // 已正常 finish 的 recorder 会抛「不能重复调用」，忽略即可。
+        try { await run.ctx?.recorder?.finish?.('cancelled', { exitCode: 130 }); } catch { /* ignore */ }
         try { await run.bridge?.close?.(); } catch { /* ignore */ }
         try { await run.device?.close?.(); } catch { /* ignore */ }
         if (run.serial) releaseLock(WORKSPACE.lockRoot, run.serial);
@@ -57,6 +60,9 @@ process.once('SIGTERM', () => gracefulExit('SIGTERM'));
 
 function fail(msg, code = 2) {
   console.error(`Error: ${msg}`);
+  // fail 是同步函数、多处同步调用，而 MCP bridge.close 是 async：不 await，进程退出前尽力关闭
+  // 共享桥子进程（不改成 async 以免波及全部调用方）；泄漏风险低于此前完全不关。
+  try { sharedBridgeRef?.close?.()?.catch?.(() => {}); } catch { /* ignore */ }
   process.exit(code);
 }
 
@@ -206,10 +212,10 @@ async function cmdRun({ positional, flags }) {
   }
 
   // 设备分组（§13.2.1）：round-robin 分配用例到设备，组内串行、组间并发；同设备靠锁互斥
-  const groups = serials.map((serial) => ({ serial, cases: [] }));
+  // aborted 按组隔离（Task 10）：环境错误（exitCode 2）/取锁失败只终止本组后续用例，不跨组传播。
+  const groups = serials.map((serial) => ({ serial, cases: [], aborted: false }));
   cases.forEach((c, i) => groups[i % serials.length].cases.push(c));
   const active = groups.filter((g) => g.cases.length);
-  let aborted = false;
 
   // MCP 桥提升到 cmdRun 级（性能）：旧实现每条用例都重建连接（stdio 子进程冷启动
   // 1-5s/server + listTools），N 条用例付 N 次握手税。这里建一次、跨用例共享、收尾统一关。
@@ -231,13 +237,13 @@ async function cmdRun({ positional, flags }) {
     const settled = await Promise.all(active.map(async (g) => {
       const perGroup = [];
       for (const caseObj of g.cases) {
-        if (aborted) { perGroup.push({ case: caseObj.name, exitCode: 2, skipped: true }); continue; }
+        if (g.aborted) { perGroup.push({ case: caseObj.name, exitCode: 2, skipped: true }); continue; }
         const lock = acquireLock(WORKSPACE.lockRoot, g.serial);
-        if (!lock.ok) { aborted = true; perGroup.push({ case: caseObj.name, exitCode: 2, error: lock.reason }); console.error(`[lock] ${lock.reason}`); continue; }
+        if (!lock.ok) { g.aborted = true; perGroup.push({ case: caseObj.name, exitCode: 2, error: lock.reason }); console.error(`[lock] ${lock.reason}`); continue; }
         try {
           const exitCode = await runOne(caseObj, { flags, serial: g.serial, bridge: sharedBridge });
           perGroup.push({ case: caseObj.name, exitCode });
-          if (exitCode === 2) aborted = true; // 环境错误立即终止
+          if (exitCode === 2) g.aborted = true; // 环境/预算错误只终止本组后续用例
         } finally {
           releaseLock(WORKSPACE.lockRoot, g.serial);
         }
@@ -510,6 +516,9 @@ async function cmdAsk({ positional, flags }) {
   const serialList = await resolveSerials(flags);
   if (!serialList.length) fail('未找到在线设备（adb devices），请用 --device <serial> 指定');
   const serial = serialList[0];
+  // ask 是只读问答：用 shared 读锁，与 run 的 exclusive 锁互斥，但多个 ask 可并发读同设备
+  const lock = acquireLock(WORKSPACE.lockRoot, serial, { mode: 'shared' });
+  if (!lock.ok) fail(lock.reason);
   let device;
   let ctx = null; // 提升到 try 外：finally 的坐标缓存 flush 需要可见
   try { device = await createDevice({ serial, probeFile: WORKSPACE.probeFile }); } catch (e) { fail(`设备连接失败（${serial}）：${e.message}`); }
@@ -572,7 +581,8 @@ async function cmdAsk({ positional, flags }) {
     return answer ? 0 : 3;
   } finally {
     try { await ctx?.locateWithCache?.flush?.(); } catch { /* ignore */ }
-    try { await device.close(); } catch { /* ignore */ }
+    try { await device?.close?.(); } catch { /* ignore */ }
+    releaseLock(WORKSPACE.lockRoot, serial, { mode: 'shared' });
   }
 }
 

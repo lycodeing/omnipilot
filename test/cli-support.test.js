@@ -1,12 +1,14 @@
 // CLI 支撑模块单测：参数解析 / 设备锁 / 设备事实采集（从 bin/ask.js 抽出，无设备依赖）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgv } from '../src/cli/argv.js';
-import { pidAlive, acquireLock, releaseLock, lockPath } from '../src/cli/lock.js';
+import { pidAlive, acquireLock, releaseLock, lockPath, lockDir } from '../src/cli/lock.js';
 import { collectDeviceFacts } from '../src/cli/device-facts.js';
+import { RunRecorder } from '../src/recorder/index.js';
 
 // 预置锁文件（父目录可能尚未创建）
 function seedLock(root, serial, body) {
@@ -128,6 +130,69 @@ test('acquireLock：O_EXCL 互斥——同进程连续两次获取，第二次�
   const second = acquireLock(root, 'dev');
   assert.equal(second.ok, false, '锁存在时第二次获取必须失败');
   assert.match(second.reason, /正被 PID/);
+});
+
+// —— 设备共享锁（Task 10：ask 只读并发，exclusive 与 shared 互斥） ——
+test('acquireLock shared：同设备多个 shared 共存；exclusive 与 shared 互斥', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ask-lock-'));
+  const s1 = acquireLock(root, 'dev', { mode: 'shared', pid: process.pid });
+  assert.equal(s1.ok, true);
+  // 模拟另一进程的 shared 锁（直接写文件，pid 用本进程保证存活判定）
+  const sharedPath = join(lockDir(root), 'dev.shared-99999999.lock');
+  writeFileSync(sharedPath, JSON.stringify({ pid: process.pid, ts: Date.now(), serial: 'dev', mode: 'shared' }));
+  const ex = acquireLock(root, 'dev', { mode: 'exclusive', pid: process.pid });
+  assert.equal(ex.ok, false, '有存活 shared 锁时 exclusive 应被拒');
+  assert.match(ex.reason, /shared|读锁/);
+  // 清理全部 shared 锁后 exclusive 可获取（s1 自己的读锁也在，需一并移除）
+  rmSync(sharedPath);
+  rmSync(s1.path);
+  const ex2 = acquireLock(root, 'dev', { mode: 'exclusive', pid: process.pid });
+  assert.equal(ex2.ok, true);
+});
+
+test('acquireLock shared：exclusive 存活时 shared 被拒', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ask-lock-'));
+  acquireLock(root, 'dev', { pid: process.pid }); // exclusive
+  const sh = acquireLock(root, 'dev', { mode: 'shared', pid: process.pid });
+  assert.equal(sh.ok, false);
+});
+
+test('releaseLock shared：只删本进程的 shared 锁，不动他人', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ask-lock-'));
+  acquireLock(root, 'dev', { mode: 'shared', pid: process.pid });
+  const otherPath = join(lockDir(root), 'dev.shared-99999999.lock');
+  writeFileSync(otherPath, JSON.stringify({ pid: 99999999, ts: Date.now(), serial: 'dev', mode: 'shared' }));
+  releaseLock(root, 'dev', { mode: 'shared', pid: process.pid });
+  assert.ok(existsSync(otherPath), '他人 shared 锁不得删除');
+});
+
+// —— cancelled 终态（Task 1 评审裁定）：SIGINT/SIGTERM 中断时 run 不应留 _partial 残留 ——
+test('finish(cancelled)：写终态，覆写增量快照的 _partial 残留', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ask-runs-'));
+  const rec = new RunRecorder({ runsDir: root, caseName: 'cases/中断.yaml' });
+  // 模拟崩溃安全增量快照：先落一份带 _partial:true 的 running 态
+  writeFileSync(rec.jsonPath, JSON.stringify({ runId: rec.runId, status: 'running', _partial: true }));
+  const doc = await rec.finish('cancelled', { exitCode: 130 });
+  const onDisk = JSON.parse(readFileSync(rec.jsonPath, 'utf8'));
+  assert.equal(doc.status, 'cancelled', 'finish 返回 cancelled');
+  assert.equal(doc.exitCode, 130);
+  assert.equal(onDisk.status, 'cancelled', '落盘为 cancelled 终态');
+  assert.equal(onDisk.exitCode, 130);
+  assert.equal(onDisk._partial, undefined, '终态不得残留 _partial 标记');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('gracefulExit 接线：对 activeRuns 每个 run 调 finish(cancelled)', () => {
+  // 守护 gracefulExit 的 cancelled 终态接线（该函数直接 process.exit，无法在单测内调用）：
+  // 源码文本断言——还原/flush 之后、close 之前必须有 recorder.finish('cancelled', { exitCode: 130 })。
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ask.js'), 'utf8');
+  const g = src.indexOf('async function gracefulExit');
+  assert.ok(g > 0, '找到 gracefulExit');
+  const body = src.slice(g, src.indexOf('process.once', g));
+  const closeAt = body.indexOf('run.device?.close');
+  const finishAt = body.indexOf("recorder?.finish?.('cancelled', { exitCode: 130 })");
+  assert.ok(finishAt > 0, 'gracefulExit 必须对每个 run 调 finish(cancelled)');
+  assert.ok(finishAt < closeAt, 'finish 须在 device.close 之前（先落终态再关设备）');
 });
 
 // —— 设备事实采集（mock 门面，无真机） ——
