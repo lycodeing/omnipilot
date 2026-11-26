@@ -10,13 +10,16 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
-// 缓存键：用例身份 + 步骤文本摘要。步骤文本改动 → 键变 → 自然失效。
+// 缓存键：用例身份 + 设备 serial + 目标 App 版本 + 步骤文本摘要。
+// 步骤文本改动 → 键变 → 自然失效；serial/appVersion 纳入后跨设备/跨版本复用同一步骤
+// 也会各自独立（App 换版或换机后旧坐标/选择器可能失效，不能盲目回放旧计划）。
 // 键不含 stepIndex（2026-11-10 评审 #11）：plan 是**语义动作**（target 文本，回放时重新
 // 定位、不含坐标），同用例内两处相同文本步骤共享计划安全；而含 stepIndex 时，在步骤前
 // 插删一行会让同文本步骤错位 miss（缓存全量失效）。stepIndex 参数保留以兼容调用方，不参与键。
-export function planKey({ caseId, stepText } = {}) {
+// serial/appVersion 缺省 'unknown'（无目标包/未采集时），旧键形态自然 miss、不误命中。
+export function planKey({ caseId, stepText, serial = 'unknown', appVersion = 'unknown' } = {}) {
   const h = createHash('sha1').update(String(stepText ?? '')).digest('hex').slice(0, 10);
-  return `${caseId}::${h}`;
+  return `${caseId}::${serial}::${appVersion}::${h}`;
 }
 
 export function createPlanCache(stateDir, { maxEntries = 200 } = {}) {

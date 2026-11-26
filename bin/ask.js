@@ -350,6 +350,18 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       } catch { /* 预授权失败不阻断 */ }
     }
 
+    // plan-cache 跨设备/跨版本失效键：采一次目标 App 的 versionName。
+    // 目标包来源与 pregrant 一致（顶层 targetPackage > launch 步 appId）；无目标包时
+    // 不查设备、appVersion=null（planKey 缺省 'unknown'）。采集失败一律降级为 null。
+    const targetPackage = (() => {
+      if (caseObj.targetPackage) return String(caseObj.targetPackage);
+      const launchStep = (caseObj.steps || []).find((s) => s.type === 'launch' && (s.appId || s.text));
+      return launchStep ? String(launchStep.appId || launchStep.text).split('/')[0] : null;
+    })();
+    ctx.appVersion = targetPackage
+      ? await device.packageVersion(targetPackage).catch(() => null)
+      : null;
+
     // 会话策略（§9.1）：secret 类静态预扫 + 运行期兜底删除
     const secretMentioned = /secret_get|sms_read/.test(JSON.stringify(caseObj.steps || []));
     const persist = resolveStrategy({ fresh: !!flags.fresh, cont: !!flags.continue, session: flags.session, keep: flags.keep === undefined ? true : !!flags.keep, hasSecretCalls: secretMentioned });

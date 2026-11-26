@@ -26,3 +26,10 @@ export function assertSafeActivity(activity) {
   }
   return a;
 }
+
+// 从 `dumpsys package <pkg>` 输出提取 versionName（plan-cache 跨版本失效用）。
+// 纯函数放设备层，避免 device → cli 的反向依赖；cli/pregrant.js re-export 供既有 import 路径使用。
+export function parsePackageVersion(dumpsysText) {
+  const m = /versionName=(\S+)/.exec(String(dumpsysText ?? ''));
+  return m ? m[1] : null;
+}

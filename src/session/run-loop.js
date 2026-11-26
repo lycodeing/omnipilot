@@ -28,6 +28,10 @@ import { interpolate } from './case.js';
 import { LOCATE_DEGRADE_POLICY, MARATHON_MARKER_WAIT_MS } from '../device/locate-policy.js';
 import { lastAssistantText, makeAttachStepShot, makeFoldForGateway } from './run-loop-helpers.js';
 
+// 非幂等/敏感工具：其调用被整段回放会在错误时机重复副作用或拿不到当次数据，
+// 故含这些调用的步骤不写计划缓存。
+const NON_IDEMPOTENT = new Set(['data_store', 'net_profile', 'terminate', 'secret_get', 'sms_read']);
+
 export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, gov, flags, caseObj, runDeadline, modelCfg } = {}) {
   const device = ctx.device;
   const steps = caseObj.steps;
@@ -51,6 +55,8 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
     caseId: caseObj.source || caseObj.name || 'case',
     stepIndex: i,
     stepText,
+    serial: device.serial ?? 'unknown',
+    appVersion: ctx.appVersion ?? 'unknown',
   });
 
   // 非 tool 路径（aiWaitFor 等直记账的步）的报告取证截图：fire-and-forget
@@ -566,9 +572,14 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
         );
         answer = lastAssistantText(session);
       }
-      // —— 计划缓存写入：全部工具调用成功的 ai/aiAct 步记完整 plan；马拉松步不缓存
-      //（其续作依赖逐轮页面状态，整段回放不安全——Midscene 同款取舍）——
-      if (curPlanKey && !marathonRan && lastTool.calls.length >= 1 && lastTool.calls.every((c) => c.ok)) {
+      // —— 计划缓存写入：全部工具调用成功、且不含非幂等工具的 ai/aiAct 步记完整 plan；
+      // 马拉松步不缓存（其续作依赖逐轮页面状态，整段回放不安全——Midscene 同款取舍）。
+      // 非幂等工具（写库/切网/终止进程/读凭据/读短信）的调用若被整段回放，会在错误时机
+      // 重复产生副作用或读不到当次数据，故一律不进计划缓存。
+      if (curPlanKey && !marathonRan
+        && lastTool.calls.length >= 1
+        && lastTool.calls.every((c) => c.ok)
+        && lastTool.calls.every((c) => !NON_IDEMPOTENT.has(c.tool))) {
         planCache.put(curPlanKey, {
           tool: lastTool.calls[0].tool,
           params: lastTool.calls[0].params,

@@ -1,6 +1,10 @@
 // run 前预授权（§2.7.2 第一层）：把"会弹的权限框"提前消灭。
 // 只处理 android.permission.* 运行时权限（第三方 launcher 的自定义权限不碰）。
 
+// 版本解析本体在设备层 package-guard.js（纯函数，避免 device → cli 反向依赖）；
+// re-export 保持测试既有的 `../src/cli/pregrant.js` import 路径可用。
+export { parsePackageVersion } from '../device/package-guard.js';
+
 // 从 `dumpsys package <pkg>` 输出里提取请求的运行时权限
 export function parseRequestedPermissions(dumpsysText) {
   const out = new Set();

@@ -234,6 +234,12 @@ test('parseArgv：取值型 flag 缺值时抛错（--timeout --yes）', () => {
   assert.throws(() => parseArgv(['run', '--out']), /--out 需要一个值/);
 });
 
+test('parsePackageVersion：从 dumpsys 文本提取 versionName', async () => {
+  const { parsePackageVersion } = await import('../src/cli/pregrant.js');
+  assert.equal(parsePackageVersion('versionName=9.31.0\nversionCode=931'), '9.31.0');
+  assert.equal(parsePackageVersion('no version here'), null);
+});
+
 test('parseArgv：布尔 flag 与可选值 flag 不受影响', () => {
   assert.equal(parseArgv(['run', '--yes']).flags.yes, true);
   assert.equal(parseArgv(['run', '--timeout', '60']).flags.timeout, '60');

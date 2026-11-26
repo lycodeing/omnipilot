@@ -51,6 +51,13 @@ test('缓存文件损坏 → 重建空表（不抛错）', () => {
   assert.equal(c.get('k')?.tool, 'tap');
 });
 
+test('planKey：serial/appVersion 变化换键（跨设备/跨版本失效）', () => {
+  const a = planKey({ caseId: 'c1', stepText: '点击热榜', serial: 'dev1', appVersion: '1.0' });
+  assert.notEqual(a, planKey({ caseId: 'c1', stepText: '点击热榜', serial: 'dev2', appVersion: '1.0' }));
+  assert.notEqual(a, planKey({ caseId: 'c1', stepText: '点击热榜', serial: 'dev1', appVersion: '2.0' }));
+  assert.equal(a, planKey({ caseId: 'c1', stepText: '点击热榜', serial: 'dev1', appVersion: '1.0' }));
+});
+
 test('delete 删除并落盘（回放失败后由调用方删除失效条目）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ask-pc4-'));
   const c = createPlanCache(dir);

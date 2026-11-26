@@ -18,7 +18,7 @@ import { createUia2 } from './uia2.js';
 import { createTapEachRow } from './tap-each-row.js';
 import { createDumpChannels } from './dump-channels.js';
 import { createSizeProbe } from './size-probe.js';
-import { assertSafePackage, assertSafeActivity } from './package-guard.js';
+import { assertSafePackage, assertSafeActivity, parsePackageVersion } from './package-guard.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
@@ -596,6 +596,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       try {
         return await adb.shell(`dumpsys package ${String(pkg).trim()}`, { timeoutMs: adb.timeouts.command });
       } catch { return ''; }
+    },
+    // 目标 App 的 versionName（plan-cache 跨版本失效键用）：复用 dumpsysPackage，
+    // 再由设备层纯函数解析；失败/无 versionName 一律返回 null，调用方按 'unknown' 处理。
+    // 注：dumpsysPackage 当前无包名白名单，白名单治理留待 Task 18，本 Task 不动。
+    async packageVersion(pkg) {
+      const text = await this.dumpsysPackage(pkg);
+      return parsePackageVersion(text);
     },
     async pmGrant(permission, pkg) {
       try {
