@@ -4,6 +4,7 @@
 // 白色圆角主卡、#1677ff 交互色、状态语义色 pass/fail。
 import { computed, inject, nextTick, ref } from 'vue'
 import { parseReportDocument } from './composables/useDump.js'
+import { computePassRate } from './utils/pass-rate.js'
 import Sidebar from './components/Sidebar.vue'
 import Player from './components/Player.vue'
 import ThoughtPanel from './components/ThoughtPanel.vue'
@@ -59,20 +60,9 @@ const stageAspect = computed(() => {
   return w > 0 && h > 0 ? w / h : 9 / 19.5
 })
 
-// 总通过率（单任务即该 case 自身统计，§19.6）
-const passRate = computed(() => {
-  let total = 0
-  let finished = 0
-  for (const exec of executions) {
-    const tasks = exec && Array.isArray(exec.tasks) ? exec.tasks : []
-    for (const t of tasks) {
-      if (!t) continue
-      total++
-      if (t.status === 'finished') finished++
-    }
-  }
-  return total ? `${finished}/${total} · ${Math.round((finished / total) * 100)}%` : '—'
-})
+// 通过率口径（§19.6 / 评审 M5）：断言通过率为主指标，步骤完成率为辅助指标。
+// 纯函数 computePassRate 负责统计与文案，组件只负责展示。
+const passRate = computed(() => computePassRate({ executions, assertions: data.assertions }))
 
 // 全部步骤数（侧栏标题计数）
 const totalSteps = computed(() =>
@@ -183,8 +173,9 @@ function onSelectTask(executionIndex, taskId) {
         <div class="nav-actions">
           <div class="nav-stats">
             <span class="nav-stat">
-              <span class="nav-stat-label">通过率</span>
-              <span class="nav-stat-value">{{ passRate }}</span>
+              <span class="nav-stat-label">断言通过率</span>
+              <span class="nav-stat-value">{{ passRate.assertionText }}</span>
+              <span class="nav-stat-sub">{{ passRate.stepText }}</span>
             </span>
             <span class="nav-stat">
               <span class="nav-stat-label">总耗时</span>
@@ -474,6 +465,14 @@ function onSelectTask(executionIndex, taskId) {
   color: var(--text-1);
   font-weight: 650;
   font-size: 13px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+/* 辅指标（步骤完成率）：小字弱色，不与主指标（断言通过率）争层级 */
+.nav-stat-sub {
+  color: var(--text-3);
+  font-size: 10px;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   line-height: 1.25;
