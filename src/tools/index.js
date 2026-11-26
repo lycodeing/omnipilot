@@ -105,7 +105,9 @@ export function withRecording(tool, ctx) {
         }
         try {
           if (tool.name === 'screen' && res?.content?.[0]?.type === 'image') {
-            recorder.attachScreenshot(handle.index, Buffer.from(res.content[0].data, 'base64'));
+            // 与动作后截图链同源：screen 工具直接返回的 image 也要按缓存树 password 节点遮罩后再入档，
+            // 否则 secret 输入后模型调 screen 取证会把密码框明文带进报告截图。
+            recorder.attachScreenshot(handle.index, await redactShot(Buffer.from(res.content[0].data, 'base64'), ctx));
           } else if (!denied) {
             // 报告截图**全覆盖**（2026-11-01）：每个工具步都留终态截图——失败步的截图
             // 恰是诊断金矿（dump 全盲事故里 tap 全 MISS 却无图可看），只读工具（read/

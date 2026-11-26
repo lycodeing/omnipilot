@@ -6,9 +6,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildTools, EXPECTED_TOOLS } from '../src/tools/index.js';
+import { buildTools, EXPECTED_TOOLS, withRecording } from '../src/tools/index.js';
 import { RunRecorder } from '../src/recorder/index.js';
 import { createRunContext } from '../src/session/create.js';
+import { encodePng, decodePng } from '../src/image/png.js';
+import { redactScreenshot } from '../src/device/screenshot-redact.js';
 
 function fakeDevice() {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG 魔数前缀即可，落盘文件存在性是断言点
@@ -132,4 +134,42 @@ test('无 recorder 的 ctx 不包装（ask 只读流程）', async () => {
   assert.equal(tap.withRecording, undefined);
   const res = await tap.execute('t1', { target: 'x' });
   assert.equal(res.details.ok, true);
+});
+
+// 守护：screen 工具直接返回的 image 入档前也必须走 redactShot（凭据图像面不留缺口）。
+// 构造带 password 节点缓存树的 ctx + 假的 screen 工具，断言 attachScreenshot 收到的
+// Buffer 与 redactScreenshot 期望值逐字节一致且遮罩区像素被填灰。
+test('screen 工具 image 截图入档前按 password 节点遮罩', async () => {
+  const w = 16, h = 16;
+  const px = Buffer.alloc(w * h * 4, 255); // 全白 RGBA，密码框区域本可泄明文
+  const png = encodePng(w, h, px, 6);
+  const nodes = [{ password: true, bounds: [2, 2, 6, 6] }];
+  const device = { cachePeek: () => ({ nodes, hash: 'fake' }) };
+
+  const shots = [];
+  const recorder = {
+    startStep: () => ({ index: 0, end: () => {} }),
+    attachScreenshot: (index, buf) => shots.push({ index, buf }),
+    trackPending: () => {},
+    registerSecret: () => {},
+  };
+  const ctx = createRunContext({ device, recorder, store: null, opts: { yes: true } });
+  const screenTool = {
+    name: 'screen',
+    execute: async () => ({
+      content: [{ type: 'image', data: png.toString('base64'), mimeType: 'image/png' }],
+      details: { ok: true },
+    }),
+  };
+  await withRecording(screenTool, ctx).execute('t1', {});
+
+  assert.equal(shots.length, 1, 'screen 分支应入档一张截图');
+  // redactShot 用 device/uitree.js 的 flattenNodes(cached.nodes)（扁平数组为恒等），
+  // 故期望值 = 同一 PNG 经 redactScreenshot(png, nodes) 的结果。
+  const expected = redactScreenshot(png, nodes);
+  assert.ok(shots[0].buf.equals(expected), '入档 Buffer 应为遮罩后字节（与原图不同）');
+  assert.ok(!shots[0].buf.equals(png), '未遮罩的原图不得直接入档');
+  const dec = decodePng(shots[0].buf);
+  assert.equal(dec.pixels[(3 * w + 3) * 4], 128, '遮罩区像素应为 128');
+  assert.equal(dec.pixels[0], 255, '非遮罩区保持原样');
 });
