@@ -221,7 +221,12 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
       if (p && PARAM_KEYS.has(p[1])) {
         current[p[1]] = coerce(p[1], p[2]);
         // sleep 的 ms 参数行：显式毫秒 → 秒（与 flow 形态的隐式换算同口径）
-        if (current.type === 'sleep' && p[1] === 'ms') current.seconds = Number(current.ms) / 1000;
+        // 评审 Minor 3：非法 ms（NaN/Infinity）不抛错、不赋 NaN seconds，只 warn 提示
+        if (current.type === 'sleep' && p[1] === 'ms') {
+          const secs = Number(current.ms) / 1000;
+          if (Number.isFinite(secs)) current.seconds = secs;
+          else caseObj.warnings.push(`${source}:${i + 1} sleep 的 ms 参数 "${current.ms}" 非法（应为数值毫秒），已忽略`);
+        }
         // timeout 仅 aiWaitFor 支持；外部框架常给 ai/aiTap 步挂 timeout（毫秒），
         // 静默忽略会让作者误以为生效——装载期显式 warn（整 run 时长由 --timeout 控制）
         if (p[1] === 'timeout' && !WAIT_TYPES.has(current.type)) {

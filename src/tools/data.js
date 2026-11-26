@@ -38,17 +38,29 @@ async function extractUi(device, params) {
   // 节点用 bounds 包含关系向上找最小祖先（不依赖 parent 引用——某些 device 的 makeNode
   // 不挂 parent），把同 cls+resourceId 的兄弟聚成组；≥2 个且各自含字段命中的组即为
   // 卡片列表，取这组兄弟为 scopes。无重复结构时回退整屏 1 行（现状）。
-  if (!scopes.length && fields.length) {
+  // 评审 I1：显式传了 container 但 selector 失配（scopes 仍空）时不得自动发现——
+  // 否则会把本应"整屏 1 行"的回退改成多行，改变存量用例行为。
+  if (!params.container && !scopes.length && fields.length) {
     const area = (n) => Math.max(0, n.bounds[2] - n.bounds[0]) * Math.max(0, n.bounds[3] - n.bounds[1]);
     const contains = (p, n) => Array.isArray(p.bounds) && Array.isArray(n.bounds)
       && p.bounds[0] <= n.bounds[0] && p.bounds[1] <= n.bounds[1]
       && p.bounds[2] >= n.bounds[2] && p.bounds[3] >= n.bounds[3];
+    const overlaps = (a, b) => !(a.bounds[2] <= b.bounds[0] || b.bounds[2] <= a.bounds[0]
+      || a.bounds[3] <= b.bounds[1] || b.bounds[3] <= a.bounds[1]);
     // 最小包含祖先：面积最小的那个包含节点（排除自身）
     const ancestorOf = (n) => flat.filter((p) => p !== n && contains(p, n))
       .sort((a, b) => area(a) - area(b))[0];
-    const hitByAncestor = (a) => fields.some((f) => flat.some((n) => n !== a && contains(a, n) && matchSelector(n, f.selector)));
+    // 无 selector 的字段（如 from:'index' 位置字段）不参与自动发现，避免 undefined selector
+    const hitByAncestor = (a) => {
+      for (const f of fields) {
+        if (!f.selector) continue;
+        if (flat.some((n) => n !== a && contains(a, n) && matchSelector(n, f.selector))) return true;
+      }
+      return false;
+    };
     const groups = new Map();
     for (const f of fields) {
+      if (!f.selector) continue;
       for (const n of flat) {
         if (!matchSelector(n, f.selector)) continue;
         const a = ancestorOf(n);
@@ -59,8 +71,19 @@ async function extractUi(device, params) {
       }
     }
     for (const [, set] of groups) {
-      // 兄弟 ≥2 且各自含字段命中才认作重复卡片结构
-      if (set.size >= 2 && [...set].every(hitByAncestor)) { scopes.push(...set); break; }
+      // 评审 Minor 1：先剔除 bounds 重叠的候选，保留面积最小者——嵌套父子容器会被
+      // 聚到同组、误当成"重复卡片"撑出多行；两两判重叠后只留最小卡片再判 ≥2。
+      const candidates = [...set];
+      const removed = new Set();
+      for (let i = 0; i < candidates.length; i++) {
+        for (let j = i + 1; j < candidates.length; j++) {
+          const a = candidates[i], b = candidates[j];
+          if (overlaps(a, b)) removed.add(area(a) >= area(b) ? a : b);
+        }
+      }
+      const kept = candidates.filter((n) => !removed.has(n));
+      // 剩余 ≥2 且各自含字段命中才认作重复卡片结构
+      if (kept.length >= 2 && kept.every(hitByAncestor)) { scopes.push(...kept); break; }
     }
   }
 

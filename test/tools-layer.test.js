@@ -820,7 +820,13 @@ test('extractUi 无 container：重复卡片结构自动发现，多行提取', 
   });
   const ctx = makeCtx({ device, store: makeFakeStore() });
   const tool = buildTools(ctx).find((t) => t.name === 'data_extract');
-  const r = await tool.execute('id1', { name: 'list', mode: 'ui', fields: [{ name: 'title', from: 'text', selector: 'resourceId=com.x:id/title' }] }, undefined, undefined, {});
+  const fields = [{ name: 'title', from: 'text', selector: 'resourceId=com.x:id/title' }];
+  const r = await tool.execute('id1', { name: 'list', mode: 'ui', fields }, undefined, undefined, {});
   const body = getContent(r);
   assert.equal(body.count, 2, '无 container 也应发现 2 张卡片');
+  // 守护：两行字段值正确（内容正确），card1/card2 不重叠仍 GREEN
+  assert.deepEqual(body.sample, [{ title: '春游' }, { title: '秋游' }], '自动发现的两行内容正确');
+  // 守护（评审 I1）：显式传 container 但 selector 失配时不得触发自动发现，应回退整屏 1 行
+  const rMiss = await tool.execute('id2', { name: 'list2', mode: 'ui', container: 'class=不存在', fields }, undefined, undefined, {});
+  assert.equal(getContent(rMiss).count, 1, 'container 显式失配应走整屏 1 行回退，而非自动发现 2 行');
 });
