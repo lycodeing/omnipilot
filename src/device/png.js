@@ -1,89 +1,15 @@
-// 极简 PNG 解码（仅 adb screencap 产物所需子集）：8-bit、非隔行、色彩类型 2(RGB)/6(RGBA)。
+// 极简 PNG 解码（仅 adb screencap 产物所需子集）：8-bit、非隔行、色彩类型 2(RGB)/6(RGBA)/0(灰度)。
 // 用途：tapEachRow 的选中态像素校验（WebView 选择态不进 a11y 树，只能看像素）；
 //      以及 scroll 的"画面变没变"签名（比整树 dump 快 1-2 个数量级，见 screenSignature）。
-// 不引第三方依赖：zlib 用 node 内置，CRC/滤波手工实现（~80 行，纯函数可单测）。
-import zlib from 'node:zlib';
+// 解码核心复用 image/png 单一实现（零依赖、纯函数），本模块只做字段映射与消费方接口适配。
 import { createHash } from 'node:crypto';
+import { decodePng as decodeCore } from '../image/png.js';
 
-function readUInt32(buf, off) { return buf.readUInt32BE(off); }
-
-// PNG 完整签名（8 字节）：只查前 4 字节魔数会放过大量非 PNG 数据。
-const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-// 尺寸上限：width/height 来自文件头（不可信输入），解码按 stride*height 分配像素
-// 缓冲——一个几十字节的伪造头声明 20000×20000 就能触发 GB 级分配。
-// 5000 万像素（≈6000×8000）远超常见截图（1080×2400 = 2.6M）。
-const MAX_PIXELS = 50_000_000;
-
-// 返回 { width, height, channels, data }，data 为按行的原始 RGBA/RGB 像素（未去滤波前的 IDAT 已解压）
+// 返回 { width, height, channels, data }，data 为按行的原始像素（channels=bpp，data=pixels）。
+// 委托 image/png 核心：灰度（colorType=0）时 channels=1，消费方 pixelAt/screenSignature 行为不变。
 export function decodePng(buf) {
-  if (!buf || buf.length < 8 || !buf.subarray(0, 8).equals(PNG_SIG)) throw new Error('不是 PNG 文件');
-  let off = 8;
-  let width = 0; let height = 0; let bitDepth = 0; let colorType = 0; let interlace = 0;
-  let sawIhdr = false;
-  const idat = [];
-  while (off + 8 <= buf.length) {
-    const len = readUInt32(buf, off);
-    const type = buf.toString('ascii', off + 4, off + 8);
-    // chunk 长度校验：不校验时 subarray 越界会静默截断（读到不完整的 chunk 数据）
-    if (off + 12 + len > buf.length) throw new Error(`PNG chunk 越界: ${type}（声明长度 ${len}）`);
-    const data = buf.subarray(off + 8, off + 8 + len);
-    if (type === 'IHDR') {
-      if (len < 13) throw new Error('PNG IHDR 长度非法');
-      width = readUInt32(data, 0);
-      height = readUInt32(data, 4);
-      bitDepth = data[8];
-      colorType = data[9];
-      interlace = data[12];
-      sawIhdr = true;
-      if (width === 0 || height === 0) throw new Error(`PNG 尺寸非法: ${width}×${height}`);
-      if (width * height > MAX_PIXELS) {
-        throw new Error(`PNG 尺寸过大: ${width}×${height}（上限 ${MAX_PIXELS} 像素）`);
-      }
-    } else if (type === 'IDAT') {
-      idat.push(data);
-    } else if (type === 'IEND') break;
-    off += 12 + len;
-  }
-  if (!sawIhdr) throw new Error('PNG 缺少 IHDR');
-  if (bitDepth !== 8 || interlace !== 0) throw new Error(`不支持的 PNG: bitDepth=${bitDepth} interlace=${interlace}`);
-  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : null;
-  if (!channels) throw new Error(`不支持的 PNG 色彩类型: ${colorType}`);
-  const raw = zlib.inflateSync(Buffer.concat(idat));
-  const stride = width * channels;
-  // 解压后长度必须够：否则下面的 raw[pos + x] 会读到 undefined（NaN 传播）
-  if (raw.length < height * (stride + 1)) {
-    throw new Error(`PNG 数据不完整: 解压后 ${raw.length} 字节 < 期望 ${height * (stride + 1)}`);
-  }
-  const out = Buffer.alloc(height * stride);
-  let pos = 0;
-  for (let y = 0; y < height; y++) {
-    const filter = raw[pos++];
-    const row = out.subarray(y * stride, (y + 1) * stride);
-    const prev = y > 0 ? out.subarray((y - 1) * stride, y * stride) : null;
-    for (let x = 0; x < stride; x++) {
-      const rawByte = raw[pos + x];
-      const a = x >= channels ? row[x - channels] : 0; // left
-      const b = prev ? prev[x] : 0; // up
-      const c = prev && x >= channels ? prev[x - channels] : 0; // up-left
-      let v;
-      switch (filter) {
-        case 0: v = rawByte; break;
-        case 1: v = rawByte + a; break;
-        case 2: v = rawByte + b; break;
-        case 3: v = rawByte + ((a + b) >> 1); break;
-        case 4: {
-          const p = a + b - c;
-          const pa = Math.abs(p - a); const pb = Math.abs(p - b); const pc = Math.abs(p - c);
-          v = rawByte + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
-          break;
-        }
-        default: throw new Error(`未知 PNG 滤波类型: ${filter}`);
-      }
-      row[x] = v & 0xff;
-    }
-    pos += stride;
-  }
-  return { width, height, channels, data: out };
+  const { width, height, bpp, pixels } = decodeCore(buf);
+  return { width, height, channels: bpp, data: pixels };
 }
 
 // 取像素 RGB（channels=1 时灰度三通道同值）

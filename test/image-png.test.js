@@ -30,8 +30,8 @@ test('encodePng/decodePng 往返：像素完全一致', () => {
 });
 
 test('decodePng：拒绝非 PNG / 非法参数', () => {
-  assert.throws(() => decodePng(Buffer.from('not a png')), /不是合法 PNG/);
-  assert.throws(() => decodePng(Buffer.alloc(100)), /不是合法 PNG/);
+  assert.throws(() => decodePng(Buffer.from('not a png')), /不是 PNG/);
+  assert.throws(() => decodePng(Buffer.alloc(100)), /不是 PNG/);
 });
 
 test('downscale：2× 降采样，尺寸减半、块平均色正确', () => {
@@ -119,4 +119,25 @@ test('decodePng：尺寸超上限时抛错（防伪造头致巨额分配）', ()
 
 test('decodePng：零尺寸抛错', () => {
   assert.throws(() => decodePng(fakeHeader(0, 100)), /尺寸非法/);
+});
+
+test('decodePng：灰度（colorType=0）支持，bpp=1', () => {
+  // 构造 2×2 灰度 PNG（filter 0）
+  const w = 2, h = 2;
+  const raw = Buffer.from([0, 10, 20, 0, 30, 40]); // 每行 filter byte + 2 灰度像素
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 0; ihdr[12] = 0; // colorType 0
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+    return Buffer.concat([len, Buffer.from(type, 'ascii'), data, Buffer.alloc(4)]);
+  };
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ]);
+  const dec = decodePng(png);
+  assert.equal(dec.bpp, 1);
+  assert.equal(dec.colorType, 0);
+  assert.deepEqual([...dec.pixels], [10, 20, 30, 40]);
 });

@@ -1,7 +1,7 @@
 // 纯 JS PNG 下采样（§16：截图压缩，无需外部库——契约禁止 npm install，用 Node 内置 zlib）。
 //
 // 用途：截图进模型上下文前降尺寸，减少 prompt tokens（实测 20 张 1080×2400 图 → 67k tokens、单轮 26s）。
-// 只处理 screencap 产出的标准 PNG：8 位、颜色类型 6(RGBA) 或 2(RGB)、非隔行、filter 0-4。
+// 只处理 screencap 产出的标准 PNG：8 位、颜色类型 6(RGBA)/2(RGB)/0(灰度)、非隔行、filter 0-4。
 // 降采样用「块平均」（2×向下取整），生成新的真彩 PNG。
 
 import zlib from 'node:zlib';
@@ -73,10 +73,10 @@ function chunk(type, data) {
   return Buffer.concat([len, td, crc]);
 }
 
-// 解析 PNG → { width, height, bpp, pixels(RGBA/RGB 连续字节) }
+// 解析 PNG → { width, height, bpp, pixels(RGBA/RGB/灰度 连续字节) }
 export function decodePng(buf) {
   if (!Buffer.isBuffer(buf) || buf.length < 24 || !buf.subarray(0, 8).equals(PNG_SIG)) {
-    throw new Error('不是合法 PNG');
+    throw new Error('不是 PNG 文件');
   }
   const width = buf.readUInt32BE(16);
   const height = buf.readUInt32BE(20);
@@ -85,8 +85,8 @@ export function decodePng(buf) {
   const interlace = buf[28];
   if (bitDepth !== 8) throw new Error(`仅支持 8 位 PNG（实际 ${bitDepth}）`);
   if (interlace !== 0) throw new Error('不支持隔行 PNG');
-  const bpp = colorType === 6 ? 4 : colorType === 2 ? 3 : 0;
-  if (!bpp) throw new Error(`仅支持 RGBA(6)/RGB(2) PNG（实际颜色类型 ${colorType}）`);
+  const bpp = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : 0;
+  if (!bpp) throw new Error(`仅支持 RGBA(6)/RGB(2)/灰度(0) PNG（实际颜色类型 ${colorType}）`);
   // 尺寸上限：width/height 来自文件头，是不可信输入。unfilter 会按 stride*height
   // 分配像素缓冲——一个 68 字节的伪造 PNG 头声明 20000×20000 就能触发 1.5GB 分配
   // （实测成功分配）→ 进程 OOM。截图来源虽是 adb screencap，但本模块是通用解析器。
@@ -101,6 +101,9 @@ export function decodePng(buf) {
   while (off + 12 <= buf.length) {
     const len = buf.readUInt32BE(off);
     const type = buf.subarray(off + 4, off + 8).toString('latin1');
+    // chunk 长度校验：不校验时 subarray 越界会静默截断（读到不完整的 chunk 数据）
+    if (off + 12 + len > buf.length) throw new Error(`PNG chunk 越界: ${type}`);
+    if (type === 'IHDR' && len < 13) throw new Error('PNG IHDR 长度非法');
     if (type === 'IDAT') idats.push(buf.subarray(off + 8, off + 8 + len));
     else if (type === 'IEND') break;
     off += 12 + len;
