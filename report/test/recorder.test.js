@@ -18,6 +18,7 @@ import { JSDOM } from 'jsdom';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/run.sample.json'), 'utf8'));
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]);
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]); // FFD8 魔数
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
 function tmpDir(t) {
@@ -435,6 +436,53 @@ test('writeReport：断言截图嵌入报告（screenshotId → screenshots map�
   const [{ dump }] = extractDumps(html);
   const sid = dump.assertions[0].screenshotId;
   assert.ok(sid, '断言应有 screenshotId');
+  assert.notEqual(sid, shotPath, 'screenshotId 应由原始文件路径替换为 uuid');
   assert.ok(dump.screenshots[sid] !== undefined, 'screenshots map 应含断言截图');
-  assert.equal(countTag(html, IMAGE_TAG_TYPE), 1);
+  assert.ok(
+    String(dump.screenshots[sid]).length > 0 || countTag(html, IMAGE_TAG_TYPE) === 1,
+    '应有图标签（single-html 下 map 为占位空串，以 ask-image 标签数为准）',
+  );
+
+  // I1 兜底：断言截图文件缺失时不抛、不改 dump、并清掉原始路径（既不外泄也不与 uuid 口径混用）
+  const missing = clone(FIXTURE);
+  missing.assertions = [{ text: '缺失图', passed: false, reason: 'no', screenshotId: path.join(dir, 'gone.png') }];
+  const out2 = await writeReport(missing, { outPath: path.join(dir, 'r2.html') });
+  const html2 = fs.readFileSync(out2, 'utf8');
+  const [{ dump: dump2 }] = extractDumps(html2);
+  assert.equal(dump2.assertions[0].screenshotId, undefined, '缺失文件应 delete 掉原始路径');
+  assert.ok(!html2.includes('gone.png'), '原始路径不应随报告外泄');
+  assert.equal(countTag(html2, IMAGE_TAG_TYPE), 0, '缺失文件不应产生 ask-image 标签');
+});
+
+test('writeReport：断言截图与 step 截图共存（两个 ask-image、screenshotId 不冲突）', async (t) => {
+  const dir = tmpDir(t);
+  const run = clone(FIXTURE);
+  // 给一个 step 截一张真 PNG；fixture 其余 step 截图路径不存在 → 会被跳过，不产生额外 ask-image
+  const stepPath = path.join(dir, 'step-0.png');
+  fs.writeFileSync(stepPath, PNG);
+  run.steps[0].screenshot = stepPath;
+  const shotPath = path.join(dir, 'assert-0.png');
+  fs.writeFileSync(shotPath, PNG);
+  run.assertions = [{ text: '共存校验', passed: true, reason: 'ok', screenshotId: shotPath }];
+  const out = await writeReport(run, { outPath: path.join(dir, 'r.html') });
+  const html = fs.readFileSync(out, 'utf8');
+  const [{ dump }] = extractDumps(html);
+  const assertSid = dump.assertions[0].screenshotId;
+  const stepSid = dump.executions[0].tasks[0].screenshotId;
+  assert.notEqual(assertSid, shotPath, '断言截图应替换为 uuid');
+  assert.ok(stepSid, 'step 截图应持有 screenshotId');
+  assert.notEqual(assertSid, stepSid, '断言与 step 的两个 screenshotId 不冲突');
+  assert.equal(countTag(html, IMAGE_TAG_TYPE), 2, '断言图 + step 图共 2 个 ask-image 标签');
+});
+
+test('writeReport：JPEG 断言截图按 FFD8 魔数产出 image/jpeg dataURL', async (t) => {
+  const dir = tmpDir(t);
+  const run = clone(FIXTURE);
+  const shotPath = path.join(dir, 'assert-0.png'); // 文件名沿用 .png，内容为 JPEG
+  fs.writeFileSync(shotPath, JPEG);
+  run.assertions = [{ text: 'JPEG 校验', passed: true, reason: 'ok', screenshotId: shotPath }];
+  const out = await writeReport(run, { outPath: path.join(dir, 'r.html') });
+  const html = fs.readFileSync(out, 'utf8');
+  assert.ok(html.includes('data:image/jpeg;base64,'), 'FFD8 魔数应产出 image/jpeg');
+  assert.ok(!html.includes('data:image/png;base64,'), '不应误判为 image/png');
 });

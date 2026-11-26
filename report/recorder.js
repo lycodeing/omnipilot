@@ -453,6 +453,9 @@ export async function writeReport(runJson, { outPath, mode = 'single-html', shel
   // 断言判定输入截图（Task 14）：有 screenshotId 的断言生成独立 uuid、读原文件嵌进报告，
   // screenshots map 加该 uuid，assertion.screenshotId 由文件路径替换为 uuid（与 step 截图同口径）。
   // 传 Buffer 让 toDataURL 按文件魔数判 MIME——判定输入可能是 JPEG，硬编码 png 会让浏览器拒绝解码。
+  // 读 + 嵌图全程用 try/catch 兜底：uuid/占位/回填只在两者都成功后才落，避免读文件失败
+  // （权限/竞态删除）或 appendScreenshot 异常时整份报告中断，或留下"screenshotId 已是 uuid
+  // 但 map 空串/无图标签"的不一致 dump。
   if (Array.isArray(dump.assertions)) {
     for (const a of dump.assertions) {
       const rel = a?.screenshotId;
@@ -460,13 +463,21 @@ export async function writeReport(runJson, { outPath, mode = 'single-html', shel
       const file = resolveScreenshotFile(rel, writer.outPath, { runDir });
       if (!file) {
         console.warn(`[report] 断言截图文件缺失，跳过: ${rel}`);
+        delete a.screenshotId; // 清掉原始路径：既不随报告外泄，也不与 uuid 口径混用
         continue;
       }
-      const id = crypto.randomUUID();
+      let id;
+      try {
+        const buf = await fsp.readFile(file);
+        id = crypto.randomUUID();
+        await writer.appendScreenshot(id, buf);
+      } catch (e) {
+        console.warn(`[report] 断言截图读取/嵌入失败，跳过: ${rel}（${e.message}）`);
+        continue; // 不抛、不改 dump
+      }
+      // 读 + 写均成功后才改 dump
       dump.screenshots[id] = '';
       a.screenshotId = id;
-      const buf = await fsp.readFile(file);
-      await writer.appendScreenshot(id, buf);
     }
   }
   // 全文兜底：secret 值出现在任何字符串里都替换（不止本任务自己的 thought/param）
