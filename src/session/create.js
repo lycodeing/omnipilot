@@ -17,7 +17,6 @@ export function createRunContext({ device, recorder, store, opts = {} } = {}) {
       timeoutMs: 60_000,
       vlmLocate: false,
       freshLocate: false,
-      rollback: 'on',
       ...opts,
     },
     secretCalls: [],            // 每次 secret_get/sms_read 调用 push {tool, provider, key, stepIndex}（§9.1 强制 fresh 的依据）

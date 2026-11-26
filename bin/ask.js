@@ -120,14 +120,14 @@ const usage = `ask — 安卓场景测试 agent
   --device <serial>    adb 设备序列号（默认首个在线设备）
   --model-url/--model-key/--model-name/--model-family   覆盖 ASK_MODEL_* 环境变量
   --prompt <t> --prompt-file <f> --prompt-mode append|replace|none
-  --vlm-locate --yes --timeout <sec> --fresh-locate --json --quiet --pregrant
+  --vlm-locate         视觉定位兜底（run 默认启用；ask 需显式开启）
+  --yes --timeout <sec> --fresh-locate --json --quiet --pregrant
                       （--timeout：整 run 时间预算秒数，主循环/马拉松/重试各处生效；缺省不限）
   --allow-coords      放行坐标步骤（tap: { x, y }）。默认禁止把坐标写进用例（2026-09-24 裁定）；
                       用例顶层 allowCoords: true 等效，CLI 优先级更高
   --keep-images <n>   会话历史保留最近 n 张截图（默认 3；断言密集用例可设 2 省 token）
   --context-steps <n|all> 步骤上下文窗口：保留最近 n 步原文 + 整体描述（默认 3；all=全部保留；
                       优先级高于用例 YAML 顶层 context: 键）
-  --rollback <on|off> 网络档位改动收尾自动还原（默认 on）
   会话保留: --keep(默认) --fresh --continue --session <file> --keep-data（历史 flag，当前 no-op）
 `;
 
@@ -296,7 +296,6 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     timeoutMs: flags.timeout != null ? Number(flags.timeout) * 1000 : 0,
     vlmLocate: !!flags['vlm-locate'],
     freshLocate: !!flags['fresh-locate'],
-    rollback: flags.rollback || 'on',
   };
   const runDeadline = opts.timeoutMs > 0 ? Date.now() + opts.timeoutMs : 0;
 

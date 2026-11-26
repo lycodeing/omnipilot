@@ -8,7 +8,6 @@ import { createLocator, matchSelector, inScreen, matchNodeSelector as matchNode 
 
 import * as action from './action.js';
 import { Yadb, readTextAt } from './input.js';
-import { withLocateRetry, StepRollout } from './rollout.js';
 import * as state from './state.js';
 import * as net from './net-profile.js';
 import { screenSignature } from './png.js';
@@ -640,10 +639,6 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       } catch {
         return list.map(() => '');
       }
-    },
-    rollout: {
-      withRetry: (opts) => withLocateRetry({ device, ...opts }),
-      createStepRollout: (opts) => new StepRollout(device, opts),
     },
   };
 

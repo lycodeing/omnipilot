@@ -12,10 +12,6 @@ export async function recordNetMutation(ctx, device, to) {
   ctx.stateMutations.push({ kind: 'net', from: NET_NORMALIZE(rawFrom), to, rawFrom, at: Date.now() });
 }
 
-export function needsNetworkRestore(ctx) {
-  return Array.isArray(ctx?.stateMutations) && ctx.stateMutations.some((m) => m.kind === 'net');
-}
-
 // 还原到 run 开始前的档位：取**第一条** mutation 的 from（多次切网 2g→4g→off 时，
 // last.from 是最后一次切网前的档位而非原始档位，会导致设备被留在弱网档——评审 Critical 修复）
 export async function restoreNetwork(device, ctx) {

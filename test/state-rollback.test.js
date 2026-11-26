@@ -1,7 +1,7 @@
 // 状态回滚（§2.6）：网络档位改动的记录与还原
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordNetMutation, restoreNetwork, needsNetworkRestore } from '../src/state-mutations.js';
+import { recordNetMutation, restoreNetwork } from '../src/state-mutations.js';
 
 const mockDevice = (over = {}) => ({
   netStatus: async () => ({ profile: 'off' }),
@@ -18,12 +18,6 @@ test('recordNetMutation：切网前读 from 并归一化 unknown→off', async (
     { kind: 'net', from: 'off', to: '2g' },
   );
   assert.equal(ctx.stateMutations[0].rawFrom, 'unknown', '原始读数留证');
-});
-
-test('needsNetworkRestore：无切网记录 → false；有 → true', () => {
-  assert.equal(needsNetworkRestore({ stateMutations: [] }), false);
-  assert.equal(needsNetworkRestore({ stateMutations: [{ kind: 'net', from: 'off', to: '2g' }] }), true);
-  assert.equal(needsNetworkRestore({}), false);
 });
 
 test('restoreNetwork：还原到最初的档位（第一条 mutation 的 from），成功 → ok=true', async () => {
