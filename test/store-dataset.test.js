@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fork } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { openDataset } from '../src/store/dataset.js';
 
 function tmpDir(t, prefix) {
@@ -240,4 +242,35 @@ test('中间坏行也跳过：不影响前后好行', async (t) => {
   fs.writeFileSync(file, [lines[0], '{坏行', lines[1]].join('\n') + '\n');
   const rows = await ds.read('t');
   assert.equal(rows.length, 2, '坏行不应摧毁其余行');
+});
+
+test('跨进程并发 upsert：两进程同时写同一数据集，行零丢失', async (t) => {
+  const dir = tmpDir(t, 'ds-xproc-');
+  // 子进程脚本：预置一个共享键，随后每次 upsert 都带该共享键（命中 merged 分支 →
+  // 全量重写 tmp+rename）再加一行唯一键。纯新增走 append-only（O_APPEND 原子，
+  // 跨进程本就不丢），只有全量重写才会用陈旧快照覆盖别进程刚落盘的行——这才是
+  // 并行 run 丢行的真实成因，必须让锁覆盖到这条路径。
+  // import 路径用绝对路径指向项目 src/store/dataset.js，JSON.stringify 处理中文 worktree 路径。
+  const projStore = fileURLToPath(new URL('../src/store/dataset.js', import.meta.url));
+  const childScript = path.join(dir, 'writer.mjs');
+  fs.writeFileSync(childScript, `
+    import { openDataset } from ${JSON.stringify(projStore)};
+    const store = openDataset({ dataDir: ${JSON.stringify(dir)} });
+    const tag = process.argv[2];
+    for (let i = 0; i < 50; i++) {
+      await store.upsert('t', 'k', [
+        { k: '_shared', v: i },
+        { k: tag + '-' + i, v: i },
+      ]);
+    }
+  `);
+  const run = (tag) => new Promise((resolve, reject) => {
+    const c = fork(childScript, [tag], { stdio: 'ignore' });
+    c.on('exit', (code) => code === 0 ? resolve() : reject(new Error('child exit ' + code)));
+  });
+  await Promise.all([run('a'), run('b')]);
+  const store = openDataset({ dataDir: dir });
+  const rows = await store.read('t');
+  const unique = rows.filter((r) => r.k !== '_shared');
+  assert.equal(unique.length, 100, '两进程各 50 行零丢失');
 });

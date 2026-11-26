@@ -5,6 +5,7 @@
 // locate_cache.jsonl 也是普通数据集，行形状见 §14.2.1。
 
 import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { openSync, closeSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { applyQuery } from './query.js';
@@ -228,13 +229,71 @@ async function writeRowsAtomic(file, rows) {
 }
 
 // 进程内 per-file 串行锁：append（增量追加）与 upsert/clear（全量重写）都用"读快照→写"，
-// 并发交错时全量重写方会用陈旧快照覆盖增量落盘内容（实测：并发 upsert 合并值被静默丢弃）。
-// 锁粒度为文件路径；同进程内所有写操作排队，跨进程仍靠 tmp+rename 原子性与内容 _id 去重兜底。
+// 同进程内所有写操作排队，避免陈旧快照覆盖并发写（实测：并发 upsert 合并值被静默丢弃）。
+// 锁粒度为文件路径。跨进程则靠下面的 O_EXCL 锁文件互斥：多进程同时跑 run 时，
+// 全量重写（merged 分支 tmp+rename）会用陈旧快照覆盖别进程刚落盘的行，导致静默丢行。
 const FILE_LOCKS = new Map(); // file → 末尾 Promise（链式排队）
+
+// 跨进程锁：锁文件 <file>.lock，O_EXCL('wx') 原子创建，谁先创建谁持锁。
+// 锁内容 {pid, ts}：属主进程已死且超 stale 时限则自动清理（防死进程遗留锁永久阻塞）。
+// store 层不依赖 cli 层，故内联 pid 存活判定（process.kill(pid, 0)）。
+const XPROC_STALE_MS = 10_000;
+const XPROC_RETRY_MS = 50;
+const XPROC_RETRIES = 40; // 2s 上限
+
+function pidAliveLocal(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+async function acquireCrossProcessLock(file) {
+  const lockPath = `${file}.lock`;
+  for (let i = 0; i < XPROC_RETRIES; i++) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      try { writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() })); }
+      finally { closeSync(fd); }
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // 死进程锁清理
+      try {
+        const rec = JSON.parse(readFileSync(lockPath, 'utf8'));
+        if (rec && Number.isFinite(rec.pid) && !pidAliveLocal(rec.pid) && Date.now() - rec.ts > XPROC_STALE_MS) {
+          rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch { /* 损坏锁：按 mtime 判定 */
+        try {
+          if (Date.now() - statSync(lockPath).mtimeMs > XPROC_STALE_MS) {
+            rmSync(lockPath, { force: true });
+            continue;
+          }
+        } catch { /* ignore */ }
+      }
+      await new Promise((r) => setTimeout(r, XPROC_RETRY_MS));
+    }
+  }
+  throw new Error(`数据集写锁获取超时（2s）：${lockPath}`);
+}
+
+function releaseCrossProcessLock(file) {
+  const lockPath = `${file}.lock`;
+  try {
+    const rec = JSON.parse(readFileSync(lockPath, 'utf8'));
+    if (rec && rec.pid === process.pid) rmSync(lockPath, { force: true });
+  } catch { /* ignore */ }
+}
 
 function withFileLock(file, fn) {
   const prev = FILE_LOCKS.get(file) ?? Promise.resolve();
-  const run = prev.then(fn, fn); // 前序失败不阻断后续
+  // 跨进程锁包在进程内链式锁内层：同进程排队 + 跨进程互斥。
+  // 前序失败不阻断后续（prev.then(fn, fn) 语义保留）。
+  const locked = async () => {
+    await acquireCrossProcessLock(file);
+    try { return await fn(); }
+    finally { releaseCrossProcessLock(file); }
+  };
+  const run = prev.then(locked, locked);
   // 链尾保存"已 settle"的 Promise，避免链无限增长持有 rejection
   FILE_LOCKS.set(file, run.then(() => {}, () => {}));
   return run;
@@ -369,6 +428,7 @@ export function openDataset({ dataDir = 'datasets' } = {}) {
     },
     clear: async (name) => {
       assertName(name);
+      await ensureDir(); // 跨进程锁文件需落在已存在的目录（保持 clear 幂等不抛）
       const file = path.join(dataDir, `${name}.jsonl`);
       // 删除同样进锁：否则并发 append 可能在 rm 之后又把旧数据追加回已清空的数据集
       await withFileLock(file, async () => {
