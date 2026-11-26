@@ -27,7 +27,10 @@ export function buildEnvTools(ctx) {
       try {
         const { recordNetMutation } = await import('../state-mutations.js');
         await recordNetMutation(ctx, device, params.profile);
-      } catch { /* 记账失败不阻断切网 */ }
+      } catch (e) {
+        console.warn(`[warn] 切网记账失败（${e.message}）：设备可能无法自动还原档位`);
+        try { ctx.recorder?.addRollback?.({ stepIndex: ctx.currentStepIndex ?? null, reason: `切网记账失败：${e.message}`, recovered: false }); } catch { /* ignore */ }
+      }
       const r = await device.netSetProfile(params.profile);
       // 记账（§14.1 networkTimeline，at = 相对 run 起点的 ms）
       try {

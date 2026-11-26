@@ -17,14 +17,14 @@ import { createUia2 } from './uia2.js';
 import { createTapEachRow } from './tap-each-row.js';
 import { createDumpChannels } from './dump-channels.js';
 import { createSizeProbe } from './size-probe.js';
-import { assertSafePackage, assertSafeActivity, parsePackageVersion } from './package-guard.js';
+import { assertSafePackage, assertSafeActivity, assertSafePropName, parsePackageVersion } from './package-guard.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
 // probeFile：模型家族坐标探测缓存路径（默认 cwd/.ask/family-probe.json；工作区模式下由 CLI 传全局路径）
 export async function createDeviceWithExecutor({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts = {}, exec, waitReady = null, probeFile = null, uia2: uia2Inject = null } = {}) {
   const adb = new Adb({ serial, adbPath, timeouts, exec });
-  await adb.ensureConnected().catch(() => {}); // 首连失败不阻塞，命令期仍有重连机会
+  await adb.ensureConnected().catch((e) => { console.warn(`[warn] 设备首连失败（${e.message}），命令期仍有重连机会`); });
 
   // 设备就绪等待（冷启动窗口）：默认在真实设备上启用；测试注入 exec 时默认跳过（避免等 60s）
   const shouldWait = waitReady === null ? !exec : Boolean(waitReady);
@@ -610,18 +610,23 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // preflight 用（§2.7）：读包信息 / 授予权限；失败返回 ''/ok:false，不抛错
     async dumpsysPackage(pkg) {
       try {
+        assertSafePackage(pkg); // 非法包名抛错 → catch 返回 ''，调用方 pregrant 拿不到请求权限、不会 grant
         return await adb.shell(`dumpsys package ${String(pkg).trim()}`, { timeoutMs: adb.timeouts.command });
       } catch { return ''; }
     },
     // 目标 App 的 versionName（plan-cache 跨版本失效键用）：复用 dumpsysPackage，
     // 再由设备层纯函数解析；失败/无 versionName 一律返回 null，调用方按 'unknown' 处理。
-    // 注：dumpsysPackage 当前无包名白名单，白名单治理留待 Task 18，本 Task 不动。
+    // 注：dumpsysPackage 已在入口做包名白名单，packageVersion 复用即自动受益。
     async packageVersion(pkg) {
       const text = await this.dumpsysPackage(pkg);
       return parsePackageVersion(text);
     },
     async pmGrant(permission, pkg) {
       try {
+        assertSafePackage(pkg);
+        if (!/^android\.permission\.[A-Z_]+$/.test(String(permission ?? '').trim())) {
+          throw new Error(`权限名非法: "${permission}"（只允许 android.permission.* 大写权限）`);
+        }
         const { stdout, stderr } = await adb.shell(`pm grant ${pkg} ${permission}`, { timeoutMs: adb.timeouts.command, withStderr: true });
         const bad = /error|exception|not found|unknown|inaccessible/i.test(`${stdout}\n${stderr}`);
         return { ok: !bad, error: bad ? `${stdout}\n${stderr}`.trim().slice(0, 200) : null };
@@ -632,6 +637,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     // getprop 读取（L2 设备事实采集用，bin/ask.js）：失败返回 '' 不抛错，调用方自行降级
     async getProp(name) {
       try {
+        assertSafePropName(name);
         const out = await adb.shell(`getprop ${String(name).trim()}`, { timeoutMs: adb.timeouts.command });
         return String(out).trim();
       } catch {
@@ -649,6 +655,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       if (!list.length) return [];
       const SEP = '__ASK_SEP__';
       try {
+        list.forEach(assertSafePropName); // 非法属性名抛错 → catch 返回空数组，绝不拼进 shell
         const out = await adb.shell(list.map((n) => `getprop ${n}`).join(`; echo ${SEP}; `), { timeoutMs: adb.timeouts.command });
         // 末尾多一个分隔符，便于切分最后一段
         const parts = String(out).split(SEP);

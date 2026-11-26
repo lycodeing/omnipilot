@@ -200,7 +200,10 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
         try {
           const { recordNetMutation } = await import('../state-mutations.js');
           await recordNetMutation(ctx, device, step.profile);
-        } catch { /* 记账失败不阻断切网 */ }
+        } catch (e) {
+          console.warn(`[warn] 切网记账失败（${e.message}）：设备可能无法自动还原档位`);
+          try { recorder?.addRollback?.({ stepIndex: ctx.currentStepIndex ?? null, reason: `切网记账失败：${e.message}`, recovered: false }); } catch { /* ignore */ }
+        }
         const nr = await device.netSetProfile(step.profile);
         recorder.addNetworkEvent({ at: Date.now() - ctx.runStartMs, profile: step.profile });
         handle.end({ result: nr.ok ? 'ok' : 'failed', error: nr.ok ? null : (nr.error || 'net 命令失败') });

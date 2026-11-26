@@ -27,6 +27,17 @@ export function assertSafeActivity(activity) {
   return a;
 }
 
+// getprop 属性名白名单：属性名同样会拼进 adb shell 命令串（getProps 还用 `;` 串联），
+// 未校验时可携带 `; id` / `$(...)` / `|` 等元字符形成命令注入。
+// Android 属性名形如 ro.build.version.release：首字符字母/下划线，其后字母/数字/下划线与点。
+const PROP_RE = /^[A-Za-z_][\w.]*$/;
+
+export function assertSafePropName(name) {
+  const n = String(name ?? '').trim();
+  if (!PROP_RE.test(n)) throw new Error(`属性名非法: "${name}"（只允许字母/数字/下划线与点）`);
+  return n;
+}
+
 // 从 `dumpsys package <pkg>` 输出提取 versionName（plan-cache 跨版本失效用）。
 // 纯函数放设备层，避免 device → cli 的反向依赖；cli/pregrant.js re-export 供既有 import 路径使用。
 export function parsePackageVersion(dumpsysText) {

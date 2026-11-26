@@ -379,10 +379,16 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
         }
         if (pkg) {
           const { pregrantPackage } = await import('../src/cli/pregrant.js');
-          await device.terminate(pkg).catch(() => {});   // 先在停止态（grant 会杀运行进程）
-          const pg = await pregrantPackage(device, pkg);
-          if (pg.granted.length) console.warn(`[preflight] 预授权 ${pg.granted.length} 项（已先停止 App）：${pg.granted.join(', ')}`);
-          else if (pg.failed.length) console.warn(`[preflight] 预授权 ${pg.failed.length} 项失败（不阻断）`);
+          // terminate 内含 assertSafePackage：非法包名抛错时不再吞掉后继续 grant，
+          // 显式告警并跳过整段预授权（否则会对着一个未停止/非法的包执行 pm grant）。
+          let terminated = true;
+          try { await device.terminate(pkg); }
+          catch (e) { console.warn(`[pregrant] 终止 ${pkg} 失败（${e.message}），跳过预授权`); terminated = false; }
+          if (terminated) {
+            const pg = await pregrantPackage(device, pkg);
+            if (pg.granted.length) console.warn(`[preflight] 预授权 ${pg.granted.length} 项（已先停止 App）：${pg.granted.join(', ')}`);
+            else if (pg.failed.length) console.warn(`[preflight] 预授权 ${pg.failed.length} 项失败（不阻断）`);
+          }
         }
       } catch { /* 预授权失败不阻断 */ }
     }

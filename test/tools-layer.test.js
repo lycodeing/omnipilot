@@ -508,6 +508,29 @@ test('net_profile 工具切网后 ctx.stateMutations 有记录（§2.6）', asyn
   assert.equal(ctx.stateMutations[0].kind, 'net');
 });
 
+test('net_profile：记账失败（netStatus 抛错）→ 告警 + addRollback，不静默', async () => {
+  const rollbacks = [];
+  const warns = [];
+  const device = makeFakeDevice();
+  // 同步抛错：recordNetMutation 内 `netStatus().catch(...)` 只吞异步 reject，
+  // 同步抛错才能让记账失败真正冒泡到消费点的 catch，触发告警与 addRollback
+  device.netStatus = () => { throw new Error('net status boom'); };
+  const recorder = { ...makeFakeRecorder(), addRollback: (r) => rollbacks.push(r) };
+  const ctx = makeCtx({ device, recorder });
+  ctx.stateMutations = [];
+  const origWarn = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    const tool = buildTools(ctx).find((t) => t.name === 'net_profile');
+    await tool.execute('id1', { profile: '2g' }, undefined, undefined, {});
+  } finally {
+    console.warn = origWarn;
+  }
+  assert.equal(rollbacks.length, 1, '记账失败应记 rollback');
+  assert.match(rollbacks[0].reason, /记账|netStatus/);
+  assert.ok(warns.some((m) => /记账/.test(m)), '记账失败应显式告警，不静默');
+});
+
 test('tap 无弹窗时不误触授权按钮（弹窗检查零副作用）', async () => {
   const store = makeFakeStore();
   const ctx = makeCtx({ store });

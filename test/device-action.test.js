@@ -122,3 +122,11 @@ test('assertSafeActivity：合法 Activity（含 $InnerClass）放行，元字�
   assert.equal(assertSafeActivity('com.x$Inner'), 'com.x$Inner');
   assert.throws(() => assertSafeActivity('com.x; id'), /Activity 名非法/);
 });
+
+test('assertSafePropName：合法属性名放行，shell 元字符拒绝', async () => {
+  const { assertSafePropName } = await import('../src/device/package-guard.js');
+  assert.equal(assertSafePropName('ro.build.version.release'), 'ro.build.version.release');
+  for (const bad of ['ro.x; id', 'ro.x$(id)', 'ro.x|cat', '']) {
+    assert.throws(() => assertSafePropName(bad), /属性名非法/);
+  }
+});
