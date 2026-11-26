@@ -3,6 +3,7 @@
 
 import { createAgentSession, DefaultResourceLoader, getAgentDir } from '@earendil-works/pi-coding-agent';
 import { buildTools } from '../tools/index.js';
+import { resolvePlatform } from '../platform/index.js';
 
 // 运行上下文（§1.2，逐字遵守的字段：device/recorder/store/vars/opts/secretCalls；
 // 其余为会话层内部扩展：mcp/confirm/chat/vlm/runStartMs/currentStepIndex/assertions）
@@ -11,6 +12,7 @@ export function createRunContext({ device, recorder, store, opts = {} } = {}) {
     device,
     recorder,
     store,
+    platform: resolvePlatform(opts.platform ?? 'android'), // 平台包注入（缺省 android，工具描述示例等消费）
     vars: new Map(),            // data_extract 写入，${var} 执行期插值（§7.5）
     opts: {
       yes: false,

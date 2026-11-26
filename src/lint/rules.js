@@ -1,6 +1,15 @@
 // lint 规则集（§13.4）：行级正则实现，error 阻断 / warn 提示
 // 行内豁免：# ask-lint: allow <rule-id> 理由（须有理由，否则豁免无效）
 
+import { resolvePlatform } from '../platform/index.js';
+
+// 平台片段表从平台包读取（模块加载时解析，lint 当前只服务 android 用例）；
+// 后续跨平台 lint 按用例 platform 键动态选平台包，规则本身保持平台无关。
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const PLATFORM_FRAGMENTS_RE = new RegExp(
+  `^\\s*(${resolvePlatform('android').lintPlatformFragments.map(escapeRe).join('|')})`,
+);
+
 // 步骤区起始行下标（steps:/flow:）。parser 只认 steps 之前的顶层键，
 // lint 的顶层键判定必须与之一致，否则出现「lint 放行、parser 拒绝」。
 function stepsStartIndex(allLines) {
@@ -44,8 +53,8 @@ const RULES = [
   {
     id: 'platform-fragment',
     level: 'error',
-    test: (line) => /^\s*(android:|tasks:)/.test(line),
-    message: '顶层出现 android:/tasks: 平台片段模式（平台拼装冲突）',
+    test: (line) => PLATFORM_FRAGMENTS_RE.test(line),
+    message: '顶层出现平台片段模式（平台拼装冲突）',
   },
   {
     id: 'undefined-var',

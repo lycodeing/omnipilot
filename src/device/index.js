@@ -625,7 +625,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     async pmGrant(permission, pkg) {
       try {
         assertSafePackage(pkg);
-        if (!/^android\.permission\.[A-Z_]+$/.test(String(permission ?? '').trim())) {
+        if (!/^android\.permission\.[A-Z0-9_]+$/.test(String(permission ?? '').trim())) {
           throw new Error(`权限名非法: "${permission}"（只允许 android.permission.* 大写权限）`);
         }
         const { stdout, stderr } = await adb.shell(`pm grant ${pkg} ${permission}`, { timeoutMs: adb.timeouts.command, withStderr: true });

@@ -117,7 +117,7 @@ async function buildVlmLocate(ctx, modelCfg) {
     return { raw, family: modelCfg.family };
   };
 }
-const usage = `ask — 安卓场景测试 agent
+const usage = `ask — 跨端场景测试 agent（当前落地：Android）
 
 用法: ask <command> [args] [flags]
 

@@ -10,24 +10,20 @@
 // 新增 locale = 加一个词表键；新增弹窗族 = 包集合加一项；引擎逻辑零改。
 // 自定义 locale 可用环境变量 ASK_POPUP_LOCALE 强制（CI/测试/多语言真机）。
 import { flattenNodes } from './uitree.js';
+import { resolvePlatform } from '../platform/index.js';
+
+// 弹窗族包名表收敛到平台包（纯数据，device → platform 单向依赖，不构成循环）。
+const platform = resolvePlatform('android');
 
 // 已知会弹框的系统包（Android 通用）
-export const SYSTEM_DIALOG_PACKAGES = new Set([
-  'com.google.android.permissioncontroller',
-  'com.android.permissioncontroller',
-  'com.google.android.packageinstaller',
-  'com.android.packageinstaller',
-  'com.android.systemui',
-]);
+export const SYSTEM_DIALOG_PACKAGES = new Set(platform.systemDialogPackages);
 
 // 常驻系统窗口包：这些包**始终**有窗口在屏（状态栏/导航栏），App 前台时也会
 // 作为 dump 的根出现。它们出现在根列表里**不能**判定"前台是系统弹窗"——
 // 否则 App 正常前台时会被误判为弹窗 → dismissDialog 兜底盲按 back 键
 // （popup.js 的 blind-back 分支）→ 把目标 App 顶出去，用例失败。
 // 真正的权限/安装弹窗由 permissioncontroller / packageinstaller 承担。
-export const RESIDENT_SYSTEM_PACKAGES = new Set([
-  'com.android.systemui',
-]);
+export const RESIDENT_SYSTEM_PACKAGES = new Set(platform.residentSystemPackages);
 
 // 该根是否代表"真正的系统弹窗"（排除常驻窗口包）
 export function isDialogRootPkg(pkg) {

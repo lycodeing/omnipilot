@@ -5,31 +5,31 @@
 // 从 bin/ask.js 抽出以便单测（不依赖真机：device 门面可注入 mock）。
 
 import { NET_PROFILES } from '../device/net-profile.js';
+import { resolvePlatform } from '../platform/index.js';
 
 // 静态事实（分辨率/型号/系统版本）按 serial 进程内缓存：多用例 run 中这些值不变，
 // 每 case 重采是纯浪费（旧实现每 case 4 次串行 adb）。netProfile 不缓存——
 // 档位可在 run 中被 net 步骤改动，自检需要每 case 的新鲜值。
 const STATIC_FACTS_CACHE = new Map();
 
-export async function collectDeviceFacts(device, { serial = null } = {}) {
+export async function collectDeviceFacts(device, { serial = null, platform = null } = {}) {
+  const p = platform ?? resolvePlatform('android');
   let stat = serial ? STATIC_FACTS_CACHE.get(serial) : null;
   if (!stat) {
-    stat = { screenSize: null, androidVersion: null, deviceModel: null };
-    // 分辨率与 getprop 并行（旧实现 4 次串行 adb 调用；getProps 把两个属性合并为一条 shell）
+    stat = { screenSize: null };
+    for (const f of p.factsProps) stat[f.key] = null;
+    // 分辨率与 getprop 并行（旧实现 4 次串行 adb 调用；getProps 把多个属性合并为一条 shell）
+    const propsFor = () => p.factsProps.map((f) => (typeof device.getProp === 'function' ? device.getProp(f.prop) : ''));
     const [sizeRes, props] = await Promise.all([
       device.screenSize().catch(() => null),
       (typeof device.getProps === 'function'
-        ? device.getProps(['ro.build.version.release', 'ro.product.model'])
-        : Promise.all([
-          typeof device.getProp === 'function' ? device.getProp('ro.build.version.release') : '',
-          typeof device.getProp === 'function' ? device.getProp('ro.product.model') : '',
-        ])
-      ).catch(() => ['', '']),
+        ? device.getProps(p.factsProps.map((f) => f.prop))
+        : Promise.all(propsFor())
+      ).catch(() => p.factsProps.map(() => '')),
     ]);
     if (sizeRes && Number(sizeRes.w) > 0 && Number(sizeRes.h) > 0) stat.screenSize = { w: Number(sizeRes.w), h: Number(sizeRes.h) };
-    const [ver, model] = props || [];
-    if (ver) stat.androidVersion = ver;
-    if (model) stat.deviceModel = model;
+    const values = props || [];
+    p.factsProps.forEach((f, i) => { if (values[i]) stat[f.key] = values[i]; });
     if (serial) STATIC_FACTS_CACHE.set(serial, stat);
   }
 
@@ -40,6 +40,6 @@ export async function collectDeviceFacts(device, { serial = null } = {}) {
     facts.netProfile = st?.profile ?? null; // 供启动自检复用，避免重复 adb 往返
   } catch { /* 降级：net 支持未探测 */ }
 
-  const collected = facts.screenSize || facts.androidVersion || facts.deviceModel || facts.netSupported !== null;
+  const collected = facts.screenSize || p.factsKeys.some((k) => facts[k]) || facts.netSupported !== null;
   return collected ? facts : null; // 全部失败 → 返回 null（不传），assemblePrompt 走缺省降级
 }

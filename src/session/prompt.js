@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolvePlatform } from '../platform/index.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = path.resolve(MODULE_DIR, '../..');
@@ -75,7 +76,10 @@ export function assemblePrompt({
   projectRoot = PROJECT_ROOT,
   budget = PROMPT_BUDGET,
   facts = null,
+  platform = null,
 } = {}) {
+  const p = platform ?? resolvePlatform('android');
+  const l2Name = p.name === 'android' ? 'L2-android' : `L2-${p.name}`;
   const warnings = [];
   const layers = [];
 
@@ -88,12 +92,12 @@ export function assemblePrompt({
     else warnings.push('prompts/system.md 不存在，L1 缺失');
   }
 
-  let l2 = readIfExists(path.join(projectRoot, 'prompts/system.android.md'));
+  let l2 = readIfExists(path.join(projectRoot, p.l2PromptFile));
   if (l2) {
     l2 = fillDeviceFacts(l2, facts, warnings);
-    layers.push({ name: 'L2-android', content: l2 });
+    layers.push({ name: l2Name, content: l2 });
   } else {
-    warnings.push('prompts/system.android.md 不存在，L2 缺失');
+    warnings.push(`${p.l2PromptFile} 不存在，L2 缺失`);
   }
 
   let user = prompt || '';
@@ -125,7 +129,7 @@ export function assemblePrompt({
       }
     }
     if (remaining > 0) {
-      const l2 = layers.find((l) => l.name === 'L2-android');
+      const l2 = layers.find((l) => l.name === l2Name);
       if (l2) {
         const cut = Math.min(remaining, l2.content.length);
         l2.content = trimMiddle(l2.content, l2.content.length - cut, '安卓段');

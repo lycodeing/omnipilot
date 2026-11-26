@@ -45,6 +45,13 @@ describe('lint rules', () => {
     assert.ok(hits.every((i) => i.level === 'error'));
   });
 
+  // Task 22：平台片段规则平台无关化，ios:/web: 也命中（android:/tasks: 旧样本保持）
+  test('E2 platform-fragment：顶层 android:/ios:/web:/tasks: 均拦', () => {
+    const r = lintCaseText('steps:\n  - ai: x\nandroid: 1\nios: 1\nweb: 1\ntasks: []');
+    const hits = r.filter((i) => i.rule === 'platform-fragment');
+    assert.equal(hits.length, 4);
+  });
+
   // —— error 3：引用未定义变量 ——
   test('E3 undefined-var：未定义 ${var} 报错；定义过的放行', () => {
     const bad = lintCaseText('steps:\n  - ai: 输入 ${password}');

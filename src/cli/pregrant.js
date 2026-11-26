@@ -1,6 +1,8 @@
 // run 前预授权（§2.7.2 第一层）：把"会弹的权限框"提前消灭。
 // 只处理 android.permission.* 运行时权限（第三方 launcher 的自定义权限不碰）。
 
+import { resolvePlatform } from '../platform/index.js';
+
 // 版本解析本体在设备层 package-guard.js（纯函数，避免 device → cli 反向依赖）；
 // re-export 保持测试既有的 `../src/cli/pregrant.js` import 路径可用。
 export { parsePackageVersion } from '../device/package-guard.js';
@@ -16,22 +18,8 @@ export function parseRequestedPermissions(dumpsysText) {
 }
 
 // 常见可 grant 的运行时权限白名单（避免对不可 grant 的反复尝试）
-export const GRANTABLE = new Set([
-  'android.permission.CAMERA',
-  'android.permission.RECORD_AUDIO',
-  'android.permission.READ_EXTERNAL_STORAGE',
-  'android.permission.WRITE_EXTERNAL_STORAGE',
-  'android.permission.READ_MEDIA_IMAGES',
-  'android.permission.READ_MEDIA_VIDEO',
-  'android.permission.READ_MEDIA_AUDIO',
-  'android.permission.POST_NOTIFICATIONS',
-  'android.permission.ACCESS_FINE_LOCATION',
-  'android.permission.ACCESS_COARSE_LOCATION',
-  'android.permission.READ_PHONE_STATE',
-  'android.permission.READ_CONTACTS',
-  'android.permission.READ_SMS',
-  'android.permission.CALL_PHONE',
-]);
+// 口径收敛到平台包：新增可 grant 权限只改 androidPlatform.grantablePermissions。
+export const GRANTABLE = new Set(resolvePlatform('android').grantablePermissions);
 
 // 对目标包预授权；返回 { granted: string[], failed: [{perm, error}] }
 export async function pregrantPackage(device, pkg) {

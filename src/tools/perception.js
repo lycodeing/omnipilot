@@ -159,7 +159,7 @@ export function buildPerceptionTools(ctx) {
   const read = defineTool({
     name: 'read',
     label: 'read',
-    description: '从 UI 树读文本/数字（零模型调用）。selector 形如 text=xx | index=0 | class=android.widget.TextView#index=1 | resourceId=...',
+    description: `从 UI 树读文本/数字（零模型调用）。selector 形如 text=xx | index=0 | ${ctx.platform?.toolDescriptionExamples?.read ?? 'class=android.widget.TextView#index=1'} | resourceId=...`,
     parameters: Type.Object({
       selector: Type.Optional(Type.String()),
       selectors: Type.Optional(Type.Array(Type.String(), { description: '一次读多个字段' })),
