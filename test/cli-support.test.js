@@ -252,6 +252,18 @@ test('fail 路径释放 shared 读锁：heldSharedLock 登记 + fail 内 release
   assert.ok(fBody.includes("releaseLock(heldSharedLock.root, heldSharedLock.serial, { mode: 'shared' })"),
     'fail 内须精确调用 releaseLock(..., { mode: \'shared\' }) 释放 shared 读锁');
   assert.ok(fBody.includes('heldSharedLock = null'), 'fail 释放后须清空 heldSharedLock');
+  // 5) gracefulExit 的 finally：process.exit(130) 前同样须释放 heldSharedLock（cmdAsk 不登记 activeRuns，
+  //    信号退出也绕过 cmdAsk finally，与 fail 同源的残留点）。精确串在 fail + gracefulExit 至少 2 处。
+  const releaseStr = "releaseLock(heldSharedLock.root, heldSharedLock.serial, { mode: 'shared' })";
+  const gAt = src.indexOf('async function gracefulExit');
+  const gEnd = src.indexOf('process.once', gAt);
+  const gBody = src.slice(gAt, gEnd);
+  assert.ok(gBody.includes('if (heldSharedLock)'), 'gracefulExit 内须有 heldSharedLock 守卫');
+  assert.ok(gBody.includes(releaseStr), 'gracefulExit finally 须释放 heldSharedLock 的 shared 读锁');
+  assert.ok(gBody.indexOf(releaseStr) < gBody.indexOf('process.exit(130)'),
+    'gracefulExit 释放须在 process.exit(130) 之前');
+  assert.ok(src.split(releaseStr).length - 1 >= 2,
+    '精确释放串须在 fail 与 gracefulExit 各出现一处（≥2 处）');
 });
 
 // —— 设备事实采集（mock 门面，无真机） ——

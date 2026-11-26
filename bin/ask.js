@@ -53,6 +53,11 @@ async function gracefulExit(sig) {
     }
     try { await sharedBridgeRef?.close?.(); } catch { /* ignore */ }
   } finally {
+    // cmdAsk 不登记 activeRuns，信号退出时需单独释放其 shared 读锁，否则残留死 pid 锁文件。
+    if (heldSharedLock) {
+      try { releaseLock(heldSharedLock.root, heldSharedLock.serial, { mode: 'shared' }); } catch { /* ignore */ }
+      heldSharedLock = null;
+    }
     process.exit(130);
   }
 }
