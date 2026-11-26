@@ -20,7 +20,7 @@ function ensureLocateCache(ctx) {
   }
 }
 
-// 契约工具（25 个，§10 清单）：模型工具面 = 契约工具面。
+// 契约工具（26 个，§10 清单）：模型工具面 = 契约工具面。
 // 引擎专用工具（point_tap，坐标点击）**不在此列**——它只服务 allowCoords 用例的引擎直执行步，
 // 注册给模型等于把"禁止像素坐标"（2026-09-24 裁定）在模型侧作废。见 buildEngineTools。
 export function buildTools(ctx) {
@@ -43,7 +43,7 @@ export function buildEngineTools(ctx) {
     .map((t) => withRecording(t, ctx));
 }
 
-// §10 工具清单（25 个：感知5 + 操作9 + 环境6 + 数据扩展5；操作含 tap_each_row 逐行批量点击）
+// §10 工具清单（26 个：感知5 + 操作9 + 环境6 + 数据扩展6；操作含 tap_each_row 逐行批量点击）
 export const EXPECTED_TOOLS = [
   // 感知
   'screen', 'uitree', 'locate', 'screen_diff', 'read',
@@ -52,7 +52,7 @@ export const EXPECTED_TOOLS = [
   // 环境
   'net_profile', 'net_status', 'wait_idle', 'wait_element', 'assert_no_crash', 'ui_dump',
   // 数据与扩展
-  'data_extract', 'data_query', 'data_store', 'secret_get', 'sms_read',
+  'data_extract', 'data_query', 'data_store', 'secret_get', 'sms_read', 'test_account',
 ];
 
 // 需要留取证截图的工具：写操作留"动作后截图"；locate 留"定位时截图"——

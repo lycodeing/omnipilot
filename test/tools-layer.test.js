@@ -133,7 +133,7 @@ describe('tools registry', () => {
     for (const name of EXPECTED_TOOLS) {
       assert.ok(names.has(name), `缺少工具: ${name}`);
     }
-    assert.equal(EXPECTED_TOOLS.length, 25, '感知5+操作9+环境6+数据扩展5');
+    assert.equal(EXPECTED_TOOLS.length, 26, '感知5+操作9+环境6+数据扩展6');
   });
 
   test('每个工具都有 name/label/description/parameters/execute', () => {
@@ -304,6 +304,25 @@ describe('data tools', () => {
     const body = getContent(r);
     assert.equal(body.ok, false);
     assert.equal(body.code, 'SECRET_UNAVAILABLE');
+  });
+
+  test('test_account：读 ASK_TEST_ACCOUNTS，非密级不走确认闸', async () => {
+    const old = process.env.ASK_TEST_ACCOUNTS;
+    process.env.ASK_TEST_ACCOUNTS = JSON.stringify({ juejin: { phone: '13800000000' } });
+    try {
+      let confirmCalls = 0;
+      const ctx = makeCtx({ opts: { yes: false }, confirm: async () => { confirmCalls++; return false; } });
+      const tool = buildTools(ctx).find((t) => t.name === 'test_account');
+      assert.ok(tool, 'test_account 应注册');
+      const r = await tool.execute('id1', { key: 'juejin' }, undefined, undefined, {});
+      const body = getContent(r);
+      assert.equal(body.ok, true);
+      assert.equal(body.accounts.phone, '13800000000');
+      assert.equal(confirmCalls, 0, '非密级不走确认闸');
+      assert.equal(ctx.secretCalls.length, 0);
+    } finally {
+      if (old === undefined) delete process.env.ASK_TEST_ACCOUNTS; else process.env.ASK_TEST_ACCOUNTS = old;
+    }
   });
 });
 

@@ -1,8 +1,10 @@
 // query.js 纯函数测试：where 各操作符、&& 组合、orderBy、limit、select
+// 含 diffByRun（data diff 取最近两个 run，见 src/store/diff.js）。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyQuery, matchesWhere } from '../src/store/query.js';
+import { diffByRun } from '../src/store/diff.js';
 
 const rows = [
   { _id: 'a1', n: 1, name: '春游', d: '2025-09-16', flag: true },
@@ -98,4 +100,18 @@ test('不修改入参数组', () => {
 test('嵌套字段路径可用', () => {
   const nested = [{ meta: { step: 1 }, v: 'x' }, { meta: { step: 2 }, v: 'y' }];
   assert.deepEqual(applyQuery(nested, { where: 'meta.step=2' }).map((r) => r.v), ['y']);
+});
+
+// —— data diff 语义：按 _run 分组取最近两个 distinct run ——
+test('diffByRun：取最近两个 distinct run 对比', () => {
+  const rows = [
+    { _run: 'r1', _ts: 100, v: 'old' },
+    { _run: 'r2', _ts: 200, v: 'mid' },
+    { _run: 'r3', _ts: 300, v: 'new' },
+  ];
+  const d = diffByRun(rows);
+  assert.equal(d.lastRun, 'r3');
+  assert.equal(d.currentRows, 1);
+  assert.equal(d.previousRows, 1);
+  assert.equal(d.previous[0].v, 'mid');
 });

@@ -37,6 +37,7 @@ export const ICON_CATEGORY = {
   data_store: 'extract',
   secret_get: 'extract',
   sms_read: 'extract',
+  test_account: 'extract',
   net: 'extract',
   net_profile: 'extract',
   net_status: 'extract',

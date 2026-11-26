@@ -18,6 +18,7 @@ import { createTapEachRow } from './tap-each-row.js';
 import { createDumpChannels } from './dump-channels.js';
 import { createSizeProbe } from './size-probe.js';
 import { assertSafePackage, assertSafeActivity, assertSafePropName, parsePackageVersion } from './package-guard.js';
+import * as sms from './sms.js';
 
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
@@ -663,6 +664,11 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       } catch {
         return list.map(() => '');
       }
+    },
+    // 短信读取（§19.7）：content://sms/inbox 走固定串命令，contains/limit 过滤在结果侧做，
+    // 绝不把用户输入拼进 adb shell。失败（含无权限）以结构化 { ok:false, error } 返回。
+    async readSms(params) {
+      return sms.readSms(adb, params);
     },
   };
 

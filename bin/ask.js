@@ -16,6 +16,7 @@ import { runCaseLoop } from '../src/session/run-loop.js';
 import { lastAssistantText } from '../src/session/run-loop-helpers.js';
 import { createPlanCache } from '../src/session/plan-cache.js';
 import { resolveWorkspace, ensureWorkspace } from '../src/cli/workspace.js';
+import { diffByRun } from '../src/store/diff.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(MODULE_DIR, '..');
@@ -676,10 +677,9 @@ async function cmdData({ positional, flags }) {
   }
   if (sub === 'diff') {
     const rows = await store.read(name);
-    const lastRun = rows.length ? rows[rows.length - 1]._run : null;
-    const prev = rows.filter((r) => r._run !== lastRun);
-    const cur = rows.filter((r) => r._run === lastRun);
-    const summary = { dataset: name, lastRun, currentRows: cur.length, previousRows: prev.length, current: cur.slice(0, 5), previous: prev.slice(-5) };
+    // 按 _run 分组取最近两个 distinct run：cur=最近 run，prev=次近 run。
+    // 旧实现 prev 取"所有非 lastRun 行"会把多次 run 混在一起，语义不是"与上一次 run 对比"。
+    const summary = { dataset: name, ...diffByRun(rows) };
     out(flags, summary, JSON.stringify(summary, null, 2));
     return 0;
   }

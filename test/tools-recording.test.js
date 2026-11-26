@@ -53,7 +53,7 @@ function toolOf(tools, name) {
   return t;
 }
 
-test('包装后 23 个契约工具名齐全且 execute 可调用', () => {
+test('包装后 26 个契约工具名齐全且 execute 可调用', () => {
   const ctx = createRunContext({ device: fakeDevice(), recorder: null, store: null, opts: { yes: true } });
   const tools = buildTools(ctx);
   assert.equal(tools.length, EXPECTED_TOOLS.length);

@@ -13,7 +13,7 @@
 // MCP 桥放行的工具名是动态的（来自 mcp.json），不进本表——消费端对未知 type 一律
 // 回退显示原始名（typeLabel 的 fallback），图标落 default 圆点。
 
-// 工具名 → 中文标签（§10 契约工具 25 个 + 引擎专用 point_tap）
+// 工具名 → 中文标签（§10 契约工具 26 个 + 引擎专用 point_tap）
 export const STEP_LABELS = {
   // —— 感知（5） ——
   screen: '截图',
@@ -39,12 +39,13 @@ export const STEP_LABELS = {
   wait_element: '等元素',
   assert_no_crash: '崩溃检查',
   ui_dump: '树取证',
-  // —— 数据与扩展（5） ——
+  // —— 数据与扩展（6） ——
   data_extract: '提取',
   data_query: '查询',
   data_store: '存储',
   secret_get: '凭据读取',
   sms_read: '短信读取',
+  test_account: '测试账号',
   // —— ask.js 直记账步（非工具）：bin/ask.js sleep/net 分支、aiWaitFor 分支与 aiAssert 判定段 ——
   sleep: '等待',
   net: '切网',

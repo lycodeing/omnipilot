@@ -29,6 +29,7 @@ export const GRANTABLE = new Set([
   'android.permission.ACCESS_COARSE_LOCATION',
   'android.permission.READ_PHONE_STATE',
   'android.permission.READ_CONTACTS',
+  'android.permission.READ_SMS',
   'android.permission.CALL_PHONE',
 ]);
 

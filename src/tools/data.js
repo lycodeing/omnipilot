@@ -383,5 +383,27 @@ export function buildDataTools(ctx) {
     },
   });
 
-  return [dataExtract, dataQuery, dataStore, secretGet, smsRead];
+  // —— test_account（§19.7）：非密级测试账号（手机号等），来自 ASK_TEST_ACCOUNTS ——
+  // 手机号非密级（DESIGN §19.7 明确"非密级可配置"）：不走确认闸、不进 secretCalls、
+  // 不脱敏。密钥类凭据一律走 secret_get。
+  const testAccount = defineTool({
+    name: 'test_account',
+    label: 'test_account',
+    description: '读取非密级测试账号（手机号等），来自环境变量 ASK_TEST_ACCOUNTS（JSON）。密钥类一律走 secret_get。',
+    parameters: Type.Object({ key: Type.Optional(Type.String({ description: '账号组名（缺省返回全部）' })) }),
+    execute: async (_id, params) => {
+      const raw = process.env.ASK_TEST_ACCOUNTS;
+      if (!raw) return textResult({ ok: false, code: 'ACCOUNTS_UNAVAILABLE', error: '未配置 ASK_TEST_ACCOUNTS 环境变量' });
+      let accounts;
+      try { accounts = JSON.parse(raw); } catch { return textResult({ ok: false, error: 'ASK_TEST_ACCOUNTS 不是合法 JSON' }); }
+      if (params.key) {
+        const v = accounts?.[params.key];
+        if (v == null) return textResult({ ok: false, error: `账号组 ${params.key} 不存在` });
+        return textResult({ ok: true, accounts: v });
+      }
+      return textResult({ ok: true, accounts });
+    },
+  });
+
+  return [dataExtract, dataQuery, dataStore, secretGet, smsRead, testAccount];
 }
