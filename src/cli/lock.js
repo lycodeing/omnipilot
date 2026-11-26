@@ -25,12 +25,25 @@ export function acquireLock(root, serial, { staleMs = 10 * 60_000, now = Date.no
   if (mode === 'shared') {
     // exclusive 存活 → 拒绝（读锁不得与独占锁并存）
     const exPath = lockPath(root, serial);
-    try {
-      const rec = JSON.parse(fs.readFileSync(exPath, 'utf8'));
-      if (rec && Number.isFinite(rec.pid) && pidAlive(rec.pid)) {
-        return { ok: false, reason: `设备 ${serial} 正被 PID ${rec.pid} 独占（exclusive 锁）` };
+    let exRec = null;
+    try { exRec = JSON.parse(fs.readFileSync(exPath, 'utf8')); }
+    catch (e) {
+      if (e?.code !== 'ENOENT') {
+        // 锁文件解析失败/为空：属主可能刚以 'wx' 创建还没写入。按 mtime 保守判活，
+        // 与 exclusive 路径（EEXIST 损坏文件）对称——新鲜则拒绝 shared，防偷走活锁；
+        // 超 staleMs 才清理该残留并继续取读锁。
+        let age;
+        try { age = now() - fs.statSync(exPath).mtimeMs; } catch { age = 0; }
+        if (!Number.isFinite(age) || age < staleMs) {
+          return { ok: false, reason: `设备 ${serial} 的 exclusive 锁未写完/损坏且未到清理期（拒绝取 shared 读锁）` };
+        }
+        try { fs.rmSync(exPath); } catch { /* ignore */ }
       }
-    } catch { /* 无 exclusive 锁或属主已退出 */ }
+      // ENOENT：无 exclusive 锁，可继续取读锁
+    }
+    if (exRec && Number.isFinite(exRec.pid) && pidAlive(exRec.pid)) {
+      return { ok: false, reason: `设备 ${serial} 正被 PID ${exRec.pid} 独占（exclusive 锁）` };
+    }
     const p = sharedLockPath(root, serial, pid);
     let fd;
     try { fd = fs.openSync(p, 'wx'); }

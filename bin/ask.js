@@ -30,6 +30,7 @@ const WORKSPACE = resolveWorkspace();
 const activeRuns = new Set();   // 每项 { ctx, device, bridge, serial }，runOne 开始时在册、finally 注销
 let cleaningUp = false;
 let sharedBridgeRef = null;      // cmdRun 级共享 MCP 桥：信号退出时也要能关（runOne 不持有）
+let heldSharedLock = null;       // cmdAsk 持有的 shared 读锁：fail() 同步退出前据此自行释放（finally 不执行）
 
 async function gracefulExit(sig) {
   if (cleaningUp) return;                 // 防重入（信号 + finally 双触发）
@@ -63,6 +64,13 @@ function fail(msg, code = 2) {
   // fail 是同步函数、多处同步调用，而 MCP bridge.close 是 async：不 await，进程退出前尽力关闭
   // 共享桥子进程（不改成 async 以免波及全部调用方）；泄漏风险低于此前完全不关。
   try { sharedBridgeRef?.close?.()?.catch?.(() => {}); } catch { /* ignore */ }
+  // fail 同步 process.exit，Node 不展开调用栈、cmdAsk 的 finally 不会执行：取锁后若走到 fail
+  // （createDevice 失败 / 缺模型配置等），必须在此主动释放 shared 读锁，否则残留死 pid 锁文件，
+  // PID 复用时会被误判为存活 shared 而误拒 exclusive（最长 staleMs）。
+  if (heldSharedLock) {
+    try { releaseLock(heldSharedLock.root, heldSharedLock.serial, { mode: 'shared' }); } catch { /* ignore */ }
+    heldSharedLock = null;
+  }
   process.exit(code);
 }
 
@@ -519,6 +527,7 @@ async function cmdAsk({ positional, flags }) {
   // ask 是只读问答：用 shared 读锁，与 run 的 exclusive 锁互斥，但多个 ask 可并发读同设备
   const lock = acquireLock(WORKSPACE.lockRoot, serial, { mode: 'shared' });
   if (!lock.ok) fail(lock.reason);
+  heldSharedLock = { root: WORKSPACE.lockRoot, serial };
   let device;
   let ctx = null; // 提升到 try 外：finally 的坐标缓存 flush 需要可见
   try { device = await createDevice({ serial, probeFile: WORKSPACE.probeFile }); } catch (e) { fail(`设备连接失败（${serial}）：${e.message}`); }
@@ -583,6 +592,7 @@ async function cmdAsk({ positional, flags }) {
     try { await ctx?.locateWithCache?.flush?.(); } catch { /* ignore */ }
     try { await device?.close?.(); } catch { /* ignore */ }
     releaseLock(WORKSPACE.lockRoot, serial, { mode: 'shared' });
+    heldSharedLock = null; // 正常路径已释放，避免后续 fail() 再重复释放
   }
 }
 

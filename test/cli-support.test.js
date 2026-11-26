@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgv } from '../src/cli/argv.js';
-import { pidAlive, acquireLock, releaseLock, lockPath, lockDir } from '../src/cli/lock.js';
+import { pidAlive, acquireLock, releaseLock, lockPath, lockDir, sharedLockPath } from '../src/cli/lock.js';
 import { collectDeviceFacts } from '../src/cli/device-facts.js';
 import { RunRecorder } from '../src/recorder/index.js';
 
@@ -137,32 +137,55 @@ test('acquireLock shared：同设备多个 shared 共存；exclusive 与 shared 
   const root = mkdtempSync(join(tmpdir(), 'ask-lock-'));
   const s1 = acquireLock(root, 'dev', { mode: 'shared', pid: process.pid });
   assert.equal(s1.ok, true);
-  // 模拟另一进程的 shared 锁（直接写文件，pid 用本进程保证存活判定）
-  const sharedPath = join(lockDir(root), 'dev.shared-99999999.lock');
-  writeFileSync(sharedPath, JSON.stringify({ pid: process.pid, ts: Date.now(), serial: 'dev', mode: 'shared' }));
+  // 第二次用真实 acquireLock（另一 pid）取读锁，验证同设备多个 shared 可共存。
+  // s1 用 process.pid 保活，确保下面的 exclusive 扫描必命中一个存活读锁；s2 的 pid
+  // 是否存活不影响判定，故只对文件存在性断言即可（无需依赖 pidAlive）。
+  const otherPid = process.pid + 1;
+  const s2 = acquireLock(root, 'dev', { mode: 'shared', pid: otherPid });
+  assert.equal(s2.ok, true, '第二个 shared 读锁也应获取成功');
+  assert.ok(existsSync(s1.path), '第一个 shared 锁文件存在');
+  assert.ok(existsSync(s2.path), '第二个 shared 锁文件存在');
+  assert.notEqual(s1.path, s2.path, '不同 pid 的读锁分文件');
   const ex = acquireLock(root, 'dev', { mode: 'exclusive', pid: process.pid });
   assert.equal(ex.ok, false, '有存活 shared 锁时 exclusive 应被拒');
   assert.match(ex.reason, /shared|读锁/);
-  // 清理全部 shared 锁后 exclusive 可获取（s1 自己的读锁也在，需一并移除）
-  rmSync(sharedPath);
+  // 清理全部 shared 锁后 exclusive 可获取（s1、s2 都要移除）
   rmSync(s1.path);
+  rmSync(s2.path);
   const ex2 = acquireLock(root, 'dev', { mode: 'exclusive', pid: process.pid });
   assert.equal(ex2.ok, true);
 });
 
-test('acquireLock shared：exclusive 存活时 shared 被拒', () => {
+test('acquireLock shared：exclusive 存活/损坏新鲜时 shared 被拒，过期残留清理后可获取', () => {
   const root = mkdtempSync(join(tmpdir(), 'ask-lock-'));
   acquireLock(root, 'dev', { pid: process.pid }); // exclusive
   const sh = acquireLock(root, 'dev', { mode: 'shared', pid: process.pid });
   assert.equal(sh.ok, false);
+  // M3：exclusive 锁文件损坏/为空时，shared 分支按 mtime 保守判活（对称 exclusive 路径）。
+  // 属主刚以 'wx' 创建、还没写入：新鲜则拒绝 shared，防偷走正在建立的活锁。
+  const root2 = mkdtempSync(join(tmpdir(), 'ask-lock-'));
+  const exPath = lockPath(root2, 'dev');
+  mkdirSync(dirname(exPath), { recursive: true });
+  writeFileSync(exPath, '', 'utf8');
+  const fresh = acquireLock(root2, 'dev', { mode: 'shared', staleMs: 10 * 60_000, now: () => Date.now() });
+  assert.equal(fresh.ok, false, '损坏且新鲜的 exclusive 锁须拒绝 shared');
+  assert.match(fresh.reason, /未到清理期|拒绝/);
+  assert.ok(existsSync(exPath), '拒绝时不得删除损坏的 exclusive 锁');
+  // 超 staleMs 才清理继续（now 前推 20min 让 mtime 必定过期，避免依赖真实时间流逝）
+  const stale = acquireLock(root2, 'dev', { mode: 'shared', staleMs: 10 * 60_000, now: () => Date.now() + 20 * 60_000 });
+  assert.equal(stale.ok, true, '损坏且超 staleMs 的 exclusive 残留应清理后取到 shared');
+  assert.ok(existsSync(stale.path), 'shared 锁文件应落盘');
 });
 
 test('releaseLock shared：只删本进程的 shared 锁，不动他人', () => {
   const root = mkdtempSync(join(tmpdir(), 'ask-lock-'));
   acquireLock(root, 'dev', { mode: 'shared', pid: process.pid });
+  const minePath = sharedLockPath(root, 'dev', process.pid);
+  assert.ok(existsSync(minePath), '释放前本进程 shared 锁存在');
   const otherPath = join(lockDir(root), 'dev.shared-99999999.lock');
   writeFileSync(otherPath, JSON.stringify({ pid: 99999999, ts: Date.now(), serial: 'dev', mode: 'shared' }));
   releaseLock(root, 'dev', { mode: 'shared', pid: process.pid });
+  assert.ok(!existsSync(minePath), '本进程 shared 锁须被删除');
   assert.ok(existsSync(otherPath), '他人 shared 锁不得删除');
 });
 
@@ -184,15 +207,51 @@ test('finish(cancelled)：写终态，覆写增量快照的 _partial 残留', as
 
 test('gracefulExit 接线：对 activeRuns 每个 run 调 finish(cancelled)', () => {
   // 守护 gracefulExit 的 cancelled 终态接线（该函数直接 process.exit，无法在单测内调用）：
-  // 源码文本断言——还原/flush 之后、close 之前必须有 recorder.finish('cancelled', { exitCode: 130 })。
+  // 源码文本断言——遍历 activeRuns 后、device.close 之前，必须用 try/catch 包住
+  // run.ctx?.recorder 的 finish('cancelled', { exitCode: 130 })，已 finish 的抛错被忽略。
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ask.js'), 'utf8');
   const g = src.indexOf('async function gracefulExit');
   assert.ok(g > 0, '找到 gracefulExit');
   const body = src.slice(g, src.indexOf('process.once', g));
+  const loopAt = body.indexOf('for (const run of activeRuns)');
   const closeAt = body.indexOf('run.device?.close');
-  const finishAt = body.indexOf("recorder?.finish?.('cancelled', { exitCode: 130 })");
-  assert.ok(finishAt > 0, 'gracefulExit 必须对每个 run 调 finish(cancelled)');
+  assert.ok(loopAt > 0, '找到 activeRuns 遍历');
+  assert.ok(closeAt > loopAt, 'device.close 在遍历之后');
+  // 锚点收紧到「循环起点 → device.close」之间，逐项校验接线细节。
+  const seg = body.slice(loopAt, closeAt);
+  assert.match(seg, /try\s*\{/, 'cancelled 落终态须有 try 包裹');
+  assert.match(seg, /\}\s*catch/, 'cancelled 落终态须有 catch 吞掉「不能重复调用」');
+  assert.ok(seg.includes('run.ctx?.recorder'), '须对 run.ctx?.recorder 落终态（整串锚点）');
+  const finishAt = body.indexOf("finish?.('cancelled', { exitCode: 130 })");
+  assert.ok(finishAt > loopAt, 'finish(cancelled) 须落在 activeRuns 遍历内');
   assert.ok(finishAt < closeAt, 'finish 须在 device.close 之前（先落终态再关设备）');
+});
+
+// —— I1 守护：cmdAsk 取锁后 fail() 同步退出，finally 不执行，须在 fail 内自行释放 shared 读锁 ——
+test('fail 路径释放 shared 读锁：heldSharedLock 登记 + fail 内 releaseLock(mode:shared) 守护', () => {
+  // fail() 直接 process.exit，无法在单测内调用（Node 不展开调用栈、finally 不执行），
+  // 改以精确源码文本断言 + 代码走查守护：断言必须含 heldSharedLock 与 mode:'shared'，
+  // 不能只搜 releaseLock 字样（避免误命中 runOne 的 exclusive 释放）。
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ask.js'), 'utf8');
+  // 1) 模块级声明（与 activeRuns/sharedBridgeRef 同处）
+  assert.ok(/let\s+heldSharedLock\s*=\s*null/.test(src), '存在模块级 heldSharedLock 声明');
+  // 2) cmdAsk 取锁成功后登记 { root, serial }
+  const lockAt = src.indexOf("acquireLock(WORKSPACE.lockRoot, serial, { mode: 'shared' })");
+  assert.ok(lockAt > 0, '找到 cmdAsk 的 shared 取锁');
+  assert.ok(/heldSharedLock\s*=\s*\{\s*root:\s*WORKSPACE\.lockRoot,\s*serial\s*\}/.test(src),
+    '取锁成功后须登记 heldSharedLock = { root: WORKSPACE.lockRoot, serial }');
+  // 3) cmdAsk 正常 finally 释放后清空
+  const finallyAt = src.indexOf("releaseLock(WORKSPACE.lockRoot, serial, { mode: 'shared' });\n    heldSharedLock = null;", lockAt);
+  assert.ok(finallyAt > lockAt, 'cmdAsk finally 释放后须清空 heldSharedLock');
+  // 4) fail() 函数体内：heldSharedLock 守卫 + releaseLock(shared) 精确调用 + 置空，且都在 process.exit 之前
+  const fAt = src.indexOf('function fail(');
+  const fEnd = src.indexOf('process.exit(code);', fAt);
+  assert.ok(fEnd > fAt, '定位到 fail() 的 process.exit');
+  const fBody = src.slice(fAt, fEnd);
+  assert.ok(fBody.includes('if (heldSharedLock)'), 'fail 内须有 heldSharedLock 守卫');
+  assert.ok(fBody.includes("releaseLock(heldSharedLock.root, heldSharedLock.serial, { mode: 'shared' })"),
+    'fail 内须精确调用 releaseLock(..., { mode: \'shared\' }) 释放 shared 读锁');
+  assert.ok(fBody.includes('heldSharedLock = null'), 'fail 释放后须清空 heldSharedLock');
 });
 
 // —— 设备事实采集（mock 门面，无真机） ——
