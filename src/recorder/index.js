@@ -2,6 +2,7 @@
 // - runId = run-YYYYMMDD-HHmmss-<4位随机>；目录 runs/<runId>/，记录 runs/<runId>.json
 // - startStep/end 记 startedAt（相对 run 起点 ms）与 durationMs；locate 原样透传
 // - attachScreenshot 落 runs/<runId>/step-<i>.png，回填 step.screenshot 相对路径
+// - attachAssertionShot 落 runs/<runId>/assert-<i>.png（断言判定输入，不挂 step 索引）
 // - finish(status,{exitCode}) 组装 §14.1 完整形状，tmp+rename 原子写
 // - 脱敏（§19.7）：secret 步结果字段强制替换 [REDACTED:<provider>:<key>]；
 //   全文兜底扫描依赖已登记的 secret 值（end 的 secret.value 或 registerSecret）
@@ -279,6 +280,18 @@ export class RunRecorder {
     const step = this._steps[stepIndex];
     if (step) step.screenshot = rel;
     this._pendingWrites.push(fsp.writeFile(abs, pngBuffer).catch(() => { /* 截图写失败不阻断 run */ }));
+    return rel;
+  }
+
+  // 断言判定输入截图（Task 14）：与 step 索引无关，文件名 assert-<i>.png。
+  // 判定输入可能是压缩 JPEG（mimeType=image/jpeg），但文件名统一 .png 简化消费方——
+  // MIME 由报告端 dataURL 头按文件魔数表达（见 report/recorder.js toDataURL）。
+  // 与 attachScreenshot 同走 _pendingWrites 后台写盘，finish() 前统一排空保证落盘完整。
+  attachAssertionShot(assertIndex, buffer) {
+    const file = `assert-${assertIndex}.png`;
+    const abs = path.join(this._dir, file);
+    const rel = toPosix(path.join(this._runsDir, this.runId, file));
+    this._pendingWrites.push(fsp.writeFile(abs, buffer).catch(() => { /* 截图写失败不阻断 run */ }));
     return rel;
   }
 

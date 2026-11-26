@@ -423,3 +423,18 @@ test('writeReport directory：PNG 落盘与 screenshots 相对路径一一对应
     assert.ok(fs.existsSync(path.join(dir, 'rep', 'screenshots', `${id}.png`)));
   }
 });
+
+test('writeReport：断言截图嵌入报告（screenshotId → screenshots map）', async (t) => {
+  const dir = tmpDir(t);
+  const run = clone(FIXTURE);
+  const shotPath = path.join(dir, 'assert-0.png');
+  fs.writeFileSync(shotPath, PNG);
+  run.assertions = [{ text: '列表倒序', passed: true, reason: 'ok', screenshotId: shotPath }];
+  const out = await writeReport(run, { outPath: path.join(dir, 'r.html') });
+  const html = fs.readFileSync(out, 'utf8');
+  const [{ dump }] = extractDumps(html);
+  const sid = dump.assertions[0].screenshotId;
+  assert.ok(sid, '断言应有 screenshotId');
+  assert.ok(dump.screenshots[sid] !== undefined, 'screenshots map 应含断言截图');
+  assert.equal(countTag(html, IMAGE_TAG_TYPE), 1);
+});

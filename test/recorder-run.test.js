@@ -300,3 +300,14 @@ test('addAssertion 扩展字段：screenshotId/evidenceSource/nudges 可选落�
   assert.equal(doc.assertions[0].nudges, 1);
   assert.equal(doc.assertions[1].screenshotId, undefined);
 });
+
+test('attachAssertionShot：断言截图落盘 assert-<i>，路径回填 addAssertion', async (t) => {
+  const runsDir = tmpRuns(t);
+  const rec = new RunRecorder({ runsDir, caseName: 'assert.yaml' });
+  const rel = rec.attachAssertionShot(0, PNG);
+  assert.ok(rel.endsWith('assert-0.png'));
+  rec.addAssertion({ text: '列表倒序', passed: true, reason: 'ok', screenshotId: rel });
+  const doc = await rec.finish('pass');
+  assert.equal(doc.assertions[0].screenshotId, rel);
+  assert.ok(fs.existsSync(path.resolve(runsDir, rel)));
+});

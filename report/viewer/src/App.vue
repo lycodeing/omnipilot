@@ -299,7 +299,7 @@ function onSelectTask(executionIndex, taskId) {
             </section>
           </div>
           <section v-if="hasAssertions" class="detail-card card-assert">
-            <AssertionCard :assertions="data.assertions" />
+            <AssertionCard :assertions="data.assertions" :screenshots="data.screenshots" />
           </section>
         </div>
       </main>

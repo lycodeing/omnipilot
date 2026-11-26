@@ -220,7 +220,11 @@ function decodeDataURL(data) {
 }
 
 function toDataURL(data) {
-  if (data instanceof Uint8Array) return `data:image/png;base64,${Buffer.from(data).toString('base64')}`;
+  if (data instanceof Uint8Array) {
+    // 判定输入图可能是压缩 JPEG（FFD8 魔数），旧实现硬编码 image/png 会让浏览器拒绝解码
+    const mime = data[0] === 0xFF && data[1] === 0xD8 ? 'image/jpeg' : 'image/png';
+    return `data:${mime};base64,${Buffer.from(data).toString('base64')}`;
+  }
   const s = String(data);
   return s.startsWith('data:') ? s : `data:image/png;base64,${s}`;
 }
@@ -446,6 +450,25 @@ export async function writeReport(runJson, { outPath, mode = 'single-html', shel
     if (step?.screenshot) screenshotIds[step.index] = crypto.randomUUID();
   }
   const dump = redactDump(buildDump(run, { groupName, screenshotIds }));
+  // 断言判定输入截图（Task 14）：有 screenshotId 的断言生成独立 uuid、读原文件嵌进报告，
+  // screenshots map 加该 uuid，assertion.screenshotId 由文件路径替换为 uuid（与 step 截图同口径）。
+  // 传 Buffer 让 toDataURL 按文件魔数判 MIME——判定输入可能是 JPEG，硬编码 png 会让浏览器拒绝解码。
+  if (Array.isArray(dump.assertions)) {
+    for (const a of dump.assertions) {
+      const rel = a?.screenshotId;
+      if (!rel) continue;
+      const file = resolveScreenshotFile(rel, writer.outPath, { runDir });
+      if (!file) {
+        console.warn(`[report] 断言截图文件缺失，跳过: ${rel}`);
+        continue;
+      }
+      const id = crypto.randomUUID();
+      dump.screenshots[id] = '';
+      a.screenshotId = id;
+      const buf = await fsp.readFile(file);
+      await writer.appendScreenshot(id, buf);
+    }
+  }
   // 全文兜底：secret 值出现在任何字符串里都替换（不止本任务自己的 thought/param）
   if (Array.isArray(secrets) && secrets.length) {
     const { buildRedactor, redactDeep } = await import('../src/recorder/index.js');

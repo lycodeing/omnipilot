@@ -383,12 +383,16 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
       // 同时注入前台包名事实：截图无法表达"前台是哪个包"，不注入会诱导模型调工具核实，
       // 导致断言步无文本输出（曾误判"模型无输出"）。
       let promptImages = [];
+      // 断言判定输入截图的原始压缩 buffer（Task 14）：promptImages 里是 base64 字符串，
+      // 判定段需要 buffer 本身落盘为 assert-<i>.png（JPEG 也按魔数处理），故单独保留。
+      let assertShotBuffer = null;
       let fgNote = '';
       if (step.type === 'aiAssert') {
         try {
           const { compressForContext } = await import('../image/png.js');
           const shot = await device.screencap();
           const c = await compressForContext(shot.buffer, { maxWidth: 540, quality: 70 });
+          assertShotBuffer = c.buffer;
           promptImages = [{ type: 'image', data: c.buffer.toString('base64'), mimeType: c.mimeType }];
         } catch { /* 取图失败不阻断断言 */ }
         try {
@@ -596,9 +600,14 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
         const verdict = parseVerdict(answer);
         ah.end({ result: verdict.passed ? 'ok' : 'failed', error: verdict.passed ? null : verdict.reason, thought: answer });
         attachStepShot(ah.index); // 报告取证：判定后的画面状态（走既有 step 索引机制）
+        // 判定输入截图独立落盘（Task 14）：assertIndex 用判定前已记账的断言数，
+        // 文件名 assert-<i>.png。取图失败（assertShotBuffer 为 null）时不传 screenshotId。
+        let shotRel = null;
+        if (assertShotBuffer) {
+          shotRel = recorder.attachAssertionShot(ctx.assertions.length, assertShotBuffer);
+        }
         // evidenceSource：注入了数据集事实 → dataset 口径；否则屏幕口径。
-        // screenshotId（判定输入截图独立落盘）留待 Task 14 attachAssertionShot。
-        recorder.addAssertion({ text: step.text, passed: verdict.passed, reason: verdict.reason, evidenceSource: datasetFacts ? 'dataset' : 'screen', nudges: assertNudges });
+        recorder.addAssertion({ text: step.text, passed: verdict.passed, reason: verdict.reason, evidenceSource: datasetFacts ? 'dataset' : 'screen', nudges: assertNudges, screenshotId: shotRel });
         ctx.assertions.push({ text: step.text, passed: verdict.passed, reason: verdict.reason });
       }
     } catch (e) {
