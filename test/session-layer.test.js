@@ -194,6 +194,22 @@ describe('model', () => {
     assert.throws(() => validateModelConfig({ url: '', key: '', name: '', family: '' }), ModelConfigError);
   });
 
+  test('inferFamilyFromName：模型名推断 family', async () => {
+    const { inferFamilyFromName } = await import('../src/session/model.js');
+    assert.equal(inferFamilyFromName('glm-5.3-flash'), 'glm');
+    assert.equal(inferFamilyFromName('deepseek-v4.1-flash'), 'deepseek');
+    assert.equal(inferFamilyFromName('qwen3.8-flash'), 'qwen');
+    assert.equal(inferFamilyFromName('kimi-k3'), 'kimi');
+    assert.equal(inferFamilyFromName('gemini-2.0-flash'), 'gemini');
+    assert.equal(inferFamilyFromName('gpt-4o'), 'gpt');
+    assert.equal(inferFamilyFromName('unknown-model'), null);
+  });
+
+  test('validateModelConfig：family 可选（url/key/name 必填）', () => {
+    assert.doesNotThrow(() => validateModelConfig({ url: 'u', key: 'k', name: 'n', family: '' }));
+    assert.throws(() => validateModelConfig({ url: '', key: 'k', name: 'n', family: '' }), ModelConfigError);
+  });
+
   test('baseUrlHash = sha1(url).slice(0,8)', () => {
     const h = baseUrlHash('https://a.api/v1');
     assert.match(h, /^[0-9a-f]{8}$/);

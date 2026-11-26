@@ -7,6 +7,15 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 
 export class ModelConfigError extends Error {}
 
+// 模型名 → family 推断（registry FAMILY_ALIASES 的键前缀匹配）
+export function inferFamilyFromName(name = '') {
+  const n = String(name).toLowerCase();
+  for (const fam of ['glm', 'qwen', 'deepseek', 'doubao', 'kimi', 'gemini', 'gpt', 'openai']) {
+    if (n.startsWith(fam)) return fam === 'openai' ? 'gpt' : fam;
+  }
+  return null;
+}
+
 export function resolveModelConfig(cliOverrides = {}, env = process.env) {
   // parseArgv 保留连字符（flags['model-url']），usage 文本也用连字符形态——两种键名都要认
   const pick = (camel, kebab) => cliOverrides[camel] ?? cliOverrides[kebab];
@@ -20,7 +29,7 @@ export function resolveModelConfig(cliOverrides = {}, env = process.env) {
 }
 
 export function validateModelConfig(cfg) {
-  const missing = ['url', 'key', 'name', 'family'].filter((k) => !cfg[k]);
+  const missing = ['url', 'key', 'name'].filter((k) => !cfg[k]);
   if (missing.length) {
     throw new ModelConfigError(
       `模型配置缺失：${missing.map((k) => 'ASK_MODEL_' + k.toUpperCase()).join(' / ')}（或用 --model-* 覆盖）`,
@@ -72,9 +81,12 @@ export function buildThinkingLevelMap(name = '') {
 // 返回 { model, modelRuntime, info: { family, name, baseUrlHash } }
 export async function createModel(cfg = resolveModelConfig(), { modelRuntime } = {}) {
   validateModelConfig(cfg);
+  // family 在 provider 注册名上任意字符串都行；坐标策略才需要真实 family。
+  // 未配置时先从模型名推断，仍推断不出用 'custom'（坐标策略另走 probe 缓存或报错）。
+  const family = cfg.family || inferFamilyFromName(cfg.name) || 'custom';
   const runtime = modelRuntime || (await ModelRuntime.create());
-  runtime.registerProvider(cfg.family, {
-    name: cfg.family,
+  runtime.registerProvider(family, {
+    name: family,
     baseUrl: cfg.url,
     apiKey: cfg.key,
     api: 'openai-completions',
@@ -98,7 +110,7 @@ export async function createModel(cfg = resolveModelConfig(), { modelRuntime } =
       },
     ],
   });
-  const model = runtime.getModel(cfg.family, cfg.name);
-  if (!model) throw new ModelConfigError(`注册后仍找不到模型 ${cfg.family}/${cfg.name}`);
-  return { model, modelRuntime: runtime, info: { family: cfg.family, name: cfg.name, baseUrlHash: baseUrlHash(cfg.url) } };
+  const model = runtime.getModel(family, cfg.name);
+  if (!model) throw new ModelConfigError(`注册后仍找不到模型 ${family}/${cfg.name}`);
+  return { model, modelRuntime: runtime, info: { family, name: cfg.name, baseUrlHash: baseUrlHash(cfg.url) } };
 }

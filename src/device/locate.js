@@ -467,7 +467,7 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
       family = family ?? loadProbeFamily(probeFile);
       const cs = family ? resolveStrategy(family) : null;
       if (!cs) {
-        return { ...result, error: '无法确定坐标策略：请设置 ASK_MODEL_FAMILY 或先运行 probeFamily 探测' };
+        return { ...result, error: '无法确定坐标策略：请设置 ASK_MODEL_FAMILY 或运行 ask doctor --probe-family' };
       }
       const conv = cs.toPixels(raw, size);
       if (!conv.bounds && !conv.center) {

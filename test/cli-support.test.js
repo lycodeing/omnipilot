@@ -383,3 +383,7 @@ test('parseArgv：布尔 flag 与可选值 flag 不受影响', () => {
   assert.equal(parseArgv(['doctor', '--device']).flags.device, true);
   assert.equal(parseArgv(['doctor', '--device', 'emulator-5554']).flags.device, 'emulator-5554');
 });
+
+test('parseArgv：--probe-family 可选值 flag', () => {
+  assert.equal(parseArgv(['doctor', '--probe-family']).flags['probe-family'], true);
+});

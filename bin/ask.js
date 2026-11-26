@@ -19,6 +19,19 @@ import { resolveWorkspace, ensureWorkspace } from '../src/cli/workspace.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(MODULE_DIR, '..');
+
+// .env 加载（零依赖）：cwd/.env 逐行 KEY=VALUE，不覆盖已有环境变量；须在 WORKSPACE 解析前
+try {
+  const envText = fs.readFileSync(path.resolve('.env'), 'utf8');
+  for (const line of envText.split(/\r?\n/)) {
+    const m = /^\s*([A-Za-z_][\w]*)\s*=\s*(.*)\s*$/.exec(line);
+    if (!m || line.trim().startsWith('#')) continue;
+    let v = m[2];
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    if (process.env[m[1]] === undefined) process.env[m[1]] = v;
+  }
+} catch { /* 无 .env 正常 */ }
+
 // 运行时产物与源码分离（见 src/cli/workspace.js）：用例/运行记录/报告/数据集/私有状态落工作区，
 // 设备锁与 family 探测缓存落全局（跨实例共享）。
 const WORKSPACE = resolveWorkspace();
@@ -312,6 +325,12 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
 
   try {
     const modelCfg = resolveModelConfig(flags);
+    // 配置缺失早失败：此前"无模型模式"会继续跑完整条用例、只打一条 warn，浪费真机时间且
+    // agent 轮全程无模型可用。缺 url/key/name 任一即退出码 2（环境/配置错误）。
+    if (!modelCfg.url || !modelCfg.key || !modelCfg.name) {
+      console.error('模型配置缺失：需 ASK_MODEL_URL / ASK_MODEL_KEY / ASK_MODEL_NAME（或用 --model-* 覆盖）；可复制 .env.example 为 .env 后由 CLI 自动加载');
+      return 2;
+    }
     const store = openDataset({ dataDir: WORKSPACE.datasetDir });
     const recorder = new RunRecorder({
       runsDir: WORKSPACE.runDir,
@@ -400,8 +419,6 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       // 旧实现该 flag 只被读去做统计、vlm 从未接线（定位失败无视觉兜底）。
       // 视觉定位默认启用：引擎定位 MISS 时做确定性视觉接地（截图→坐标→tap），不耗 agent 轮
       ctx.vlm = await buildVlmLocate(ctx, modelCfg);
-    } else {
-      console.warn('未配置 ASK_MODEL_*，将以无模型模式执行（仅日志回放/干跑）');
     }
 
     // 设备事实采集（L2 占位符填充）：try/catch 包住，采集失败降级为不传
@@ -687,6 +704,56 @@ async function cmdLint({ positional, flags }) {
 // doctor — 环境自检
 async function cmdDoctor({ flags }) {
   const checks = [];
+  // --probe-family：用一次 VLM 调用探测模型坐标 family，结果落 probe 缓存供坐标策略复用。
+  // 需要屏幕上有"返回箭头"类已知位置元素，且已配置 ASK_MODEL_*。
+  if (flags['probe-family']) {
+    const { resolveModelConfig } = await import('../src/session/model.js');
+    const cfg = resolveModelConfig(flags);
+    if (!cfg.url || !cfg.key || !cfg.name) {
+      checks.push({ item: 'probe-family', ok: false, error: '未配置 ASK_MODEL_*，无法探测 family' });
+    } else {
+      let device = null;
+      try {
+        const { createDevice } = await import('../src/device/index.js');
+        const { createChatClient } = await import('../src/tools/ai.js');
+        const { probeFamily } = await import('../src/device/coord/probe.js');
+        const { flattenNodes } = await import('../src/device/uitree.js');
+        const serials = await resolveSerials(flags);
+        const serial = serials[0];
+        device = await createDevice(serial ? { serial, probeFile: WORKSPACE.probeFile } : { probeFile: WORKSPACE.probeFile });
+        const size = await device.screenSize();
+        const shot = await device.screencap();
+        // 已知位置元素：优先 locate('返回')，否则从 UI 树找 contentDesc 含"返回"的节点 bounds
+        const hit = await device.locate('返回', { vlm: null }).catch(() => null);
+        let bounds = hit?.bounds ?? null;
+        if (!bounds) {
+          const tree = await device.dumpTree({ fresh: true }).catch(() => null);
+          const node = tree?.nodes?.length
+            ? flattenNodes(tree.nodes).find((n) => /返回/.test(n.contentDesc || '') && n.bounds)
+            : null;
+          bounds = node?.bounds ?? null;
+        }
+        if (!bounds) {
+          checks.push({ item: 'probe-family', ok: false, error: '未找到已知位置元素（返回箭头），请把屏幕停在含"返回"按钮的页面后重试' });
+        } else {
+          const known = { target: '返回箭头', bounds };
+          // 复用 runOne/cmdAsk 的视觉定位工厂：chat 客户端 + 截图压缩 + 策略提示词
+          const ctx = { chat: createChatClient({ url: cfg.url, key: cfg.key, model: cfg.name }) };
+          const vlm = await buildVlmLocate(ctx, cfg);
+          const r = await probeFamily({ vlm, png: shot.buffer, size, known, file: WORKSPACE.probeFile });
+          if (r.family) checks.push({ item: 'probe-family', ok: true, family: r.family, note: `已写入 ${WORKSPACE.probeFile}` });
+          else checks.push({ item: 'probe-family', ok: false, raw: r.raw, error: '探测失败：无唯一命中策略' });
+        }
+      } catch (e) {
+        checks.push({ item: 'probe-family', ok: false, error: `探测异常：${e.message}` });
+      } finally {
+        try { await device?.close?.(); } catch { /* ignore */ }
+      }
+    }
+    const ok = checks.every((c) => c.ok);
+    out(flags, { ok, checks }, checks.map((c) => `${c.ok ? 'OK  ' : 'FAIL'} ${c.item}${c.error ? ' — ' + c.error : ''}`).join('\n'));
+    return ok ? 0 : 2;
+  }
   if (flags['cache-report']) {
     const p = path.resolve(flags['cache-report']);
     if (!fs.existsSync(p)) fail(`找不到 run 报告：${p}`);
@@ -719,7 +786,19 @@ async function cmdDoctor({ flags }) {
   if (flags.model || (!flags.device && !flags['cache-report'])) {
     const { resolveModelConfig } = await import('../src/session/model.js');
     const cfg = resolveModelConfig(flags);
-    checks.push({ item: 'model', ok: !!(cfg.url && cfg.key && cfg.name), url: cfg.url || null, name: cfg.name || null, note: cfg.url ? undefined : '未配置 ASK_MODEL_*' });
+    // --model 时发一次真实请求探活：此前只校验配置非空、网关是否可达一概不知。
+    if (cfg.url && cfg.key && cfg.name) {
+      try {
+        const { createChatClient } = await import('../src/tools/ai.js');
+        const chat = createChatClient({ url: cfg.url, key: cfg.key, model: cfg.name, timeoutMs: 15000 });
+        await chat('ping', { maxRetries: 0 });
+        checks.push({ item: 'model', ok: true, url: cfg.url, name: cfg.name, note: '探活通过' });
+      } catch (e) {
+        checks.push({ item: 'model', ok: false, url: cfg.url, name: cfg.name, error: `探活失败：${e.message}` });
+      }
+    } else {
+      checks.push({ item: 'model', ok: false, note: '未配置 ASK_MODEL_*' });
+    }
   }
   const ok = checks.every((c) => c.ok);
   out(flags, { ok, checks }, checks.map((c) => `${c.ok ? 'OK  ' : 'FAIL'} ${c.item}${c.error ? ' — ' + c.error : ''}`).join('\n'));

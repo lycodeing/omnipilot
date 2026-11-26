@@ -10,7 +10,8 @@ export const BOOL_FLAGS = [
 ];
 
 // 可选值 flag：后面紧跟非 -- 参数则取其值，否则为 true（供 doctor 的"检查默认设备/模型"用法）
-export const OPTIONAL_VALUE_FLAGS = ['device', 'model'];
+// probe-family：裸 `ask doctor --probe-family` 触发坐标家族探测（无需值）。
+export const OPTIONAL_VALUE_FLAGS = ['device', 'model', 'probe-family'];
 
 export function parseArgv(argv) {
   const cmd = argv[0] || 'help';
