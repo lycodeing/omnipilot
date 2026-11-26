@@ -26,7 +26,7 @@ try {
   for (const line of envText.split(/\r?\n/)) {
     const m = /^\s*([A-Za-z_][\w]*)\s*=\s*(.*)\s*$/.exec(line);
     if (!m || line.trim().startsWith('#')) continue;
-    let v = m[2];
+    let v = m[2].trim();
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
     if (process.env[m[1]] === undefined) process.env[m[1]] = v;
   }
@@ -751,7 +751,8 @@ async function cmdDoctor({ flags }) {
       }
     }
     const ok = checks.every((c) => c.ok);
-    out(flags, { ok, checks }, checks.map((c) => `${c.ok ? 'OK  ' : 'FAIL'} ${c.item}${c.error ? ' — ' + c.error : ''}`).join('\n'));
+    const human = checks.map((c) => `${c.ok ? 'OK  ' : 'FAIL'} ${c.item}${c.error ? ' — ' + c.error : (c.family ? ` — ${c.family}${c.note ? '（' + c.note + '）' : ''}` : '')}`).join('\n');
+    out(flags, { ok, checks }, human);
     return ok ? 0 : 2;
   }
   if (flags['cache-report']) {

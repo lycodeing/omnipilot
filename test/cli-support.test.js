@@ -387,3 +387,35 @@ test('parseArgv：布尔 flag 与可选值 flag 不受影响', () => {
 test('parseArgv：--probe-family 可选值 flag', () => {
   assert.equal(parseArgv(['doctor', '--probe-family']).flags['probe-family'], true);
 });
+
+// —— 审核 Important I1/I2 守护（精确源码文本断言）——
+// 两处均为 bin/ask.js 内联逻辑：.env 解析在模块顶层 try 内、未导出；probe 人读模板
+// 依赖真机截图 + VLM 探测，无法在 node:test 内行为化（不发网络/不连设备）。
+// 故用锚定到分支区间的精确文本断言守护，并说明：I2 修 `let v = m[2]`→`.trim()`，
+// I1 修 probe 分支 out() 人读模板补 `c.family`/`c.note`（doctor 通用模板不动）。
+test('I2 .env 值 tail 空白 trim + I1 probe 人读模板含 family（文本断言）', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ask.js'), 'utf8');
+
+  // I2：.env 解析块内，m[2] 必须 .trim()；引号剥离逻辑保持原样（顺序不变）。
+  const envBlock = src.slice(src.indexOf('envText.split'), src.indexOf('} catch { /* 无 .env'));
+  assert.ok(envBlock.length > 0, '定位到 .env 解析块');
+  assert.match(envBlock, /let\s+v\s*=\s*m\[2\]\.trim\(\);/, '.env 值须 m[2].trim()（否则尾随空白吃掉引号剥离/污染 URL）');
+  assert.match(envBlock, /v\.startsWith\('"'\)[\s\S]*v\.slice\(1, -1\)/, '引号剥离逻辑保持不变');
+
+  // I1：probe 分支（--probe-family → --cache-report 之间）人读模板须含 c.family，
+  // 且 out() 第三参用该 human 变量；doctor 末尾通用模板仍为纯 item+error（不越界）。
+  const probe = src.slice(src.indexOf("if (flags['probe-family'])"), src.indexOf("if (flags['cache-report'])"));
+  assert.ok(probe.length > 0, '定位到 probe 分支');
+  const humanAt = probe.indexOf('const human = checks.map');
+  assert.ok(humanAt > 0, 'probe 分支须抽出 human 模板');
+  const humanLine = probe.slice(humanAt, probe.indexOf('\n', humanAt));
+  assert.match(humanLine, /c\.family/, '成功项人读模板须输出 family（brief 要求）');
+  assert.match(humanLine, /c\.note/, '成功项人读模板须携带 note（已写入路径）');
+  assert.match(probe, /out\(flags, \{ ok, checks \}, human\);/, 'probe 分支 out() 须用 human 变量');
+
+  // 越界守护：doctor model/device 末尾通用模板不含 family，保持原样。
+  const doctor = src.slice(src.indexOf('if (flags.device || !flags.model)'));
+  const doctorTail = doctor.slice(doctor.indexOf('const ok = checks.every'), doctor.indexOf('return ok ? 0 : 2;'));
+  assert.ok(doctorTail.includes("${c.error ? ' — ' + c.error : ''}"), 'doctor 通用模板仍为 item+error');
+  assert.ok(!doctorTail.includes('c.family'), 'doctor 通用模板未被误改（不增 family）');
+});
