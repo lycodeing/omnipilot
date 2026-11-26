@@ -112,8 +112,7 @@ export function assemblePrompt({
   const total = layers.reduce((n, l) => n + l.content.length, 0);
   if (total > budget) {
     // 裁剪优先级：L3-user（用户段，可牺牲）→ L1（引擎段）→ L2（安卓段，最后动）。
-    // 此前只在存在 L3 时裁 L3：L1+L2 本身就超预算时（引擎段或安卓段变长），
-    // 用户段被裁到 0 也补不齐缺口，且完全没有告警——预算契约形同虚设。
+    // L1+L2 本身超预算时（引擎段或安卓段变长），只裁用户段补不齐缺口，须逐层裁到预算内。
     let remaining = total - budget;
     if (userLayer && remaining > 0) {
       const cut = Math.min(remaining, userLayer.content.length);

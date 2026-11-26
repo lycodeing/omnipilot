@@ -174,7 +174,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
   // ${var} 逐步插值（§7.5 执行期插值）：data_extract 运行期写入的变量对后续步骤生效。
   // 不做整体预插值——那样运行期变量永远取不到（C2 验证暴露）。
   for (let i = 0; i < steps.length; i++) {
-    // 整 run 时间预算（--timeout）：到点即止，剩余步骤跳过——实测 run 曾超预算 2 倍仍不退出
+    // 整 run 时间预算（--timeout）：到点即止，剩余步骤跳过。
     if (runDeadline && Date.now() > runDeadline) {
       console.warn(`[timeout] 已超 --timeout 预算（${Math.round((ctx.opts?.timeoutMs ?? 0) / 1000)}s），剩余 ${steps.length - i} 步跳过`);
       status = 'timeout';
@@ -222,8 +222,8 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
           attachStepShot(h.index);
           continue;
         }
-        // 引擎步全部字符串参数做 ${var} 插值（此前仅 text/value，rows/tap/until 里的
-        // 变量引用会原样进 selector 静默 MISS）
+        // 引擎步全部字符串参数做 ${var} 插值（rows/tap/until 等字段里的变量引用同样生效，
+        // 否则会原样进 selector 静默 MISS）
         const interpStep = { ...step };
         for (const k of Object.keys(interpStep)) {
           if (typeof interpStep[k] === 'string') interpStep[k] = interpolate(interpStep[k], ctx.vars);
@@ -257,7 +257,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
             const isTapFamily = call.tool === 'tap' || call.tool === 'long_press';
             if (isLocateMiss && isTapFamily) {
               // busy 态（提交动画/转场）下 WebView a11y 会把目标元素拒之门外，且 dump 单次
-              // 40-55s——与其立刻 VLM/视觉轮盲试（实测 6×380s 全 MISS），先等 idle 窗口过去
+              // 40-55s——与其立刻 VLM/视觉轮盲试（6×380s 全 MISS），先等 idle 窗口过去
               // （有界 90s），树稳定后目标自然出现在 a11y 树里
               try { await device.waitIdle({ quiet: 1, timeoutMs: LOCATE_DEGRADE_POLICY.busyWaitIdleMs }); } catch { /* 等待失败不阻断降级 */ }
             }
@@ -322,7 +322,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
         const handle = recorder.startStep('aiWaitFor', stepText ? stepText.slice(0, 40) : '');
         const timeout = Number(step.timeout) || 10000;
         const quiet = step.quiet != null ? Number(step.quiet) : 2;
-        // 显式 selector 参数行优先（评审 #10）；散文解析仅作未声明时的兜底
+        // 显式 selector 参数行优先；散文解析仅作未声明时的兜底
         const sel = (step.selector && String(step.selector).trim())
           ? (waitSelectorFromText(String(step.selector)) || String(step.selector).trim())
           : waitSelectorFromText(stepText);
@@ -362,7 +362,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
             }
             // 否定优先：仅当模型**明确**答 NOT_VISIBLE/不可见 才判未确认；空响应或肯定一律放行。
             // 全 WebView 壳 App 的每次树命中都要过确认，若把网关空响应当"不可见"，
-            // 会把在屏元素误判为隐藏层（真机事故：导航栏在屏却等满 91s）。
+            // 会把在屏元素误判为隐藏层。
             const explicitNo = ans && /(NOT_VISIBLE|不可见|未见|未出现|不存在|隐藏|预渲染)/i.test(ans);
             if (!explicitNo) { confirmed = true; break; }
             if (Date.now() - t0 >= timeout) break;
@@ -380,11 +380,10 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
         continue;
       }
 
-      // 断言附图（性能）：旧实现 prompt 不带图，模型必须先调一次 screen 工具
-      // （= 额外一整轮模型往返 ~10s + 工具执行 ~3s）才能作答。这里直接随 prompt
-      // 附当前屏压缩图，断言一轮完成。取图失败则退回无图（模型仍可自行调 screen）。
+      // 断言附图（性能）：直接随 prompt 附当前屏压缩图，省去模型先调一次 screen 工具的
+      // 额外一整轮模型往返（~10s + 工具执行 ~3s），断言一轮完成。取图失败则退回无图（模型仍可自行调 screen）。
       // 同时注入前台包名事实：截图无法表达"前台是哪个包"，不注入会诱导模型调工具核实，
-      // 导致断言步无文本输出（曾误判"模型无输出"）。
+      // 导致断言步无文本输出。
       let promptImages = [];
       // 断言判定输入截图的原始压缩 buffer（Task 14）：promptImages 里是 base64 字符串，
       // 判定段需要 buffer 本身落盘为 assert-<i>.png（JPEG 也按魔数处理），故单独保留。
@@ -424,7 +423,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
           ? `${stepText}\n（把结果用 data_extract 或 data_store 落到数据集「${step.name}」）`
           : stepText;
       // ai/aiQuery 步附当前屏压缩图：模型无需先调 screen 就能看到画面（省一轮往返），
-      // 且避免"历史有图、本轮无图"诱发网关空响应（实测 ai 步曾返回全空 assistant 消息）。
+      // 且避免"历史有图、本轮无图"诱发网关空响应（ai 步会返回全空 assistant 消息）。
       let aiImages = [];
       if (step.type !== 'aiAssert') {
         try {
@@ -434,7 +433,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
           aiImages = [{ type: 'image', data: c0.buffer.toString('base64'), mimeType: c0.mimeType }];
         } catch { /* 取图失败不阻断 */ }
       }
-      // —— 动作计划缓存回放（0 模型往返，业界调研落地）——
+      // —— 动作计划缓存回放（0 模型往返）——
       // 命中即按序回放缓存的调用序列；任一失败删条目并落回模型规划（重新学习后重写）。
       const curPlanKey = (step.type === 'ai' || step.type === 'aiAct') ? planKeyOf(i, stepText) : null;
       if (curPlanKey) {
@@ -461,7 +460,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
           lastTool.calls = []; // 丢弃回放期的半程调用，模型路径重新记账
         }
       }
-      lastTool.calls = []; // 模型路径重新记账（清掉此前引擎步/回放步的调用）
+      lastTool.calls = []; // 模型路径重新记账（清掉引擎步/回放步的调用）
       const stepsBefore = recorder.stepCount;
       await session.prompt(text, { images: step.type === 'aiAssert' ? promptImages : aiImages });
       let answer = lastAssistantText(session);
@@ -477,8 +476,8 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
         const { marker: marathonMarker, batch: loopBatch, maxRounds: loopMaxRounds } = loopPlan;
         for (let resume = 0; resume < loopMaxRounds; resume++) {
           if (runDeadline && Date.now() > runDeadline) { console.warn('[timeout] 步内催促超 --timeout 预算，提前收束'); break; }
-          // 完成自报（2026-11-04 评审修复）：催促词让模型”终止条件已满足回复'完成'”，但旧
-          // 循环从不检查 answer——模型每轮回"完成"仍被逼答满轮数上限（实测单步空耗 24-88 分钟）。
+          // 完成自报：催促词让模型”终止条件已满足回复'完成'”，循环须检查 answer，
+          // 否则模型每轮回"完成"仍会被逼答满轮数上限（单步空耗 24-88 分钟）。
           // 仅认”短回复含完成”（防长篇散文里 incidental 完成二字误判）；BLOCKED 同义结束。
           const selfDone = answer && answer.length <= 20 && /完成/i.test(answer);
           if (answer && (/BLOCKED/i.test(answer) || selfDone)) break;
@@ -500,8 +499,8 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
             freshImgs = [{ type: 'image', data: c5.buffer.toString('base64'), mimeType: c5.mimeType }];
           } catch { /* 取图失败不阻断 */ }
           foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
-          // 催促话术按形态分流（评审 #1①：批量话术曾把"依次逐个"类任务催成整屏并行点击）：
-          // batch=true 维持历史并行话术；false（显式缺省）= 逐个处理。
+          // 催促话术按形态分流：batch=true 用并行话术；false（显式缺省）= 逐个处理
+          // （避免把"依次逐个"类任务催成整屏并行点击）。
           const nudge = loopBatch
             ? `任务尚未完成（终止条件未满足）。继续执行：${text}\n（高效做法：一次 uitree 看清当前屏全部待处理项，然后**一轮并行 tap** 处理完本屏所有项，再滚动看下一屏；若终止条件已满足回复”完成”，无法继续回复”BLOCKED: 原因”）`
             : `任务尚未完成（终止条件未满足）。继续执行：${text}\n（逐个处理：每轮只处理**一个**待办项——先 uitree 看清当前屏，定位并操作下一项，完成即结束本轮回复；需要看更多内容就滚动后下一轮再处理；若终止条件已满足回复”完成”，无法继续回复”BLOCKED: 原因”）`;
@@ -511,7 +510,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
       }
       // 空轮检测：无文本且无工具调用 = 模型空转（网关/模型偶发空响应）→ 附屏重试。
       // 第 2 次重试要求显式 BLOCKED 回复：把"静默空转"变成可观测结果（进报告 thought），
-      // 否则 ai 步静默无操作会让后续步骤在错误页面上连锁失败（真机事故根因）。
+      // 否则 ai 步静默无操作会让后续步骤在错误页面上连锁失败。
       if (!answer && recorder.stepCount === stepsBefore && step.type !== 'aiAssert') {
         for (let retry = 0; retry < 3 && !answer; retry++) {
           if (runDeadline && Date.now() > runDeadline) { console.warn('[timeout] 空轮重试超 --timeout 预算，停止重试'); break; }
@@ -568,7 +567,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
       } else if (!answer && step.type === 'aiQuery' && recorder.stepCount > stepsBefore) {
         // 查询步已执行工具但无收尾文本：催一句结果汇报（1 轮）。
         // 带 name 的落库形态若还没调 data_extract/data_store，先放行落库再汇报——
-        // 一刀切"不要再调用工具"会把落库也掐死（实测 c3_summary 数据集 0 条即此因）。
+        // 一刀切"不要再调用工具"会把落库也掐死（数据集会落成 0 条）。
         const needStore = step.name && !recorder.stepsSince(stepsBefore).some((s) => /data_extract|data_store/.test(s.type || ''));
         foldForGateway(); // 步内追加 prompt：先折叠 role:tool 历史（网关 400 防护）
         await session.prompt(
@@ -596,8 +595,8 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
       // ai 步无文本属正常（工具调用即交付），不催答
       ctx.lastThought = answer;
       if (step.type === 'aiAssert') {
-        // 断言判定独立记账（评审 C-P2）：此前只落 assertions[]，steps[]/报告时间线无该步——
-        // 耗时、终态截图、催答轮数全部不可见。这里补 startStep/end + 终态取证截图。
+        // 断言判定独立记账：除 assertions[] 外补 startStep/end + 终态取证截图，
+        // 让耗时、终态截图、催答轮数在 steps[]/报告时间线可见。
         const ah = recorder.startStep('aiAssert', stepText.slice(0, 40));
         const { parseVerdict } = await import('../tools/ai.js');
         const verdict = parseVerdict(answer);
@@ -614,25 +613,25 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
         ctx.assertions.push({ text: step.text, passed: verdict.passed, reason: verdict.reason });
       }
     } catch (e) {
-      // 步骤级异常不能静默吞掉（曾致 run 静默判 error 无任何线索）
+      // 步骤级异常不能静默吞掉（否则 run 会静默判 error 无任何线索）
       console.error(`[step ${i}] ${step?.type ?? '?'} 异常: ${e?.stack || e?.message || e}`);
       status = 'error';
       break;
     } finally {
       pushStepMsgDelta();
       // 会话历史截图治理（§16）：保留最近 N 张图（--keep-images，默认 3），更早的替换为
-      // 文字占位符，避免 prompt tokens 随历史线性膨胀（实测 20 张图 → 67k tokens / 单轮 26s）。
+      // 文字占位符，避免 prompt tokens 随历史线性膨胀（20 张图 → 67k tokens / 单轮 26s）。
       // 三层剪枝**必须先于窗口折叠**执行：折叠删除消息段时，被删段与保留段都已是纯文本，
       // 不依赖"两段在同一同步 finally 内执行"的顺序巧合（role:'tool' 残留会触发网关 400）。
-      // 评审 C-A1：全部经 governor 落 appendContextEdit（对实际请求生效，持久化历史留原文）。
+      // 全部经 governor 落 appendContextEdit（对实际请求生效，持久化历史留原文）。
       try {
         const keepN = Number(flags['keep-images']); const pr = gov.pruneImages({ keepRecent: Number.isFinite(keepN) && keepN >= 1 ? keepN : 3 });
         if (pr.replaced > 0) ctx.imagesPruned = (ctx.imagesPruned || 0) + pr.replaced;
         // 旧工具结果截断：uitree/screen_diff 单条 20-40KB，长 run 累积数 MB 进上下文，
-        // 实测诱发模型空响应；只保留最近 1 条完整（当前步所需），更早截断为 300 字符摘要
+        // 会诱发模型空响应；只保留最近 1 条完整（当前步所需），更早截断为 300 字符摘要
         const pr2 = gov.pruneToolResults({ keepRecent: 1, keepChars: 300 });
         if (pr2.replaced > 0) ctx.toolResultsPruned = (ctx.toolResultsPruned || 0) + pr2.replaced;
-        // 旧工具轮折叠为纯文本：网关对 role:tool 历史返回 400（对照实验实证），
+        // 旧工具轮折叠为纯文本：网关对 role:tool 历史返回 400，
         // 步间全折叠为纯文本（keepRecent=0）：网关对 role:tool 历史偶发 400/空响应；
         const pr3 = gov.pruneToolHistory({ keepRecent: 0 });
         if (pr3.folded > 0) ctx.toolHistoryFolded = (ctx.toolHistoryFolded || 0) + pr3.folded;
@@ -658,7 +657,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
       // 治理后同步 state.messages ← 投影（SDK 公开 API refreshContext，即 _refreshFinalizedContext）。
       // appendContextEdit 不触发刷新，state 会滞后于投影：delta 记账（pushStepMsgDelta/_msgStart）
       // 与 lastAssistantText 都读 state，不同步则窗口分段错位、回答读取取到旧数组。
-      // 实验实证：refresh 后八步序列 delta 恒 2、digest 恒 1 条、answer 每步正确。
+      // 刷新后 delta 记账、digest 与 answer 读取才与投影一致。
       try { session.refreshContext?.(); } catch { /* 刷新失败不阻断（下轮 prompt 请求侧仍用投影） */ }
     }
   }

@@ -17,10 +17,7 @@ export const PARAM_KEYS_BY_TYPE = {
   aiLongPress: ['durationMs', 'timeout'],
   aiKeyboardPress: ['keyName', 'timeout'],
   // maxScrolls 是 aiScroll 的历史参数名（滚动轮数上限）；工具参数名是 max。
-  // 曾在派生化改造中从全局 PARAM_KEYS 掉落（全局表由本表并集派生），导致
-  // "maxScrolls: 5" 续行不被识别 → 被拼进 text → direction 被污染成
-  // "向下滚动直到最后一个相册 maxScrolls: 5"，且 lint 因 maxScrolls 豁免而 0 error
-  // ——即"lint 放行、运行期静默失效"。本表与 lint 规则必须同步。
+  // 全局 PARAM_KEYS 由本表并集派生，本表与 lint 规则必须同步，否则该参数行会静默失效。
   aiScroll: ['direction', 'distancePct', 'until', 'max', 'maxScrolls', 'timeout'],
   aiTapEach: ['rows', 'tap', 'stopWhen', 'maxRounds', 'verify', 'verifyColor', 'profile', 'timeout'],
   uiDump: ['path', 'timeout'],

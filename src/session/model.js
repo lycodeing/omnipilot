@@ -41,7 +41,7 @@ export function baseUrlHash(url) {
   return crypto.createHash('sha1').update(url).digest('hex').slice(0, 8);
 }
 
-// 思考控制定档（2026-10-28 调研，详见 docs/THINKING-CONTROL.md）：
+// 思考控制定档（详见 docs/THINKING-CONTROL.md）：
 //   - 能否关闭思考因模型而异：DeepSeek(ds)/Qwen(qwen)/MiniMax 支持关闭（reasoning_effort=none
 //     或 thinking:{type:"disabled"} / enable_thinking:false）；**智谱 GLM-5.3 系不支持关闭**
 //     （官方原文「GLM-5.3 会始终启用思考功能…并不再支持禁用思考功能」，仅接受 low/high/max，
@@ -49,9 +49,8 @@ export function baseUrlHash(url) {
 //   - 故对不能关闭的模型，最低档降到 'low'（官方允许的最低有效档），而不是 none。
 // 返回符合该模型能力的 thinkingLevelMap（Pi 的 thinkingLevel → 网关思考控制值）。
 
-// 模型能力表（2026-11-10 评审 #8）：家族级**协议能力**（思考可否关闭/最低档位）收敛于此，
-// 与 device/coord 的家族策略表同款范式——新家族加一行，不碰引擎逻辑。此前 glm-5.3 正则
-// 内联在 buildThinkingLevelMap 里，家族知识散落。首条 match 命中即用；未命中走缺省能力。
+// 模型能力表：家族级**协议能力**（思考可否关闭/最低档位）收敛于此，
+// 与 device/coord 的家族策略表同款范式——新家族加一行，不碰引擎逻辑。首条 match 命中即用；未命中走缺省能力。
 const MODEL_CAPABILITIES = [
   // GLM-5.3 / 5.3-Flash / 5.3-FlashX：思考不可关闭，最低只到 low
   { match: /^glm-5\.3(-flash|-flashx)?$/i, canDisableThinking: false, minEffort: 'low' },
@@ -97,8 +96,8 @@ export async function createModel(cfg = resolveModelConfig(), { modelRuntime } =
         // reasoning:true 是**必需**的：SDK 的 openai-completions provider 在**每个**思考控制分支
         // （reasoning_effort / thinking / enable_thinking / chat_template_kwargs）上都带 `&& model.reasoning` 守卫，
         // 且 getSupportedThinkingLevels 在 reasoning:false 时只返回 ['off']。
-        // 若置 false，思考控制参数根本不会发往网关（实测 5 个模型 outbound 全为 undefined），
-        // 网关于是回退到**自身默认**（如 glm 默认长思考，实测单轮 16s、94% 时间耗在自发 reasoning）。
+        // 若置 false，思考控制参数根本不会发往网关（5 个模型 outbound 全为 undefined），
+        // 网关于是回退到**自身默认**（如 glm 默认长思考，单轮 16s、94% 时间耗在自发 reasoning）。
         reasoning: true,
         input: ['text', 'image'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

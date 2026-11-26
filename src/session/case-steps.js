@@ -18,10 +18,9 @@ export const QUERY_TYPES = new Set(['aiQuery']);
 export const WAIT_TYPES = new Set(['aiWaitFor']);
 export const ENGINE_TYPES = new Set(['aiTap', 'aiInput', 'aiLongPress', 'aiKeyboardPress', 'aiScroll', 'aiTapEach', 'launch', 'terminate', 'uiDump']);
 // 坐标步（tap 带 {x,y}）：**默认禁用**，需用例顶层 allowCoords: true 或 CLI --allow-coords。
-// 依据 docs/DESIGN.md:978「禁止把坐标写进用例文件」（2026-09-24 裁定）——故这里不是"支持新语法"，
-// 而是把这个裁定早设计好的 allowCoords 逃生口（DESIGN.md:449）落地为**显式、可审计**的开关。
-// 未开启时坐标步报解析错（此前静默降级成 ai 任务，把 "tap: { x: 405, y: 2115 }" 当自然语言喂给模型，
-// 12 条断言因没点到目标而全灭且无任何告警——静默失效是最坏的失败模式）。
+// 依据 docs/DESIGN.md:978「禁止把坐标写进用例文件」——这里把 DESIGN.md:449 早设计好的
+// allowCoords 逃生口落地为**显式、可审计**的开关。
+// 未开启时坐标步报解析错（静默降级成 ai 任务会把坐标当自然语言喂给模型，导致点击未命中且无告警）。
 // 仅收 tap：swipe 需要两个点而 DSL 无既定双点语法，与其臆造不如让它落进
 // "未知步骤命令"报错（写清可用形态），避免又一个"看起来能跑其实静默失效"的入口。
 export const COORD_TYPES = new Set(['tap']);
@@ -50,8 +49,7 @@ export function buildToolCall(step) {
     return { tool: 'point_tap', params: { x: Number(step.x), y: Number(step.y) } };
   }
   if (t === 'aiTap') return { tool: 'tap', params: { target: step.text } };
-  // aiInput 的 clear 必须转发：src/tools/action.js 的 input 工具支持 clear（先清空再输入），
-  // 但此前 buildToolCall 不带 clear → 用例里写 "clear: true" 永远不生效。
+  // aiInput 的 clear 必须转发：src/tools/action.js 的 input 工具支持 clear（先清空再输入）。
   if (t === 'aiInput') return { tool: 'input', params: { target: step.text, value: step.value ?? '', ...(step.clear != null ? { clear: coerce('clear', step.clear) } : {}) } };
   if (t === 'aiLongPress') return { tool: 'long_press', params: { target: step.text, ...(num(step.durationMs) != null ? { durationMs: num(step.durationMs) } : {}) } };
   if (t === 'aiKeyboardPress') return { tool: 'key', params: { name: step.keyName || step.text } };

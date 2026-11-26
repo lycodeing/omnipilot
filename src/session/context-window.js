@@ -51,7 +51,7 @@ export function buildStepDigest({ caseName, caseTotal, steps = [], assertions = 
   });
   const passed = assertions.filter((a) => a.passed).length;
   const failedList = assertions.filter((a) => !a.passed).map((a) => `「${String(a.text).slice(0, 24)}」`);
-  // vars 实际是 Map（ctx.vars），Object.entries 对 Map 恒返回 []（曾致变量行静默失效）；
+  // vars 实际是 Map（ctx.vars），Object.entries 对 Map 恒返回 []（变量行会静默失效）；
   // 对象/数组值 JSON 序列化避免 "[object Object]"
   const varEntries = vars instanceof Map ? [...vars.entries()] : Object.entries(vars ?? {});
   const varLines = varEntries.filter(([, v]) => v != null && v !== '').map(([k2, v]) => `${k2}=${(typeof v === 'object' ? JSON.stringify(v) : String(v)).slice(0, 30)}`);

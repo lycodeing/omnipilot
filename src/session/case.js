@@ -123,8 +123,7 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
       caseObj.allowCoords = /^(true|yes|on|1)$/i.test(v);
       continue;
     }
-    // 顶层 targetPackage：目标 App 显式声明（评审 #4）。--pregrant 此前从步骤 JSON 正则抓
-    // 第一个 com.*，断言/URL 文本可能抢先误中——声明后精确授权。
+    // 顶层 targetPackage：目标 App 显式声明，使 --pregrant 精确授权，不依赖从步骤文本猜测包名。
     if (!inSteps && /^targetPackage\s*[:：]/.test(trimmed)) {
       caseObj.targetPackage = unquote(trimmed.replace(/^targetPackage\s*[:：]/, '')).trim();
       continue;
@@ -191,9 +190,8 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
           continue;
         }
         // 已知参数名（如误缩进的 value:）不当作步骤；其余未知 "key: value" 视为任务文本
-        // —— 但**未知命令名**必须报错**：
-        // 旧行为把 "aiTapp: 点击登录"（拼写错误）整行当自然语言任务喂给 agent，
-        // 命令语义静默降级、断言全灭且无任何告警（与坐标形态的历史事故同源）。
+        // —— 但**未知命令名**必须报错**：把拼写错误的命令整行当自然语言任务
+        // 喂给 agent 会让命令语义静默降级、断言全灭且无告警。
         // 命令名是 ASCII 标识符（形如 "name: value"）时，几乎必然是"写了个不受支持/
         // 拼错的步骤命令"，必须响亮报错并给出可用命令表。
         if (/^[A-Za-z][\w-]*$/.test(kv[1])) {
@@ -244,12 +242,11 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
   return caseObj;
 }
 
-// 每命令消费的参数表（2026-11-10 评审 #12）：全局 PARAM_KEYS 收集保持宽容，但装载期对
-// "该命令不认的参数"显式 warn——写错位的参数（aiScroll 挂 value:）此前被静默收下、毫无
-// 作用。校准依据：bin/ask.js 与 buildToolCall 的实际消费点 + 全部存量用例（0 误报）。
+// 每命令消费的参数表：全局 PARAM_KEYS 收集保持宽容，但装载期对
+// "该命令不认的参数"显式 warn，避免写错位的参数（aiScroll 挂 value:）被静默收下、毫无作用。
 // 注：batch 是 ai/aiAct 长任务步的续作形态（false=逐个处理 / true=每轮并行处理本屏全部项），
 // 与 until/maxRounds 一起构成显式 loop 声明（见 resolveLoopPlan）；
-// selector 是 aiWaitFor 的显式等待 selector（评审 #10：散文解析只作未声明时的兜底）。
+// selector 是 aiWaitFor 的显式等待 selector（散文解析只作未声明时的兜底）。
 function warnUnknownParams(caseObj, source) {
   caseObj.steps.forEach((s, i) => {
     const known = PARAM_KEYS_BY_TYPE[s.type];

@@ -1,10 +1,10 @@
-// 上下文治理执行后端（评审 C-A1）：四道治理经 appendContextEdit 对 Pi 1.6.0 的
+// 上下文治理执行后端：四道治理经 appendContextEdit 对 Pi 1.6.0 的
 // **实际请求上下文**生效——SDK 每次请求前用 buildSessionProjection() 重建消息数组
-// （agent-session._installAgentRequestProjection），原地改写 state.messages 会被覆盖，
-// 旧版 prune* 的治理因此从未到达模型。本模块把同样的决策落到会话树的 context_edit /
-// custom_message entry 上：投影可见、持久化历史保留原文（append-only，不污染取证）。
+// （agent-session._installAgentRequestProjection），原地改写 state.messages 会被覆盖。
+// 本模块把治理决策落到会话树的 context_edit / custom_message entry 上：投影可见、
+// 持久化历史保留原文（append-only，不污染取证）。
 //
-// 三语义（均已运行时验证）：
+// 三语义：
 //   - 删除：appendContextEdit(id, null) → 该 entry 不再贡献模型可见消息
 //   - 替换：appendContextEdit(id, {content}) → 只换 content，role/metadata 不动
 //     （toolResult 的 role 不可改 → 折叠须"null 删除 + custom user 摘要注入"两步）
@@ -18,15 +18,10 @@ export function createContextGovernor({ sessionManager }) {
   function projection() { return sessionManager.buildSessionProjection(); }
 
   // 一次投影 → entryId 数组（与 proj.messages 一一对应，不可 edit 的 entry 为 null）。
-  // SDK 事实（session-manager.js projectContextEntry）：无 edit 的 entry 投影 messages
-  // 与 sourceEntry.message 引用共享；**有 edit 的 entry 每次投影返回新对象**
-  // {...message, content}。旧版按"投影输出对象 === 源消息"引用匹配，对已被其他治理
-  // edit 过的消息必然找不到 id → omit/editContent 静默失败（评审 C1：截断→折叠组合
-  // 残留 role:toolResult → 请求侧 role:"tool" → 网关 400）。
-  // 修复：不依赖引用相等——proj.messages 是 entries[].messages 的 flatMap（顺序一致、
-  // 分段长度已知），按位置把每条投影消息对齐回其源 entry.id。id 一旦取得即稳定
-  // （appendContextEdit 只认 id），后续批量 edit 不再受"投影重建换对象"影响。
-  // 一次构建 O(n)，消除旧版逐条 entryIdOf 重扫投影的 O(n²)（评审 M3）。
+  // SDK 有 edit 的 entry 每次投影返回新对象，故不能按引用相等匹配 id；proj.messages 是
+  // entries[].messages 的 flatMap（顺序一致、分段长度已知），按位置对齐回源 entry.id。
+  // id 一旦取得即稳定（appendContextEdit 只认 id），后续批量 edit 不受投影重建换对象影响；
+  // 一次构建 O(n)，无需逐条重扫投影。
   function resolveIds(proj) {
     const ids = [];
     for (const entry of proj.entries) {
@@ -58,10 +53,9 @@ export function createContextGovernor({ sessionManager }) {
   }
 
   // 清理投影里仍可见的同类 custom 注入（仅 digest 用）。digest 是"替换"语义：
-  // 每步重放时旧注入必须先删，否则窗口折叠每次执行都追加一条新 digest（实验实证：
-  // 8 步后 5 条 digest 累积、tail 计数错位把保留段原文也删光）。已 null 删除的
-  // entry 投影 messages 为空，天然跳过 → 重复执行幂等。
-  // 注意：折叠摘要（ask-folded-tool-result）**不走这里**——它是增量语义（评审 I1），
+  // 每步重放时旧注入必须先删，否则窗口折叠每次执行都追加一条新 digest（累积后 tail 计数
+  // 错位会把保留段原文也删光）。已 null 删除的 entry 投影 messages 为空，天然跳过 → 重复执行幂等。
+  // 注意：折叠摘要（ask-folded-tool-result）**不走这里**——它是增量语义，
   // 清旧会把早期步/轮的摘要永久丢掉，见 foldToolRound。
   function omitCustomType(customType) {
     for (const entry of projection().entries) {

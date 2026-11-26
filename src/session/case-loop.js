@@ -28,7 +28,7 @@ export function waitSelectorFromText(text) {
 }
 
 // 马拉松续作计划（bin/ask.js ai/aiAct 续作循环用，纯函数）：显式步级参数优先，
-// 散文关键词仅作存量用例兼容——引擎只读字段不猜词（2026-11-10 评审 P1 落地）。
+// 散文关键词仅作存量用例兼容——引擎只读字段不猜词。
 //
 // 显式形态（推荐）：ai 步挂 until/maxRounds/batch 参数行：
 //   - ai: 逐题作答直到出现提交按钮

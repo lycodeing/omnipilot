@@ -38,8 +38,8 @@ export function makeAttachStepShot(device, recorder) {
 }
 
 // 步内第 2 轮起的 prompt（催答/续作/视觉确认）自带本轮原始 role:'toolResult' 历史，
-// 网关对 role:tool 历史返回 400（对照实验实证）→ 每次追加 prompt 前先同步全折叠为纯文本。
-// governor 落 appendContextEdit：SDK 请求前重建投影时折叠必然生效（旧原地改写被覆盖）。
+// 网关对 role:tool 历史返回 400 → 每次追加 prompt 前先同步全折叠为纯文本。
+// governor 落 appendContextEdit：SDK 请求前重建投影时折叠必然生效（原地改写会被投影覆盖）。
 export function makeFoldForGateway(gov) {
   return () => { try { gov.foldToolHistory(); } catch { /* 折叠失败不阻断 */ } };
 }

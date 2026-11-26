@@ -1,8 +1,8 @@
 // 会话历史截图治理（§16）：旧截图替换为文字占位符，避免 prompt tokens 随历史线性膨胀。
 //
-// 实测背景：20 张 1080×2400 历史图 → prompt_tokens 达 67k、单轮往返 26s（1 张时仅 3.4k / 11s）。
+// 背景：20 张 1080×2400 历史图 → prompt_tokens 达 67k、单轮往返 26s（1 张时仅 3.4k / 11s）。
 // 策略：**只保留最近 N 张图**完整可见，更早的替换为 `[截图已省略: <标签> <尺寸>]` 文本。
-//   - 模型仍知道"那里曾看过一张图 + 当时的标签"，只是不再重传像素
+//   - 模型仍知道"那里看过一张图 + 当时的标签"，只是不再重传像素
 //   - 报告里的截图文件**不受影响**（原图仍落盘取证）
 //
 // 依赖：Pi 的 session.agent.state.messages（SDK 文档明确支持读写该数组）。
@@ -75,13 +75,13 @@ export function pruneImages(messages, { keepRecent = 3 } = {}) {
 
 // —— 旧工具结果截断（上下文治理第二道）——
 // uitree/screen_diff/read 等工具结果单条可达 20-40KB；长 run（百步）累积数 MB 进上下文，
-// 实测 deepseek 在长上下文下对部分轮次返回空消息（无文本无 toolCall）。图片已有 pruneImages，
-// 工具结果此前无治理。策略：保留最近 keepRecent 条 toolResult 完整，更早的截断为前 N 字符摘要。
+// deepseek 在长上下文下对部分轮次返回空消息（无文本无 toolCall）。策略：保留最近 keepRecent
+// 条 toolResult 完整，更早的截断为前 N 字符摘要。
 // 模型仍知道"该步调用过、返回过大意"，只是不再重传全文。
 export const TOOLRESULT_PLACEHOLDER = '[工具结果已截断';
 
 // —— 旧工具轮折叠为纯文本（网关兼容治理，第三道）——
-// 实测（2026-10-29 对照实验）：u2a 网关/deepseek 对**任何含 role:'tool' + tool_calls 历史**的
+// u2a 网关/deepseek 对**任何含 role:'tool' + tool_calls 历史**的
 // 请求返回 400（"模型无法处理此请求"），纯文本历史则 200 且能正常返回 tool_calls。
 // SDK 的 openai-completions 转换会把 toolResult 发成 role:'tool' → 多轮工具历史必然触发 400，
 // 表现为模型"空响应"。对策：把**旧的**工具轮折叠为纯文本消息（assistant toolCall→文本描述、
