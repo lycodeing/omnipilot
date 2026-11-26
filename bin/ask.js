@@ -40,7 +40,7 @@ const WORKSPACE = resolveWorkspace();
 // 进程级信号处理（§2.6.2 ④）：还原设备状态 + 释放锁，再退出。
 // 必须注册在进程作用域（非 runOne 内，避免多 case/并行时累积处理器）。
 // 在册集合而非单指针：--parallel 组间并发（Promise.all）时多个 runOne 同时在跑，
-// 单指针会互相覆盖——信号处理只能看到最后一个，先结束的 run 还会把别人的 ctx 清掉（复审发现）。
+// 单指针会互相覆盖——信号处理只能看到最后一个，先结束的 run 还会把别人的 ctx 清掉。
 const activeRuns = new Set();   // 每项 { ctx, device, bridge, serial }，runOne 开始时在册、finally 注销
 let cleaningUp = false;
 let sharedBridgeRef = null;      // cmdRun 级共享 MCP 桥：信号退出时也要能关（runOne 不持有）
@@ -81,7 +81,7 @@ process.once('SIGTERM', () => gracefulExit('SIGTERM'));
 function fail(msg, code = 2) {
   console.error(`Error: ${msg}`);
   // fail 是同步函数、多处同步调用，而 MCP bridge.close 是 async：不 await，进程退出前尽力关闭
-  // 共享桥子进程（不改成 async 以免波及全部调用方）；泄漏风险低于此前完全不关。
+  // 共享桥子进程（不改成 async 以免波及全部调用方）；尽力关闭优于完全不关。
   try { sharedBridgeRef?.close?.()?.catch?.(() => {}); } catch { /* ignore */ }
   // fail 同步 process.exit，Node 不展开调用栈、cmdAsk 的 finally 不会执行：取锁后若走到 fail
   // （createDevice 失败 / 缺模型配置等），必须在此主动释放 shared 读锁，否则残留死 pid 锁文件，
@@ -95,7 +95,7 @@ function fail(msg, code = 2) {
 
 // --vlm-locate 的视觉定位函数工厂（runOne / cmdAsk 共用）。
 // 坐标约定用 model family 的 describeForPrompt 描述，返回交给 locate 的 toPixels 解析；
-// 截图先经 compressForContext 降采样（全尺寸 PNG base64 ~570KB/次太贵，终审 Minor #7）。
+// 截图先经 compressForContext 降采样（全尺寸 PNG base64 ~570KB/次太贵）。
 async function buildVlmLocate(ctx, modelCfg) {
   const { resolveStrategy } = await import('../src/device/coord/registry.js');
   const { compressForContext } = await import('../src/image/png.js');
@@ -107,8 +107,7 @@ async function buildVlmLocate(ctx, modelCfg) {
       img = { data: c.buffer.toString('base64'), mimeType: c.mimeType };
     } catch { /* 压缩失败用原图 */ }
     const fmt = cs?.describeForPrompt?.() || 'Return coordinates normalized to 0-1000.';
-    // 必须给"找不到"的出口：否则目标不在屏上时模型会被迫编造坐标（真机事故：
-    // 编造坐标点中无关卡片 → 进入错误页面）。toNumbers 对无数字回复返回空 →
+    // 必须给"找不到"的出口：否则目标不在屏上时模型会被迫编造坐标点中无关卡片、进入错误页面。
     // locate 走"VLM 返回无法解析"失败路径，安全。
     const raw = await ctx.chat(
       `Locate the UI element described as: ${target}. ${instruction || ''} ${fmt} If the target is NOT visible on this screen, reply with exactly: NOT_FOUND. Otherwise reply with ONLY the numbers.`,
@@ -199,10 +198,10 @@ async function makeConfirm(message) {
 // （runCaseLoop 与 cmdAsk 共用，cmdAsk 直接 import 复用）。
 
 // 步内/轮内追加 prompt 前的网关防护（同步）：把历史里的 role:'tool' 轮全折叠为纯文本。
-// 网关对含 role:tool 的历史返回 400（对照实验实证）；每步 finally 的步间折叠覆盖不到
+// 网关对含 role:tool 的历史返回 400；每步 finally 的步间折叠覆盖不到
 // "同一步/同一问答内第 2 轮 prompt"，催答/续作/视觉确认轮必须自带本折叠。
-// 评审 C-A1：折叠经 governor 落 appendContextEdit（对实际请求生效）；旧原地改写版
-// foldToolHistoryForFollowup 已删除——SDK 每次请求前重建投影，原地改写从未到达模型。
+// 折叠经 governor 落 appendContextEdit（对实际请求生效）；SDK 每次请求前重建投影，
+// 原地改写不会到达模型。
 
 // —— 设备事实采集见 src/cli/device-facts.js（已抽出以便单测） ——
 
@@ -244,8 +243,8 @@ async function cmdRun({ positional, flags }) {
   cases.forEach((c, i) => groups[i % serials.length].cases.push(c));
   const active = groups.filter((g) => g.cases.length);
 
-  // MCP 桥提升到 cmdRun 级（性能）：旧实现每条用例都重建连接（stdio 子进程冷启动
-  // 1-5s/server + listTools），N 条用例付 N 次握手税。这里建一次、跨用例共享、收尾统一关。
+  // MCP 桥提升到 cmdRun 级（性能）：每条用例都重建连接会付 N 次 stdio 子进程冷启动
+  // （1-5s/server + listTools）握手税。这里建一次、跨用例共享、收尾统一关。
   let sharedBridge = null;
   try {
     const { loadMcpConfig } = await import('../src/mcp/config.js');
@@ -304,9 +303,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
 
   const opts = {
     yes: !!flags.yes,
-    // 整 run 时间预算（cases/README："整 run 时长由 --timeout 控制"）。此前 opts.timeoutMs
-    // 全仓零消费者是死配置（实测 run 超预算仍不退出）；现在 runDeadline 在主循环/马拉松/
-    // 空轮重试各处生效。缺省 0 = 不限（兼容未传 flag 的既有调用），传了才生效。
+    // 整 run 时间预算（cases/README："整 run 时长由 --timeout 控制"）：runDeadline 在主循环/
+    // 马拉松/空轮重试各处生效。缺省 0 = 不限（兼容未传 flag 的既有调用），传了才生效。
     timeoutMs: flags.timeout != null ? Number(flags.timeout) * 1000 : 0,
     vlmLocate: !!flags['vlm-locate'],
     freshLocate: !!flags['fresh-locate'],
@@ -326,7 +324,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
 
   try {
     const modelCfg = resolveModelConfig(flags);
-    // 配置缺失早失败：此前"无模型模式"会继续跑完整条用例、只打一条 warn，浪费真机时间且
+    // 配置缺失早失败：若继续跑完整条用例只打一条 warn，会浪费真机时间且
     // agent 轮全程无模型可用。缺 url/key/name 任一即退出码 2（环境/配置错误）。
     if (!modelCfg.url || !modelCfg.key || !modelCfg.name) {
       console.error('模型配置缺失：需 ASK_MODEL_URL / ASK_MODEL_KEY / ASK_MODEL_NAME（或用 --model-* 覆盖）；可复制 .env.example 为 .env 后由 CLI 自动加载');
@@ -361,13 +359,13 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     }
 
     // preflight 预授权（§2.7.2 一层）：**默认关闭**，`--pregrant` 显式开启。
-    // ⚠️ 真机实测（2026-10-27）：对掘金 `pm grant` 批量授权后，App **启动即崩溃**
-    //    （logcat: Application Error: com.daimajia.gold / Process has died），且 `pm grant` 会杀掉
-    //    **正在运行**的 App。故默认不启用；确需消灭授权框时用 --pregrant（并先停止 App）。
+    // `pm grant` 会杀掉**正在运行**的 App，部分 App（如掘金）批量授权后启动即崩溃
+    //    （logcat: Application Error ... / Process has died）。故默认不启用；确需消灭授权框时
+    //    用 --pregrant（并先停止 App）。
     if (flags.pregrant === true) {
       try {
-        // 目标包名解析（评审 #4）：顶层 targetPackage > launch 步 appId > 正则兜底（历史
-        // 行为——断言/URL 里任何 com.* 都可能抢先误中；兜底命中时显式 warn 提示声明）
+        // 目标包名解析：顶层 targetPackage > launch 步 appId > 正则兜底（断言/URL 里任何
+        // com.* 都可能抢先误中；兜底命中时显式 warn 提示声明）
         let pkg = caseObj.targetPackage || null;
         if (!pkg) {
           const launchStep = (caseObj.steps || []).find((s) => s.type === 'launch' && (s.appId || s.text));
@@ -423,7 +421,6 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       ctx.modelCfg = modelCfg; // 视觉作答（tap_each_row 缺省形态）需要坐标族
 
       // --vlm-locate：把 chat 客户端包装成视觉定位函数注入 locate 策略链第 5 环（§5.1）。
-      // 旧实现该 flag 只被读去做统计、vlm 从未接线（定位失败无视觉兜底）。
       // 视觉定位默认启用：引擎定位 MISS 时做确定性视觉接地（截图→坐标→tap），不耗 agent 轮
       ctx.vlm = await buildVlmLocate(ctx, modelCfg);
     }
@@ -433,7 +430,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     try { deviceFacts = await collectDeviceFacts(device, { serial }); } catch { /* 降级 */ }
 
     // 启动自检（§2.6.2 ⑤）：上次 run 可能没还原干净。仅当设备支持 net 时才检查，避免噪音。
-    // 复用 facts 已采的 netProfile（旧实现在 facts 内已查一次 netStatus，这里又查一次）。
+    // 复用 facts 已采的 netProfile（避免重复查一次 netStatus）。
     if (deviceFacts && deviceFacts.netSupported === true) {
       try {
         const profile = deviceFacts.netProfile ?? null;
@@ -454,8 +451,8 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     });
     for (const w of prompt.warnings) console.warn(`[warn] ${w}`);
 
-    // 工具实例只建一次（性能+一致性）：旧实现 createAskSession 内建一套、toolMap 又建一套，
-    // screen_diff 的基线 hash 等闭包状态会分裂成两份。同一数组同时给 agent 与引擎直执行。
+    // 工具实例只建一次（性能+一致性）：建两套会让 screen_diff 的基线 hash 等闭包状态
+    // 分裂成两份。同一数组同时给 agent 与引擎直执行。
     const { buildTools, buildEngineTools } = await import('../src/tools/index.js');
     const runTools = buildTools(ctx);
     const session = await createAskSession(ctx, {
@@ -464,7 +461,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       model,
       modelRuntime,
       // buildTools 只含契约工具（25 个）；引擎专用工具（point_tap）不进模型面——
-      // 模型仍被禁止给像素坐标（tap.description 即 2026-09-24 裁定原文）
+      // 模型仍被禁止给像素坐标（tap.description 即 DESIGN.md:978 的禁裸坐标约束）
       tools: runTools,
     });
     // 上下文治理执行后端（评审 C-A1）：四道治理经 appendContextEdit 对实际请求生效，
@@ -476,7 +473,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     // 使 buildToolCall 产出的坐标调用也能命中有记账包装的实例。
     const toolMap = new Map([...runTools, ...buildEngineTools(ctx)].map((t) => [t.name, t]));
 
-    // —— 动作计划缓存（业界调研落地，Midscene caching 同款）——
+    // —— 动作计划缓存（Midscene caching 同款）——
     // 只建缓存实例；工具调用记账包装与 planKey 构造已下沉到 runCaseLoop（toolMap 与
     // session 共享实例，run-loop 内就地包装 execute 即可记录模型路径的调用序列）。
     const planCache = createPlanCache(WORKSPACE.stateDir);
@@ -494,7 +491,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     }
 
     // 收尾：报告（网络还原已移至 finally，保证异常/中断路径也执行，§2.6.2 ①）
-    recorder.setEngineLog(ctx.engineLog); // 引擎步记录落 run.json（失败排查依据；此前只留内存，run 结束即丢）
+    recorder.setEngineLog(ctx.engineLog); // 引擎步记录落 run.json（失败排查依据）
     await recorder.finish(status === 'pass' ? 'pass' : status, { exitCode: status === 'pass' ? 0 : status === 'fail' ? 1 : 2 });
     session.dispose?.();
     if (!flags.quiet) {
@@ -515,7 +512,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     return status === 'pass' ? 0 : status === 'fail' ? 1 : 2;
   } finally {
   // 网络还原（§2.6.2 ① + ③）：无条件执行；失败要 warn + 记 rollback，不静默。
-  // 用本 run 局部的 ctx（并行时共享 activeRun 指针会串台——复审发现；ctx 在上方提到 try 外声明）
+  // 用本 run 局部的 ctx（并行时共享 activeRun 指针会串台；ctx 在上方提到 try 外声明）
   try {
     const { restoreNetwork } = await import('../src/state-mutations.js');
     const r = await restoreNetwork(device, ctx ?? { stateMutations: [] });
@@ -527,7 +524,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     console.error(`[warn] 网络还原异常：${e?.message ?? e}`);
   }
     // 收尾：坐标缓存攒批 flush 放 finally——run 中途抛错（环境错误等）也要排空，
-    // 否则去抖 timer 被 process.exit 掐掉，pending 缓存行丢失（旧实现即时 upsert 无此问题）
+    // 否则去抖 timer 被 process.exit 掐掉，pending 缓存行丢失
     try { await ctx?.locateWithCache?.flush?.(); } catch { /* 缓存 flush 失败不阻断收尾 */ }
     // 只关本 run 自建的桥；cmdRun 级共享桥由其收尾统一关闭（runHandle.bridge 为 null）
     try { if (runHandle?.bridge) await runHandle.bridge.close?.(); } catch { /* ignore */ }
@@ -569,7 +566,7 @@ async function cmdAsk({ positional, flags }) {
       const built = await createModel(modelCfg);
       model = built.model;
       modelRuntime = built.modelRuntime;
-      // ask 的只读白名单含 locate：--vlm-locate 时同样接视觉兜底（与 run 一致，终审 Minor #5）
+      // ask 的只读白名单含 locate：--vlm-locate 时同样接视觉兜底（与 run 一致）
       if (ctx.opts.vlmLocate) {
         const { createChatClient } = await import('../src/tools/ai.js');
         ctx.chat = createChatClient({ url: modelCfg.url, key: modelCfg.key, model: modelCfg.name });
@@ -677,8 +674,7 @@ async function cmdData({ positional, flags }) {
   }
   if (sub === 'diff') {
     const rows = await store.read(name);
-    // 按 _run 分组取最近两个 distinct run：cur=最近 run，prev=次近 run。
-    // 旧实现 prev 取"所有非 lastRun 行"会把多次 run 混在一起，语义不是"与上一次 run 对比"。
+    // 按 _run 分组取最近两个 distinct run：cur=最近 run，prev=次近 run（"与上一次 run 对比"）。
     const summary = { dataset: name, ...diffByRun(rows) };
     out(flags, summary, JSON.stringify(summary, null, 2));
     return 0;
@@ -793,7 +789,7 @@ async function cmdDoctor({ flags }) {
   if (flags.model || (!flags.device && !flags['cache-report'])) {
     const { resolveModelConfig } = await import('../src/session/model.js');
     const cfg = resolveModelConfig(flags);
-    // --model 时发一次真实请求探活：此前只校验配置非空、网关是否可达一概不知。
+    // --model 时发一次真实请求探活：只校验配置非空无法判断网关是否可达。
     if (cfg.url && cfg.key && cfg.name) {
       try {
         const { createChatClient } = await import('../src/tools/ai.js');
@@ -881,7 +877,7 @@ async function main() {
 main().then((code) => process.exit(code ?? 0)).catch(async (e) => {
   console.error(e?.stack || e?.message || e);
   // 未捕获异常路径必须释放设备锁：否则设备被锁住直到 stale 超时（10 分钟）。
-  // 信号退出走 gracefulExit（已释放），但纯异常路径此前是裸 exit —— 锁泄漏。
+  // 信号退出走 gracefulExit（已释放），纯异常路径也须释放，否则锁泄漏。
   try {
     for (const run of activeRuns) {
       if (run.serial) {

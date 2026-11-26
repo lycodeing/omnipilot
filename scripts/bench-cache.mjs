@@ -1,4 +1,4 @@
-// 实测：树缓存 vs 定位缓存各自省下的是哪段时间
+// 树缓存 vs 定位缓存各自省下的是哪段时间
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 

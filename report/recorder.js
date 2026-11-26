@@ -142,9 +142,9 @@ export function buildDump(runJson, opts = {}) {
   const preset = opts.screenshotIds ?? null;
   const screenshots = {};
   const tasks = (run.steps ?? []).map((step) => {
-    // result 词表收敛（2026-11-04 评审 P2）：写侧有 'ok'|'failed'|'cancelled'|'error' 四种
-    // （withRecording），fixture/旧数据还有 'fail' 拼写；cancelled（用户拒绝确认）与 error
-    // （设备异常）此前都被折叠成 failed，报告语义有损。映射为四态 + 未知拼写兜底 failed。
+    // result 词表收敛：写侧有 'ok'|'failed'|'cancelled'|'error' 四种
+    // （withRecording），fixture/旧数据还有 'fail' 拼写；cancelled 与 error 需各自成态，
+    // 报告语义才无损。映射为四态 + 未知拼写兜底 failed。
     //
     // 脱敏标记 [REDACTED:provider:key] 也必须识别为成功：recorder 对 secret 类步骤
     // 会把 result 覆写成脱敏标记（防密钥落盘），若按"未知值→failed"处理，
@@ -221,7 +221,7 @@ function decodeDataURL(data) {
 
 function toDataURL(data) {
   if (data instanceof Uint8Array) {
-    // 判定输入图可能是压缩 JPEG（FFD8 魔数），旧实现硬编码 image/png 会让浏览器拒绝解码
+    // 判定输入图可能是压缩 JPEG（FFD8 魔数），硬编码 image/png 会让浏览器拒绝解码
     const mime = data[0] === 0xFF && data[1] === 0xD8 ? 'image/jpeg' : 'image/png';
     return `data:${mime};base64,${Buffer.from(data).toString('base64')}`;
   }

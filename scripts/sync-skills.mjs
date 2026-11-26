@@ -1,5 +1,5 @@
 // skills/ → .pi/skills/<name>/SKILL.md 同步（Pi SDK 只发现后者，skills/README 有说明）。
-// 此前靠 README 里的手工 cp 命令——人肉同步迟早失同步，收敛为一个 npm script。
+// 收敛为一个 npm script，避免手工 cp 同步迟早失同步。
 // 用法：npm run skills:sync
 import { cpSync, mkdirSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
