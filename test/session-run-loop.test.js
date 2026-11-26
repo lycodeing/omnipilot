@@ -1,34 +1,136 @@
 // run 循环编排测试（fake session + fake device，不真连）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { runCaseLoop } from '../src/session/run-loop.js';
+import { createRunContext } from '../src/session/create.js';
+import { RunRecorder } from '../src/recorder/index.js';
+import { buildTools, buildEngineTools } from '../src/tools/index.js';
+import { createContextGovernor } from '../src/session/context-governor.js';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 
-// 本 Task 先测 timeout 终态逻辑的纯函数抽取；run-loop 下沉在阶段三
-test('timeout 终态：超预算 break 后 status 必须是 timeout 而非 pass', async () => {
-  // 抽取为纯函数后测试；当前先验证 recorder 支持 timeout 状态
-  const { RunRecorder } = await import('../src/recorder/index.js');
-  const fs = await import('node:fs');
-  const os = await import('node:os');
-  const path = await import('node:path');
+// timeout 终态逻辑由 runCaseLoop 承载；此处同时守护 recorder 支持 timeout 状态
+test('timeout 终态：超预算 break 后 status 必须是 timeout 而非 pass', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-timeout-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const rec = new RunRecorder({ runsDir: dir, caseName: 'timeout.yaml' });
   rec.startStep('tap', 'x').end();
   const doc = await rec.finish('timeout', { exitCode: 2 });
   assert.equal(doc.status, 'timeout');
   assert.equal(doc.exitCode, 2);
-  fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('引擎步失败终态：engineFailed 标记使零断言 run 判 fail', async () => {
-  // 终态判定纯函数抽取到 run-loop-helpers（阶段三），此处先守护 recorder 侧
-  const { RunRecorder } = await import('../src/recorder/index.js');
-  const fs = await import('node:fs');
-  const os = await import('node:os');
-  const path = await import('node:path');
+// 终态判定由 runCaseLoop 的 engineFailed 承载；此处守护 recorder 侧 engineLog 形状
+test('引擎步失败终态：engineFailed 标记使零断言 run 判 fail', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-engine-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const rec = new RunRecorder({ runsDir: dir, caseName: 'engine.yaml' });
   rec.setEngineLog([{ step: 0, type: 'aiTap', tool: 'tap', ok: false, error: 'LOCATE_MISS' }]);
   const doc = await rec.finish('fail', { exitCode: 1 });
   assert.equal(doc.status, 'fail');
   assert.equal(doc.engineLog[0].ok, false);
-  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function fakeSession({ answers = [] } = {}) {
+  let i = 0;
+  const messages = [];
+  const prompts = [];
+  return {
+    prompts,
+    agent: { state: { messages } },
+    async prompt(text, opts) {
+      prompts.push(text);
+      messages.push({ role: 'user', content: [{ type: 'text', text }] });
+      const ans = answers[Math.min(i++, answers.length - 1)] ?? '';
+      messages.push({ role: 'assistant', content: [{ type: 'text', text: ans }] });
+    },
+    dispose() {},
+  };
+}
+
+function fakeDevice(over = {}) {
+  return {
+    serial: 'fake-001',
+    screencap: async () => ({ buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]), size: { w: 720, h: 1280 } }),
+    dumpTree: async () => ({ nodes: [], hash: 'h1', dumpMs: 1, fromCache: false }),
+    locate: async () => ({ ok: true, bounds: [0, 0, 100, 100], center: [50, 50], strategy: 'exact_text', treeCacheHit: false, vlmCacheHit: false, dumpMs: 1, identity: null, error: null }),
+    tap: async () => ({ ok: true, latencyMs: 10, error: null }),
+    longPress: async () => ({ ok: true, latencyMs: 10, error: null }),
+    inputText: async (b, t) => ({ ok: true, readBack: t, error: null }),
+    scroll: async () => ({ scrolls: 1, changed: true }),
+    key: async () => ({ ok: true }),
+    launch: async () => ({ ok: true, error: null }),
+    terminate: async () => ({ ok: true }),
+    waitIdle: async () => ({ stable: true, dumps: 1 }),
+    waitForElement: async () => ({ appeared: true, dumps: 1 }),
+    screenSize: async () => ({ w: 720, h: 1280 }),
+    foreground: async () => ({ package: 'com.demo', activity: '.Main', resumedActivity: '.Main' }),
+    netStatus: async () => ({ profile: 'off' }),
+    netSetProfile: async (p) => ({ ok: true, profile: p, error: null }),
+    vlmCache: new Map(),
+    invalidateCache() {}, markDirty() {},
+    close: async () => {},
+    ...over,
+  };
+}
+
+function setup(t, { device, answers, caseObj, flags = {} } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-loop-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const recorder = new RunRecorder({ runsDir: path.join(dir, 'runs'), caseName: caseObj?.name ?? 'test' });
+  const ctx = createRunContext({ device: device ?? fakeDevice(), recorder, store: null, opts: { yes: true, ...flags } });
+  ctx.stateDir = dir;
+  const session = fakeSession({ answers });
+  const sm = SessionManager.inMemory(dir);
+  const gov = createContextGovernor({ sessionManager: sm });
+  const toolMap = new Map([...buildTools(ctx), ...buildEngineTools(ctx)].map((tool) => [tool.name, tool]));
+  return { ctx, recorder, session, gov, toolMap, dir };
+}
+
+test('runCaseLoop：纯引擎步用例（aiTap）零模型往返，终态 pass', async (t) => {
+  const { ctx, recorder, session, gov, toolMap } = setup(t, { caseObj: { name: 'engine', steps: [{ type: 'aiTap', text: '热榜' }] } });
+  const { status } = await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags: { yes: true }, caseObj: { name: 'engine', steps: [{ type: 'aiTap', text: '热榜' }] }, runDeadline: 0, modelCfg: {}, planCache: { get: () => null, put() {}, delete() {} } });
+  assert.equal(status, 'pass');
+  assert.equal(session.prompts.length, 0, '引擎步零模型往返');
+});
+
+test('runCaseLoop：引擎步失败（降级也失败）→ 终态 fail', async (t) => {
+  const device = fakeDevice({ locate: async () => ({ ok: false, bounds: null, center: null, strategy: 'none', treeCacheHit: false, vlmCacheHit: false, dumpMs: 1, identity: null, error: 'LOCATE_MISS' }) });
+  const caseObj = { name: 'engine-fail', steps: [{ type: 'aiTap', text: '不存在' }] };
+  const { ctx, recorder, session, gov, toolMap } = setup(t, { device, caseObj, answers: ['未找到'] });
+  const { status } = await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags: { yes: true, quiet: true }, caseObj, runDeadline: 0, modelCfg: {}, planCache: { get: () => null, put() {}, delete() {} } });
+  assert.equal(status, 'fail');
+});
+
+test('runCaseLoop：aiAssert 数据类断言注入数据集事实', async (t) => {
+  const caseObj = { name: 'assert', steps: [{ type: 'aiAssert', text: '数据集 hotlist 中至少有3条记录' }] };
+  const { ctx, recorder, session, gov, toolMap } = setup(t, { caseObj, answers: ['{"passed": true, "reason": "7条"}'] });
+  ctx.datasetWrites = new Map([['hotlist', 7]]);
+  ctx.store = { read: async () => [{ title: 'A' }, { title: 'B' }, { title: 'C' }] };
+  const { status } = await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags: { yes: true }, caseObj, runDeadline: 0, modelCfg: {}, planCache: { get: () => null, put() {}, delete() {} } });
+  assert.equal(status, 'pass');
+  assert.ok(session.prompts[0].includes('数据集事实'), '断言提示词应注入数据集事实');
+});
+
+test('runCaseLoop：timeout 到点 → 终态 timeout', async (t) => {
+  const caseObj = { name: 'timeout', steps: [{ type: 'aiTap', text: '热榜' }, { type: 'aiTap', text: '推荐' }] };
+  const { ctx, recorder, session, gov, toolMap } = setup(t, { caseObj });
+  const { status } = await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags: { yes: true }, caseObj, runDeadline: Date.now() - 1000, modelCfg: {}, planCache: { get: () => null, put() {}, delete() {} } });
+  assert.equal(status, 'timeout');
+});
+
+test('runCaseLoop：plan-cache 回放截图挂到最后一步（M6 回归）', async (t) => {
+  const caseObj = { name: 'replay', steps: [{ type: 'ai', text: '点击热榜' }] };
+  const { ctx, recorder, session, gov, toolMap } = setup(t, { caseObj, answers: [''] });
+  const planCache = {
+    get: () => ({ tool: 'tap', params: { target: '热榜' }, plan: [{ tool: 'tap', params: { target: '热榜' } }] }),
+    put() {}, delete() {},
+  };
+  const { status } = await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags: { yes: true }, caseObj, runDeadline: 0, modelCfg: {}, planCache });
+  assert.equal(status, 'pass');
+  const doc = await recorder.finish('pass');
+  const last = doc.steps[doc.steps.length - 1];
+  assert.ok(last.screenshot, '回放最后一步应有截图（不再孤儿）');
 });
