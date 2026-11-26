@@ -69,8 +69,7 @@ function pickModel(model) {
 // 全文兜底：深遍历所有字符串，替换已登记 secret 值。
 // 性能：secrets 为空直接短路（绝大多数 run 无 secret）；非空时把 K 个值合成单个交替
 // 正则一次扫描，避免 O(字符串数 × secret 数) 的重复 replaceAll。
-// 导出供 report 侧复用：CLI 的 build 路径也要有同一份全文兜底保证
-// （此前只有 recorder 路径有，CLI 生成的报告可能残留明文 secret）。
+// 导出供 report 侧复用：CLI 的 build 路径也要有同一份全文兜底，保证报告不残留明文 secret。
 export function buildRedactor(secrets) {
   const usable = (secrets ?? []).filter((s) => s && s.value);
   if (!usable.length) return null;
@@ -122,9 +121,9 @@ export class RunRecorder {
     this._secrets = []; // { provider, key, value }
     this._pendingWrites = []; // attachScreenshot 的后台写盘 Promise，finish 前统一 await
     this._finished = false;
-    // 崩溃安全（2026-11-24）：run.json 原先只在 finish() 落盘，SIGKILL/OOM/设备断连
-    // 会让整条 run 的步骤、断言、网络时间线全部丢失（只剩孤儿截图）。改为记账后去抖
-    // 增量落盘，崩溃后仍留下可解析的 partial JSON（_partial 标记），finish 时覆写为最终态。
+    // 崩溃安全：run.json 若只在 finish() 落盘，SIGKILL/OOM/设备断连会让整条 run 的步骤、
+    // 断言、网络时间线全部丢失。改为记账后去抖增量落盘，崩溃后仍留下可解析的 partial JSON
+    // （_partial 标记），finish 时覆写为最终态。
     this._partialTimer = null;
     this._partialWriting = null;
     this._partialPending = false;
@@ -270,8 +269,8 @@ export class RunRecorder {
     };
   }
 
-  // 落 PNG（契约签名同步返回 string 路径）。写盘改异步后台：旧实现 writeFileSync
-  // 会在每个动作步阻塞事件循环（PNG 可达 MB 级，--parallel 时冻结其它设备 IO）。
+  // 落 PNG（契约签名同步返回 string 路径）。写盘用异步后台，避免 writeFileSync
+  // 在每个动作步阻塞事件循环（PNG 可达 MB 级，--parallel 时冻结其它设备 IO）。
   // 路径先同步算好返回，写盘挂入 _pendingWrites，finish() 前统一 await 保证收尾完整。
   attachScreenshot(stepIndex, pngBuffer) {
     const file = `step-${stepIndex}.png`;

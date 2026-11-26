@@ -17,8 +17,7 @@ export function globToRegExp(glob) {
 }
 
 // 白名单匹配：工具可写原名、server__原名、server:原名 或 server_原名 四种形态
-// 单一实现：allowRes 是预编译的 glob 正则数组（运行期与测试共用同一份逻辑——
-// 此前运行期用 matchesCompiled、导出的是 matchesAllowList，两份实现可能漂移）。
+// 单一实现：allowRes 是预编译的 glob 正则数组（运行期与测试共用同一份逻辑）。
 export function matchesAllowList(originalName, serverName, allowTools, allowRes = null) {
   const res = allowRes ?? (Array.isArray(allowTools) ? allowTools.map((g) => globToRegExp(String(g))) : []);
   if (!res.length) return false; // 默认拒绝
@@ -67,8 +66,7 @@ function convert(node) {
 export function truncateResult(text, limit = RESULT_LIMIT_BYTES) {
   const size = Buffer.byteLength(text, 'utf8');
   if (size <= limit) return { text, truncated: false, bytes: size };
-  // 一步按字节截断并回退到 UTF-8 字符边界（旧实现每轮砍 5% 再全量 byteLength，
-  // 10MB→8KB 需 ~130 次迭代、累计扫描 ~1GB 字符）
+  // 一步按字节截断并回退到 UTF-8 字符边界（避免逐轮砍比例再全量 byteLength 的重复扫描）
   const buf = Buffer.from(text, 'utf8');
   let end = Math.min(limit, buf.length);
   while (end > 0 && (buf[end] & 0xc0) === 0x80) end--; // 跳过续字节 0b10xxxxxx
@@ -92,11 +90,11 @@ export async function createMcpBridge({ config, logger = () => {}, connectImpl =
   const allowTools = config?.allowTools || [];
   const toolPrefix = config?.toolPrefix !== false;
 
-  // 白名单 glob 预编译（旧实现每次匹配都 new RegExp，T 工具 × G glob × 4 形态重复编译）
+  // 白名单 glob 预编译（避免每次匹配都 new RegExp，T 工具 × G glob × 4 形态重复编译）
   const allowRes = allowTools.map((g) => globToRegExp(String(g)));
   const matchesCompiled = (originalName, serverName) => matchesAllowList(originalName, serverName, allowTools, allowRes);
 
-  // 并行连接各 server（旧实现串行，超时最坏叠加：每 server 10s 上限）
+  // 并行连接各 server（串行会让各 server 的 10s 超时最坏叠加）
   const entries = Object.values(servers);
   const results = await Promise.all(entries.map((s) => connectImpl(s).catch((e) => ({ error: String(e?.message ?? e) }))));
 
@@ -132,7 +130,7 @@ export async function createMcpBridge({ config, logger = () => {}, connectImpl =
     bridge.servers.push({ name: server.name, status: 'ok', toolCount: registered, error: null });
   }
 
-  // 运行期 O(1) 工具查找（旧实现 callByName 每次线性 find）
+  // 运行期 O(1) 工具查找（避免 callByName 每次线性 find）
   const byFinalName = new Map(bridge.tools.map((t) => [t.finalName, t]));
 
   // 注：原 bridge.hasAccess 已删除——全仓库零调用（连文档都没有），与

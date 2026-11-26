@@ -14,7 +14,7 @@ import { createCachedLocate } from './locate-cache.js';
 
 function ensureLocateCache(ctx) {
   // 带缓存的定位在工具层共享一份（§1.5）：locate/tap/long_press/input/swipe 统一入口，
-  // 避免动作工具绕过缓存（曾导致 cache 命中率仅 3%）
+  // 避免动作工具绕过缓存（否则 cache 命中率会掉到 3%）
   if (!ctx.locateWithCache) {
     ctx.locateWithCache = createCachedLocate({ device: ctx.device, store: ctx.store, opts: ctx.opts, ctx });
   }
@@ -22,7 +22,7 @@ function ensureLocateCache(ctx) {
 
 // 契约工具（26 个，§10 清单）：模型工具面 = 契约工具面。
 // 引擎专用工具（point_tap，坐标点击）**不在此列**——它只服务 allowCoords 用例的引擎直执行步，
-// 注册给模型等于把"禁止像素坐标"（2026-09-24 裁定）在模型侧作废。见 buildEngineTools。
+// 注册给模型等于在模型侧放行像素坐标（DESIGN.md:978 禁止裸坐标）。见 buildEngineTools。
 export function buildTools(ctx) {
   ensureLocateCache(ctx);
   return [
@@ -109,9 +109,8 @@ export function withRecording(tool, ctx) {
             // 否则 secret 输入后模型调 screen 取证会把密码框明文带进报告截图。
             recorder.attachScreenshot(handle.index, await redactShot(Buffer.from(res.content[0].data, 'base64'), ctx));
           } else if (!denied) {
-            // 报告截图**全覆盖**（2026-11-01）：每个工具步都留终态截图——失败步的截图
-            // 恰是诊断金矿（dump 全盲事故里 tap 全 MISS 却无图可看），只读工具（read/
-            // uitree/wait_element）的截图则是"决策当时画面"的证据。取证截图移出关键路径
+            // 报告截图**全覆盖**：每个工具步都留终态截图——失败步的截图
+            // 恰是诊断依据，只读工具（read/uitree/wait_element）的截图则是"决策当时画面"的证据。取证截图移出关键路径
             // （性能）：不 await（adb 回传 0.5~1.5s），serial 队列保证"截图排在下一动作
             // 之前"的画面时序；Promise 挂 recorder 待写队列，finish 前统一排空不丢图。
             // busy 态下 serial 队列可能被 40-55s 的长 dump 堵住，screencap 15s 客户端预算
@@ -132,7 +131,7 @@ export function withRecording(tool, ctx) {
       } catch (e) {
         // 工具执行异常不再上抛：转成结构化失败返回，让模型看到原因并可自行重试。
         // 上抛会穿透到 run 的步骤级 catch → 整个 run 判 error 并 break（冷启动期
-        // wm size 未就绪曾导致 7 条用例齐刷刷中断，见 VERIFICATION-REPORT §10）。
+        // wm size 未就绪会中断整条用例，见 VERIFICATION-REPORT §10）。
         const msg = String(e?.message ?? e);
         try { handle.end({ result: 'error', error: msg, thought: ctx.lastThought ?? null }); } catch { /* ignore */ }
         return {

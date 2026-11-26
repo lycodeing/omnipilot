@@ -1,5 +1,5 @@
 // 视觉问卷作答引擎（aiTapEach 的缺省形态）：VLM 看图逐题定位，全程不依赖 a11y 树。
-// 动机（2026-11-01）：selector 形态（rows/tap 文本选择器）把引擎钉死在单一问卷的文案上，
+// 动机：selector 形态（rows/tap 文本选择器）把引擎钉死在单一问卷的文案上，
 // 且 busy 态下 a11y 树全盲（dump 40-55s/次甚至全灭）。视觉形态： screencap 独立于 a11y，
 // 天然免疫 dump 缺陷；通用性：任何问卷/表单，无需预知题干与选项文案。
 //
@@ -91,7 +91,7 @@ export async function runVisualAnswer(deps) {
   const coordHint = strategy?.describeForPrompt?.() ?? 'bbox 归一化到 0-1000（左上角为原点）';
   // toPixels 是策略对象的方法（内部读 this 状态），必须 method 调用——解构会丢 this
   const toPixels = (bboxStr, sz) => (strategy ? strategy.toPixels(bboxStr, sz ?? size) : null);
-  // 完成判定参考按钮（评审 #1②）：profile.doneTexts 可注入（如英文问卷 Submit/Next），
+  // 完成判定参考按钮：profile.doneTexts 可注入（如英文问卷 Submit/Next），
   // 缺省维持内置中文措辞——场景类型知识走 profile 数据，不焊死在 prompt 里
   const doneDesc = doneTexts?.length ? `完成判定参考按钮：${doneTexts.join('、')}` : '提交/下一页按钮（如"立即提交"）';
   const prompt = buildPrompt(coordHint, doneDesc);

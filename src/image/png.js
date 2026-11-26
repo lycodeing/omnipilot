@@ -1,6 +1,6 @@
 // 纯 JS PNG 下采样（§16：截图压缩，无需外部库——契约禁止 npm install，用 Node 内置 zlib）。
 //
-// 用途：截图进模型上下文前降尺寸，减少 prompt tokens（实测 20 张 1080×2400 图 → 67k tokens、单轮 26s）。
+// 用途：截图进模型上下文前降尺寸，减少 prompt tokens（20 张 1080×2400 图 → 67k tokens、单轮 26s）。
 // 只处理 screencap 产出的标准 PNG：8 位、颜色类型 6(RGBA)/2(RGB)/0(灰度)、非隔行、filter 0-4。
 // 降采样用「块平均」（2×向下取整），生成新的真彩 PNG。
 
@@ -89,7 +89,7 @@ export function decodePng(buf) {
   if (!bpp) throw new Error(`仅支持 RGBA(6)/RGB(2)/灰度(0) PNG（实际颜色类型 ${colorType}）`);
   // 尺寸上限：width/height 来自文件头，是不可信输入。unfilter 会按 stride*height
   // 分配像素缓冲——一个 68 字节的伪造 PNG 头声明 20000×20000 就能触发 1.5GB 分配
-  // （实测成功分配）→ 进程 OOM。截图来源虽是 adb screencap，但本模块是通用解析器。
+  // （可成功分配）→ 进程 OOM。截图来源虽是 adb screencap，但本模块是通用解析器。
   if (width === 0 || height === 0) throw new Error(`PNG 尺寸非法: ${width}×${height}`);
   const MAX_PIXELS = 50_000_000;   // 5000 万像素（≈6000×8000，远超常见截图）
   if (width * height > MAX_PIXELS) {
@@ -163,7 +163,7 @@ export function downscale(png, { factor = 2 } = {}) {
 
 // 便捷：按目标最大宽度降采样（选 2 的幂因子，返回原图或缩小图）。
 // 附带返回解码像素（pixels/bpp/colorType），供 compressForContext 直通 JPEG 编码，
-// 避免"decode→encode→再 decode"的重复解码（旧实现每张截图 3 次 decode ≈300ms）。
+// 避免"decode→encode→再 decode"的重复解码（每张截图 3 次 decode ≈300ms）。
 export function shrinkPng(png, { maxWidth = 540 } = {}) {
   const dec = decodePng(png);
   if (dec.width <= maxWidth) {
@@ -180,9 +180,9 @@ export function shrinkPng(png, { maxWidth = 540 } = {}) {
 
 // —— 截图的统一"进上下文"压缩入口（§17）——
 // 目标：base64 后体积最小，且模型仍能看清。
-// 实测（540×1200）：PNG 194KB → JPEG(q70) ~75KB（省 61%）；模型对 JPEG 无感（能准确读图内文字）。
+// 540×1200：PNG 194KB → JPEG(q70) ~75KB（省 61%）；模型对 JPEG 无感（能准确读图内文字）。
 // 策略：单次 decode → 降采样 → 直通 JPEG 编码（不再二次/三次解码）。
-// 省掉无谓 PNG 重编码（性能审计 #9）：JPEG 几乎总是更小，旧实现却每张都先编一次 540px PNG
+// 省掉无谓 PNG 重编码：JPEG 几乎总是更小，无需每张先编一次 540px PNG
 // 再比较丢弃（~24ms/张）。改为先编 JPEG；仅当 JPEG 明显偏大（> 原 PNG 的 60%）才回头编
 // 降采样 PNG 做精确比较（小图/纯色图上 PNG 可能更优的路径仍保留）。
 export async function compressForContext(png, { maxWidth = 540, quality = 70 } = {}) {

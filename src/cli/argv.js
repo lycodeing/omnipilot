@@ -5,7 +5,7 @@
 export const BOOL_FLAGS = [
   'yes', 'json', 'quiet', 'vlm-locate', 'fresh-locate', 'fresh', 'keep', 'continue',
   'keep-data', 'strict', 'pregrant', 'help', 'version',
-  // allow-coords：坐标步逃生口（DESIGN.md:449）。默认禁止把坐标写进用例（2026-09-24 裁定）
+  // allow-coords：坐标步逃生口（DESIGN.md:449）。默认禁止把坐标写进用例。
   'allow-coords',
 ];
 
@@ -33,8 +33,8 @@ export function parseArgv(argv) {
     } else if ((isOptional || !isBool) && nextIsValue) {
       value = rest[++i];
     } else if (!isBool && !isOptional) {
-      // 取值型 flag 缺值（"--timeout --yes"）：此前静默取 true，消费方
-      // Number(true)*1000 → 1000ms，整个 run 的超时预算变成 1 秒且无任何报错。
+      // 取值型 flag 缺值（"--timeout --yes"）若静默取 true，消费方
+      // Number(true)*1000 → 1000ms，整个 run 的超时预算会变成 1 秒且无报错。
       // 必须响亮失败。
       throw new Error(`--${name} 需要一个值（如 --${name} 60）`);
     } else {

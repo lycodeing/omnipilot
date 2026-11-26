@@ -8,7 +8,7 @@ import { NET_PROFILES } from '../device/net-profile.js';
 import { resolvePlatform } from '../platform/index.js';
 
 // 静态事实（分辨率/型号/系统版本）按 serial 进程内缓存：多用例 run 中这些值不变，
-// 每 case 重采是纯浪费（旧实现每 case 4 次串行 adb）。netProfile 不缓存——
+// 每 case 重采是纯浪费（避免每 case 4 次串行 adb）。netProfile 不缓存——
 // 档位可在 run 中被 net 步骤改动，自检需要每 case 的新鲜值。
 const STATIC_FACTS_CACHE = new Map();
 
@@ -18,7 +18,7 @@ export async function collectDeviceFacts(device, { serial = null, platform = nul
   if (!stat) {
     stat = { screenSize: null };
     for (const f of p.factsProps) stat[f.key] = null;
-    // 分辨率与 getprop 并行（旧实现 4 次串行 adb 调用；getProps 把多个属性合并为一条 shell）
+    // 分辨率与 getprop 并行（getProps 把多个属性合并为一条 shell，避免 4 次串行 adb）
     const propsFor = () => p.factsProps.map((f) => (typeof device.getProp === 'function' ? device.getProp(f.prop) : ''));
     const [sizeRes, props] = await Promise.all([
       device.screenSize().catch(() => null),

@@ -28,8 +28,8 @@ async function extractUi(device, params) {
       const n = findBySelector(flat, params.container);
       if (n) scopes.push(n);
     } else {
-      // 统一走 selector 匹配器（评审 #14）：此前自造 class= 相等比较，除 class= 外的
-      // 选择器方言（text=、resourceId=、re:）全部静默失配，'#index=' 语义也被忽略
+      // 统一走 selector 匹配器：自造 class= 相等比较会让其它选择器方言（text=、
+      // resourceId=、re:）静默失配，'#index=' 语义也被忽略。
       scopes.push(...findAllBySelector(flat, params.container));
     }
   }
@@ -321,8 +321,7 @@ export function buildDataTools(ctx) {
     }),
     execute: async (_id, params) => {
       ctx.secretCalls.push({ tool: 'secret_get', provider: params.provider, key: params.key, stepIndex: ctx.currentStepIndex ?? null });
-      // 凭据读取与 sms_read 同属 §19.7 敏感操作，同样走确认闸——此前只有 sms_read
-      // 有闸，secret_get 零确认直接读出明文密码进上下文，两类敏感操作待遇不一致。
+      // 凭据读取与 sms_read 同属 §19.7 敏感操作，同样走确认闸，保持两类敏感操作待遇一致。
       const gate = await confirmWrite(ctx, 'secret_get', `读取凭据 ${params.provider}/${params.key}`, { kind: 'sensitive' });
       if (!gate.allowed) return denied('secret_get');
       // 来源 1：工作区私有状态目录下的 secrets.json（用户自管，不入库不入 git）；
@@ -362,8 +361,7 @@ export function buildDataTools(ctx) {
     execute: async (_id, params) => {
       ctx.secretCalls.push({ tool: 'sms_read', provider: 'device', key: 'sms', stepIndex: ctx.currentStepIndex ?? null });
       // 走 confirmWrite（与所有写操作同一套语义）：--yes 直通、ctx.confirm 征求
-      // 同意、两者都无时告警一次后放行。此前 sms_read 自己实现了一套，缺了
-      // 非交互兜底告警——用户在 CI/管道里丢掉这道安全门却毫无察觉。
+      // 同意、两者都无时告警一次后放行，保证非交互场景也不静默丢掉这道安全门。
       const gate = await confirmWrite(ctx, 'sms_read', '读取设备短信/通知', { kind: 'sensitive' });
       if (!gate.allowed) return denied('sms_read'); // details.denied=true，记账标 cancelled（与操作工具一致）
       // 设备层若提供扩展能力（content://sms / notification listener）则使用

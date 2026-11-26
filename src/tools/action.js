@@ -274,9 +274,8 @@ export function buildActionTools(ctx) {
             return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: msg }) }], details: { ok: false, error: msg } };
           }
           // —— 视觉模式（缺省）：VLM 看图逐题定位，不依赖 a11y 树（busy 态免疫）——
-          // 场景 profile 与 selector 形态同款分类点。此前视觉模式没接 profile，
-          // settle/maxRounds/verifyColor 在 visual-answer.js 另写一份缺省，与本文件
-          // profiles/questionnaire 预设数值分叉——现统一走 profiles.resolveTiming。
+          // 场景 profile 与 selector 形态同款分类点，两形态统一走 profiles.resolveTiming，
+          // 避免 settle/maxRounds/verifyColor 缺省值分叉。
           let prof = null;
           if (params.profile) {
             const { loadProfile } = await import('../device/profiles/index.js');
@@ -311,10 +310,8 @@ export function buildActionTools(ctx) {
           });
         } else {
           // —— selector 模式（确定性快路径）：文案稳定的表单用 ——
-          // onQuestion 逐题取证（2026-11-05 修复：此前只有视觉模式接了 onQuestion，
-          // selector 模式的报告里整步只有一张终态截图，逐题作答过程完全不可见——
-          // 用户看报告无法确认"到底答没答"。与视觉模式同款：每题一行 answer_row
-          // 子步骤 + 验证截图（hash 变化轮 buffer 为 null 时补拍终态）。
+          // onQuestion 逐题取证：每题一行 answer_row 子步骤 + 验证截图（hash 变化轮 buffer
+          // 为 null 时补拍终态），使逐题作答过程在报告里可见（与视觉模式同款）。
           r = await device.tapEachRow({
             rows: params.rows, tap: params.tap, stopWhen: params.stopWhen ?? null,
             ...(params.maxRounds != null ? { maxRounds: params.maxRounds } : {}),
@@ -415,5 +412,5 @@ export function buildActionTools(ctx) {
 
 // 引擎专用工具：只给引擎直执行（buildToolCall）用，**不进模型工具面**。
 // point_tap 存在的前提正是"模型不许给像素坐标"（tap.description 原话）——
-// 若把它注册给模型，等于把 2026-09-24 裁定在模型侧作废。buildTools 据此过滤。
+// 若把它注册给模型，等于在模型侧放行像素坐标（DESIGN.md:978 禁止裸坐标）。buildTools 据此过滤。
 export const ENGINE_ONLY_TOOLS = new Set(['point_tap']);

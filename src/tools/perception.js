@@ -32,7 +32,7 @@ export function findBySelector(flat, sel) {
 }
 
 // 容器级多匹配（列表卡片每张一个 scope）：与 findBySelector 同源（matchNodeSelector 委托），
-// 替代 data.js 曾自造的 class= 字符串比较（评审 #14：绕过单一实现源，'#index=' 语义还被静默忽略）
+// 不走自造的 class= 字符串比较（那会绕过单一实现源，'#index=' 语义也会被忽略）。
 export function findAllBySelector(flat, sel) {
   if (String(sel).startsWith('index=')) {
     const n = findBySelector(flat, sel);
@@ -46,7 +46,7 @@ function nodeSummary(n) {
 }
 
 // 统一文本响应：content 放**紧凑** JSON（进模型上下文，缩进纯浪费 token：
-// 实测真机 uitree pretty 38088 字符 vs compact 21036，膨胀 44.8%）；details 镜像原对象供 recorder。
+// 真机 uitree pretty 38088 字符 vs compact 21036，膨胀 44.8%）；details 镜像原对象供 recorder。
 export function textResult(obj) {
   return {
     content: [{ type: 'text', text: JSON.stringify(obj) }],
@@ -73,8 +73,8 @@ export function buildPerceptionTools(ctx) {
     execute: async (_id, params) => {
       const shot = await device.screencap();
       const fg = await device.foreground().catch(() => null);
-      // 进模型上下文的图压缩（§17）：540×1200 + JPEG(q70)，实测 340KB→75KB（省 78%），
-      // 模型对 JPEG 无感（实测能准确读出图内文章标题）。取证用原图仍由记账层单独落盘。
+      // 进模型上下文的图压缩（§17）：540×1200 + JPEG(q70)，340KB→75KB（省 78%），
+      // 模型对 JPEG 无感（能准确读出图内文章标题）。取证用原图仍由记账层单独落盘。
       let data = shot.buffer;
       let mimeType = 'image/png';
       let compressed = null;

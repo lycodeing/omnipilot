@@ -1,12 +1,10 @@
 // 带跨执行坐标缓存的定位（§1.5 / §5.0.5）。
 //
-// 背景（2026-10-27 真机验证发现）：契约把缓存职责赋予"locate 工具"，但实际最高频的定位发生在
-// tap/long_press/input/swipe 等动作工具里——它们原先直接调 device.locate()，完全绕过缓存层。
-// 结果：175 次定位里只有 5 次命中 cache（3%），缓存形同虚设。
-// 修法：把"读 hint → 定位 → 命中回写"抽成本函数，所有定位入口统一复用。
+// 高频定位发生在 tap/long_press/input/swipe 等动作工具里，故把"读 hint → 定位 → 命中回写"
+// 抽成本函数，所有定位入口统一复用（否则动作工具直调 device.locate 会绕过缓存层）。
 //
-// 键方案（§2.1 评审 C1 重设计）：旧键 `${pageId}:${target}` 因单 Activity 架构（首页/热榜/发现全叫
-// MainActivity）失去区分度。新键用"用例步骤身份"：caseId::stepIndex::locateOrdinal::target。
+// 键方案：用"用例步骤身份" caseId::stepIndex::locateOrdinal::target——单 Activity 架构下
+// pageId 无区分度（首页/热榜/发现全叫 MainActivity）。
 //
 // 职责边界（尊重契约 §1.5）：本层只做 store 读写与 hint 传参；identity 校验（R2）在 device.locate 内。
 
@@ -25,7 +23,7 @@ function sizeMatches(cacheRow, size) {
 // deps: { device, store, opts }；ctx 提供 { currentStepKey, locateOrdinal }
 // opts.freshLocate=true 时不读 hint（强制重新识别）
 //
-// 写路径攒批（性能）：locate 是全系统最高频调用，旧实现每次成功定位都 upsert →
+// 写路径攒批（性能）：locate 是全系统最高频调用，避免每次成功定位都 upsert →
 // locate_cache 同键命中时 merged>0 触发整文件重写（O(N) 写/次）。改为 run 内先写内存
 // pending Map，去抖（FLUSH_DEBOUNCE_MS）或攒满 FLUSH_BATCH 条时一次性 upsert；
 // 读 hint 优先查 pending，保证 run 内一致性。flush 挂到返回函数上供 run 收尾 await。

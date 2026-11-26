@@ -74,7 +74,7 @@ function compareValues(a, b) {
   return sa < sb ? -1 : sa > sb ? 1 : 0;
 }
 
-// where 编译缓存：同一 where 字符串只解析一次（旧实现导出的 matchesWhere 每行重解析）。
+// where 编译缓存：同一 where 字符串只解析一次（避免每行重解析）。
 // 上限防泄漏；键为 where 原文。
 const WHERE_CACHE = new Map();
 const WHERE_CACHE_MAX = 100;
@@ -101,7 +101,7 @@ export function applyQuery(rows, { where, select, limit, orderBy } = {}) {
   const n = hasLimit ? Math.max(0, Math.floor(Number(limit))) : Infinity;
   if (clauses.length) {
     if (orderBy == null || orderBy === '') {
-      // 无排序时命中 limit 条即可提前停（旧实现全量 filter）
+      // 无排序时命中 limit 条即可提前停（无需全量 filter）
       const picked = [];
       for (const row of out) {
         if (clauses.every((c) => matchClause(row, c))) {

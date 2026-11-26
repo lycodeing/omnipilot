@@ -1,6 +1,6 @@
 // 纯 JS 基线 JPEG 编码（§17：截图转 JPEG，比 PNG 省约 64% 体积，无外部库）。
 //
-// 动机：截图进模型上下文要 base64 传输，体积越大 token 越多。实测 540×1200：
+// 动机：截图进模型上下文要 base64 传输，体积越大 token 越多。540×1200：
 //   PNG 194KB → JPEG(70) 69KB（省 64%）；且模型对 JPEG 无感（能准确读图内文字）。
 // 实现：RGB→YCbCr → 4:2:0 色度下采样 → 8×8 FDCT → 量化 → 之字形 → Huffman（标准 Annex K 表）。
 
@@ -223,8 +223,7 @@ export function encodeJpeg(width, height, pixels, { quality = 70, bpp = 4 } = {}
 
   const w = new BitWriter();
   let dcY = 0, dcCb = 0, dcCr = 0;
-  // 4:2:0 必须**按 MCU 交错**编码：每个 MCU = 4 个 Y 块(2×2) + 1 个 Cb + 1 个 Cr。
-  // （曾误写成"全部 Y → 全部 Cb → 全部 Cr"，导致解码出彩色噪点——PIL 校验发现。）
+  // 4:2:0 必须**按 MCU 交错**编码：每个 MCU = 4 个 Y 块(2×2) + 1 个 Cb + 1 个 Cr（按平面分组会解出彩色噪点）。
   for (let my = 0; my < cbh; my++) {
     for (let mx = 0; mx < cbw; mx++) {
       // Y 的 2×2 块

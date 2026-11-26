@@ -2,8 +2,8 @@
 //
 // 为什么存在：run.json 的 step.type 由三处生成（工具记账 withRecording=工具名、
 // ask.js 直记账 sleep/net/aiWaitFor、tap_each_row 逐题取证子步 answer_row），而消费端
-// （report/viewer 的标签、图标、回放编排，report/CONTRACT.md 的枚举文档）曾各写一份
-// 词表——新增工具类型（如 point_tap）会在报告端静默降级。本模块是唯一的词表源。
+// （report/viewer 的标签、图标、回放编排，report/CONTRACT.md 的枚举文档）不能在多处各写一份
+// 词表——否则新增工具类型（如 point_tap）会在报告端静默降级。本模块是唯一的词表源。
 //
 // 边界说明：引擎注册表本身（src/tools/index.js 的 buildTools）依赖 node 侧重型模块，
 // 不能被浏览器端 viewer 直接 import；因此本文件刻意保持**零 import 的纯数据**，
@@ -53,8 +53,8 @@ export const STEP_LABELS = {
   aiAssert: '断言判定',
   // —— tap_each_row 逐题取证子步（src/tools/action.js onQuestion） ——
   answer_row: '作答',
-  // —— 历史兼容：assert 在旧版本引擎出现过 1 次（全量历史 run.json 实测）；现引擎
-  // 断言结果走 run.assertions，不再产生该类型。保留标签让旧报告正常渲染。 ——
+  // —— 历史兼容：旧版本引擎产生过 assert 步骤类型；现引擎断言结果走 run.assertions，
+  // 不再产生该类型。保留标签让旧报告正常渲染。 ——
   assert: '断言',
 };
 

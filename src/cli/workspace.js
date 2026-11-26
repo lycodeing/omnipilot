@@ -15,9 +15,8 @@
 // 其他平台 → 优先 /opt/omni-pilot（存在且可写时），否则回退 ~/.local/share/omni-pilot
 // （非 root 在 Linux/macOS 上通常无 /opt 写权限，硬编码会导致工作区创建静默失败）
 //
-// 更名兼容（2026-11-24）：项目更名为 OmniPilot，历史工作区仍叫 scene-kit。
-// 探测顺序为「新名 → 旧名」，旧目录存在则继续沿用——否则老用户的既有 run、
-// 设备锁与 family 探测缓存会失联（锁目录跨进程全局互斥，迁移即失效）。
+// 兼容更名前的历史工作区（目录名仍叫 scene-kit）：探测顺序「新名 → 旧名」，旧目录存在则继续沿用
+// ——否则老用户的既有 run、设备锁与 family 探测缓存会失联（锁目录跨进程全局互斥，迁移即失效）。
 //
 // ASK_WORKSPACE 可直接钉死整个 instance 目录（测试 / CI 用）；ASK_DATE / ASK_INSTANCE 覆盖日期与实例名。
 
@@ -60,7 +59,7 @@ export function pickDefaultHome({
   existsSync = exists,
   accessSync = defaultAccessSync,
 } = {}) {
-  // 平台缺省（2026-11-10 评审 #13）：环境路径不再无条件写死——
+  // 平台缺省：环境路径不无条件写死——
   //   win32：沿用既有工作区 **仅当已存在**（兼容历史 run），
   //          探测顺序 C:/opt/omni-pilot → C:/opt/scene-kit（更名前）；
   //          都没有则回退用户目录 ~/.local/share/omni-pilot；全新机器不再往 C:/opt 落盘
@@ -109,7 +108,7 @@ export function formatDate(d = new Date()) {
 // 工作区路径段白名单：date/instance 会被拼进工作区根，若允许 ".." 或路径分隔符，
 // 环境变量（CI 流水线变量常由外部拼接）即可把 run 产物写到工作区之外。
 // 只校验来自环境变量的值——函数显式入参是内部可信调用（测试用 'd1' 这类占位值）。
-// date 固定为 YYYY-MM-DD；instance 限字母数字与 - _（实测的实例名均为此类）。
+// date 固定为 YYYY-MM-DD；instance 限字母数字与 - _（实例名均为此类）。
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const INSTANCE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 

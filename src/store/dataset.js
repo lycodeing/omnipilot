@@ -13,8 +13,8 @@ import { applyQuery } from './query.js';
 const META_KEYS = ['_id', '_ts', '_run', '_step'];
 const TYPES = new Set(['string', 'number', 'boolean']);
 
-// 进程级行缓存（性能）：locate 是全系统最高频调用，旧实现每次 read/upsert 都全量
-// 读文件+逐行 JSON.parse，upsert 再全量重写，成本随缓存跨 run 累积线性恶化。
+// 进程级行缓存（性能）：locate 是全系统最高频调用，避免每次 read/upsert 都全量
+// 读文件+逐行 JSON.parse、upsert 再全量重写（成本随缓存跨 run 累积线性恶化）。
 // key = jsonl 绝对路径；以 mtimeMs+size 失效（外部进程写盘也能感知）。
 // entry = { mtimeMs, size, rows, indexById, ids }；rows 为权威数组，写路径原地维护。
 // 容量上限：entry 持有全量 rows 数组，无上限时大数据集常驻内存不释放
@@ -229,7 +229,7 @@ async function writeRowsAtomic(file, rows) {
 }
 
 // 进程内 per-file 串行锁：append（增量追加）与 upsert/clear（全量重写）都用"读快照→写"，
-// 同进程内所有写操作排队，避免陈旧快照覆盖并发写（实测：并发 upsert 合并值被静默丢弃）。
+// 同进程内所有写操作排队，避免陈旧快照覆盖并发写（并发 upsert 会让合并值被静默丢弃）。
 // 锁粒度为文件路径。跨进程则靠下面的 O_EXCL 锁文件互斥：多进程同时跑 run 时，
 // 全量重写（merged 分支 tmp+rename）会用陈旧快照覆盖别进程刚落盘的行，导致静默丢行。
 const FILE_LOCKS = new Map(); // file → 末尾 Promise（链式排队）

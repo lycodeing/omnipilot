@@ -24,10 +24,9 @@ const RULES = [
   {
     id: 'pixel-coords',
     level: 'error',
-    // 2026-09-24 裁定：禁止把坐标写进用例。用例顶层声明 allowCoords: true 时放行（DESIGN.md:449 逃生口）。
+    // 禁止把坐标写进用例（DESIGN.md:978）；用例顶层声明 allowCoords: true 时放行（DESIGN.md:449 逃生口）。
     // 形态覆盖三档：adb 原生 input tap/swipe、文本裸坐标对、以及步骤命令的 { x: N, y: N } 对象形态
-    // ——最后一档此前漏网（正则要求两个三位数之间是裸逗号，`{ x: 135, y: 2115 }` 中间隔着 `y:`），
-    // 导致 learning-daily-recommend.yaml 的两步坐标点击 lint 报 0 error 却静默失效。
+    // ——最后一档需覆盖键名间带 `y:` 的写法（`{ x: 135, y: 2115 }`），否则坐标步会 lint 放行却静默失效。
     test: (line, allLines) => {
       // 步骤命令对象形态：`- tap: { x: 135, y: 2115 }`（键名 x/y，值 1 位以上数字）
       const isCoordStep = /^\s*-\s*[A-Za-z][\w-]*\s*[:：]\s*\{[^}]*["']?x["']?\s*[:：]\s*-?\d+[^}]*["']?y["']?\s*[:：]\s*-?\d+/i.test(line);
@@ -87,7 +86,7 @@ const RULES = [
     level: 'warn',
     // 仅对断言行生效：规则语义是"断言含推断式"，命中 ai:/aiTap: 等步骤的描述文本属误报
     // （外部框架用例的拖动/滚动描述常含"已进入/跳转到"字样，非断言）。
-    // 中英双语（2026-11-10 评审 #9）：此前纯中文词表对英文用例零覆盖（静默豁免）。
+    // 中英双语：纯中文词表对英文用例零覆盖（会静默豁免），故补齐英文推断式。
     test: (line) => /(aiAssert|assert|断言)/.test(line) && (
       /(已进入|已跳转到|成功进入了?|导航到了?)\s*\S{0,10}(页|界面|页面)/.test(line)
       || /(navigated to|entered the|redirected to|now on the)\s*[\w\s]{0,16}(page|screen|dialog)/i.test(line)
@@ -130,7 +129,7 @@ const RULES = [
   {
     id: 'target-package-missing',
     level: 'warn',
-    // 评审 #4：pregrant 此前从步骤 JSON 抓第一个 com.*（断言/URL 可能抢先误中）。用例含
+    // pregrant 从步骤 JSON 抓第一个 com.* 时断言/URL 可能抢先误中。用例含
     // launch/terminate 而顶层未声明 targetPackage 时提示显式声明，使包名解析可审计。
     // 只在**首个** launch/terminate 行报一次（不逐行重复刷屏）。
     test: (line, allLines, idx) => {
