@@ -13,7 +13,7 @@
 
 | 代理 | 文件 | 测试（顶层 test/，`node --test` 直跑） |
 |---|---|---|
-| **A 设备层** | `src/device/adb.js` `screen.js` `uitree.js` `cache.js` `locate.js` `action.js` `input.js` `rollout.js` `state.js`、`src/device/coord/{strategy,registry,probe}.js`、`src/net/profile.js` | `test/device-*.test.js`（单元，无设备）+ `test/integration-*.test.js`（真机门控：`ASK_TEST_DEVICE=1` 才跑，否则 `t.skip`）+ `test/fixtures/ui-dump.xml`（真实样本） |
+| **A 设备层** | `src/device/adb.js` `screen.js` `uitree.js` `cache.js` `locate.js` `action.js` `input.js` `state.js`、`src/device/net-profile.js`、`src/device/coord/{strategy,registry,probe}.js` | `test/device-*.test.js`（单元，无设备）+ `test/integration-*.test.js`（真机门控：`ASK_TEST_DEVICE=1` 才跑，否则 `t.skip`）+ `test/fixtures/ui-dump.xml`（真实样本） |
 | **B 会话/工具层** | `bin/ask.js`、`src/session/{create,prompt,persist,model,case}.js`、`src/tools/{index,perception,action,env,data,mcp}.js`、`src/mcp/{client,config,bridge}.js`、`src/lint/rules.js`、`prompts/{system,system.android}.md`、`skills/android-login.md`、`mcp.json` | `test/session-*.test.js` `test/tools-*.test.js` `test/mcp-*.test.js` `test/lint-*.test.js` |
 | **C 数据/报告层** | `src/store/{dataset,query}.js`、`src/recorder/index.js` | `test/store-*.test.js` `test/recorder-*.test.js` |
 
@@ -48,7 +48,10 @@ tap(bounds): Promise<{ ok, latencyMs, error }>      // bounds 中心点；含响
 longPress(bounds, durationMs): 同上
 inputText(bounds, text): Promise<{ ok, readBack, error }>  // yadb 路径 §5.4.5，回读校验
 swipe(from, to, { durationMs = 300 } = {})          // from/to 为 bounds 或 [x,y] 或区域名 'bottom'|'top'|'left'|'right'
-scroll(direction, { max = 5, stopWhenNoChange = true } = {}): Promise<{ scrolls: number, changed: boolean }>
+scroll(direction, { max = 5, stopWhenNoChange = true, distancePct = null } = {}): Promise<{ scrolls: number, changed: boolean }>
+scrollUntil(selector, { direction = 'down', max = 12, distancePct = 30 } = {}):
+  Promise<{ scrolls, found, changed, error }>       // 小步滚动直到 selector 在屏可见（内容语义 direction）
+tapEachRow(opts = {}): Promise<object>              // 逐行作用域批量点击（引擎确定性，0 模型往返）
 key(name): Promise<{ ok }>                          // back|home|enter|recent
 launch(appId): Promise<{ ok, error }>               // 包名或 包名/activity
 terminate(packageName): Promise<{ ok }>
@@ -56,16 +59,28 @@ terminate(packageName): Promise<{ ok }>
 foreground(): Promise<{ package, activity, resumedActivity }>   // 用 ResumedActivity，禁用 mCurrentFocus（§5.0.1）
 screenSize(): Promise<{ w, h }>                     // 会话级缓存（wm size）
 processAlive(packageName): Promise<boolean>
-waitIdle({ quiet = 2, intervalMs = 600, timeoutMs = 10000 } = {}): Promise<{ stable: boolean, dumps: number }>
+waitIdle({ quiet = 2, intervalMs = 50, timeoutMs = 10000 } = {}): Promise<{ stable: boolean, dumps: number }>
+waitForElement(selector, { timeoutMs = 10000, intervalMs = 50 } = {}):
+  Promise<{ appeared, dumps, matched, inWebView?, error? }>      // 等元素出现（§21）
+waitForAnyElement(selectors, { timeoutMs = 10000, intervalMs = 50 } = {}):
+  Promise<{ appeared, dumps, matched, inWebView?, error? }>      // 等任一元素出现，命中其一即返回
 assertNoCrash(expectedPackage): Promise<{ ok, alive, foreground, error }>
-netSetProfile(name): Promise<{ ok, profile, error }>   // 委托 src/net/profile.js
+netSetProfile(name): Promise<{ ok, profile, error }>   // 委托 src/device/net-profile.js
 netStatus(): Promise<{ profile }>
 // —— 缓存与取证 ——
 markDirty(): void                                   // 每次动作后置脏（§5.0.6）
 invalidateCache(): void                             // 定位失败回退用（丢缓存重识别）
 cacheStats(): { dumps, hits, misses, dirtyResets }
+cachePeek(): { nodes, hash } | null                 // 只读取最近一次缓存树，不触发 dump（动作后截图遮罩用）
 dumpToFile(path): Promise<string>                   // ui_dump 落盘取证
 close(): Promise<void>
+// —— 附加（preflight/事实采集，非工具层必用） ——
+dumpsysPackage(pkg): Promise<string>                // 读包信息；失败返回 ''
+packageVersion(pkg): Promise<string | null>         // versionName；失败返回 null
+pmGrant(permission, pkg): Promise<{ ok, error }>
+getProp(name): Promise<string>                      // getprop；失败返回 ''
+getProps(names): Promise<string[]>                  // 一次 shell 读多属性（分隔符切分，避免空行错位）
+readSms(params): Promise<object>                    // content://sms/inbox 固定串命令，结果侧过滤
 ```
 
 **UiNode 形状**（uitree.js 解析产物，A/B 双方一致）：
@@ -157,7 +172,7 @@ export class RunRecorder {
 - `uitree.js`/`cache.js`：按 §1.1；缓存三态 fresh/dirty/void + TTL **4000ms**（§17 已拍板）+
   动作置脏（§5.0.6）；**文本匹配不缓存**（§5.0.2.1 实测）；统计 dumps/hits/misses。
 - `locate.js`：策略链 §5.1；`clickable=false` 节点兜底（向上找可点祖先/父容器，§5.4.2）；
-  失败回退接 `rollout.js`（定位失败→丢缓存重识别→重试上限→步骤回滚 §5.0.5/5.0.6）。
+  失败回退由 run-loop 降级链承担。【已移除】`rollout.js` 状态机零生产消费者，已删除（DESIGN §5.0.6）。
 - `coord/`：策略接口 + 4 实现 + registry + probe（§5.5：GLM/Qwen/Gemini/GPT 各家坐标约定不同，
   0-1 归一化 / yx 序 / 绝对像素……以 §5.5.2 表格为准）；probe.js 按 §5.5.3 探测式推断；
   `.ask/family-probe.json` 读写。
@@ -166,10 +181,10 @@ export class RunRecorder {
 - `state.js`：前台用 `dumpsys activity` 的 ResumedActivity（mCurrentFocus 不可信 §5.0.1）；
   进程存活 `pidof`；崩溃检测。
 - `action.js`：tap/longPress/swipe/key 基于 bounds 中心点（§5.4）；响应判定 §5.4.3。
-- `src/net/profile.js`：`adb shell net <profile>`；档位 off/2g/3g/4g/5g/airplane/cut/custom（§10）。
+- `src/device/net-profile.js`：`adb shell net <profile>`；档位 off/2g/3g/4g/5g/airplane/cut/custom（§10）。
 - **单元测试必须全绿且无设备依赖**：coord 三家换算正确、XML 解析（真实样本 fixture）、缓存三态、
-  rollout 状态机、uiautomator 杂质截断、hash 稳定性。集成测试放 `test/integration-*.test.js`，
-  无 `ASK_TEST_DEVICE=1` 时整体 skip。
+  uiautomator 杂质截断、hash 稳定性。集成测试放 `test/integration-*.test.js`，
+  无 `ASK_TEST_DEVICE=1` 时整体 skip。（rollout 状态机随死代码清理已移除，DESIGN §5.0.6）
 
 ### 2.2 代理 B —— 会话/工具/MCP/CLI（通读 §2、§3、§6、§7、§8、§9、§10、§11、§13、§16）
 
@@ -198,12 +213,13 @@ export class RunRecorder {
   超时 10s 失败只 warn → listTools → allowTools glob 白名单**默认拒绝** → 命名冲突加 `server__` 前缀 →
   注册成 Pi 工具，描述前缀 `[MCP:server]`；调用超时 30s、结果 >8KB 截断标注）。用顶层已装的
   `@modelcontextprotocol/sdk`。`mcp.json` 交付默认内容：`{"servers":{},"toolPrefix":true,"allowTools":[]}`。
-- `src/lint/rules.js`：§13.4 八条规则，**行级正则实现**（输入是 YAML 原文文本，不做完整 YAML 解析）：
+- `src/lint/rules.js`：§13.4 九条规则，**行级正则实现**（输入是 YAML 原文文本，不做完整 YAML 解析）：
   `lintCaseText(text) → [{ level:'error'|'warn', rule, message, line }]`；行内豁免
   `# ask-lint: allow <rule-id> 理由`（须有理由，否则豁免无效）。
 - `src/session/case.js`：最小用例装载器——YAML 子集手写解析（`name:`、`steps:` 列表、每步
-  `do: <文本>` / `ask: <问题>` / `assert: <文本>` / `net: <档位>` / `sleep: 秒`，注释与空行容忍），
+  `ai:` / `aiQuery:` / `aiAssert:` / `net: <档位>` / `sleep: 秒`，注释与空行容忍），
   `${var}` 执行期插值（§7.5）；`run/do/ask` 统一为同一 Case 对象（§13.2）。
+  旧名 `do/ask/assert` 已废弃、不再兼容，装载期报错并提示新名 `ai/aiQuery/aiAssert`。
 - `bin/ask.js`：§13 全部子命令（run/do/ask/data/lint/doctor/mcp）+ 全局参数 §13.3 + 退出码语义
   §13.1 表 + `--json/--quiet`；设备独占锁 `.ask/locks/<serial>.lock`（PID+时间戳，存活拒绝、
   死进程 10min 自动清，§13.2.1）；`--parallel N` 校验设备数不足即退出码 2（§13.2.1）。
@@ -214,7 +230,7 @@ export class RunRecorder {
   不得写死；net 不支持时 L2 说明 `net_profile` 返回 ok=false 属预期）+ `skills/android-login.md`（§19.7 登录节奏）
   + `skills/android-navigation.md`（底栏定位陷阱/转场/断言纪律）。
   注：技能实际生效位置为 `.pi/skills/<name>/SKILL.md`（Pi SDK 不扫描项目根 `skills/`），`skills/` 为源版本。
-- 单元测试：prompt 装配三模式与裁剪、lint 八规则+豁免、case 解析+变量插值、mcp 配置解析+glob
+- 单元测试：prompt 装配三模式与裁剪、lint 九规则+豁免、case 解析+变量插值、mcp 配置解析+glob
   白名单+命名前缀、tools 工厂注册表完整性（对 §10 清单逐一断言存在）。模型相关全部 mock/注入，不真连。
 
 ### 2.3 代理 C —— 数据与报告（通读 §7.2、§14 全部、§5.0.5、§19.7）

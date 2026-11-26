@@ -50,6 +50,9 @@ report/
 <script type="ask-image" data-id="<uuid>">data:image/png;base64,...</script>  <!-- 每图一个 -->
 ```
 
+- `ask-image` 的 dataURL MIME 按图片魔数判定：`FF D8` 开头为 `image/jpeg`（模型输入图常为压缩 JPEG），
+  其余为 `image/png`（见 `report/recorder.js` 的 `toDataURL`）。硬编码 `image/png`
+  会让浏览器拒绝解码 JPEG 输入图。
 - dump JSON 内 **不含图片数据**：`screenshots` 值在 single-html 模式下一律为 `""`（占位），
   真实 dataURL 放 `ask-image` 标签的 textContent。B 侧 useDump 把 ask-image 收进 `screenshots` 映射。
 - 外链（html-and-assets）模式：dump 标签追加属性 `data-screenshot-mode="directory"`，
@@ -101,7 +104,10 @@ report/
   }],
   "screenshots": { "<uuid>": "" },           // single-html 值空串（图在 ask-image 标签）；assets 模式为相对路径
   "networkTimeline": [ { "at": 4210, "profile": "3g" } ],
-  "assertions": [ { "text": "列表按时间倒序", "passed": true, "reason": "模型判词原文" } ],
+  "assertions": [ { "text": "列表按时间倒序", "passed": true, "reason": "模型判词原文",
+                     "screenshotId": "<uuid>",        // 可选：判定输入截图引用（addAssertion 透传，buildDump 把路径替换为 uuid）
+                     "evidenceSource": "screen",       // 可选：判定依据（dataset/screen）
+                     "nudges": 1 } ],                 // 可选：催答轮数（>0 才落键）
   "rollbacks": [ { "stepIndex": 7, "reason": "locate_miss_x3", "recovered": true } ]
 }
 ```
@@ -109,6 +115,8 @@ report/
 缺省规则（B 渲染端对一切可选字段做兜底，不得因缺失而抛错）：
 `screenshots/networkTimeline/assertions/rollbacks/device/durationMs/status/groupDescription` 均可缺省；
 task 的 `locate/thought/param/timing` 可缺省。
+assertions 项的 `screenshotId/evidenceSource/nudges` 为**可选扩展字段**（`src/recorder/index.js`
+的 `addAssertion` 仅在有值时落键），缺省即旧形状，消费方不得因缺失抛错。
 
 ---
 
@@ -374,5 +382,16 @@ C 自建 `test/fixtures/run.sample.json`（§14.1 形状：≥5 步覆盖 tap+lo
 | 2026-11-24 | §4.1 `parseReportDocument` 实际返回 `{meta, executions, screenshots, assertions, networkTimeline, rollbacks}`，比契约多 3 个字段 | 断言与网络时间线是报告的**核心价值**（Midscene 风格回放），缺失则报告只剩截图流。多返字段为**超集**，不破坏契约消费方 |
 | 2026-11-24 | §5.1 `writeReport` 新增 `runDir` 与 `secrets` 两个**可选**参数 | `runDir`：截图相对路径的解析基准（工作区模式下 runsDir 为绝对路径，按 cwd 推断会找错文件）；`secrets`：CLI 路径缺全文脱敏兜底，模型在后续任务回显密钥时会明文进报告。均为向后兼容的加法，原调用方式不受影响 |
 | 2026-11-24 | §1 转义规定由 `</` 改为 `<` 全量转义；§2 status 映射由两态改为四态 + `[REDACTED]`→finished | 见 §1 / §2 正文的新说明——原规定**无法达成其声明的目标**（`<!--<script>` 仍会摧毁报告；成功的 secret_get 被显示为 failed） |
+
+本计划（2026-11-25 评审修复）各 Task 对契约的**扩展**（均为向后兼容的加法，原形状消费方不受影响）：
+
+| Task | 契约扩展 | 落点 |
+|---|---|---|
+| 14 | §2 assertions 项新增可选 `screenshotId`（判定输入截图，buildDump 把路径替换为 uuid）、`evidenceSource`、`nudges` | `src/recorder/index.js:addAssertion`、`report/recorder.js` |
+| 14 | §1 `ask-image` dataURL MIME 按魔数判定 JPEG/PNG，不再硬编码 PNG | `report/recorder.js:toDataURL` |
+| 20 | §2 type 词表登记 `test_account` 账号工具（26 契约工具） | `src/tools/vocab.js` |
+| 17 | 动作后截图入档前按缓存树 password 节点遮罩（门面 `cachePeek`） | `src/device/index.js` |
+| 11 | rollout 状态机删除，失败回退由 run-loop 降级链承担（CONTRACT-CORE §2.1 / DESIGN §5.0.6 同步） | `src/device/rollout.js` 删除 |
+| 24 | 新增 `docs:drift` 守护：文档承诺（工具数/lint 规则数/底座版本/契约文件路径）对账代码消费者 | `scripts/check-doc-drift.mjs` |
 
 > 登记原则：只登记**已实现且已验证**的偏差；登记项须给出可复核的理由。

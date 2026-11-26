@@ -1,7 +1,7 @@
-# android-agent 设计稿 v3（全自研，待确认）
+# android-agent 设计稿 v3（全自研，已拍板）
 
 > 定位：**面向全安卓场景的测试 agent**。完全自研设备层，**不依赖 Midscene**。
-> 底座：`@earendil-works/pi-coding-agent` v0.84.4（agent loop / 工具注册 / 会话 / skills）
+> 底座：`@earendil-works/pi-coding-agent` v1.6.0（agent loop / 工具注册 / 会话 / skills）
 > + `@modelcontextprotocol/sdk` v1.32.2（MCP 客户端）。
 >
 > v1（Midscene + YAML player）、v2（Pi + Midscene 当眼睛）**均已废弃**。
@@ -543,6 +543,7 @@ flowchart TD
 | 0 | 全部通过 | — |
 | 1 | 用例断言失败 | 看 run.json 的 assertions |
 | 2 | 环境/配置错误 | 查设备、模型、MCP，不要改用例 |
+| 3 | ask 问答空回答（本机扩展） | 催答轮已重试仍无文本，检查模型/网关或改写问法 |
 
 ### 3.5 一次完整用例的具体走位（弱网相册用例）
 
@@ -1003,6 +1004,10 @@ flow:
 ```
 
 ### 5.0.6 失败回退：重识别与步骤回滚
+
+> 【已移除】本节 B 的 rollout 状态机（`src/device/rollout.js`）零生产消费者，已删除；
+> 失败回退由 run-loop 降级链承担（A 的单步内重识别 / 空轮重试 / 降级定位）。本节保留
+> 重识别策略与 checkpoint 语义作为设计说明，不再对应独立的 rollout 模块。
 
 缓存带来一个新风险——**缓存可能过期**（页面已变但缓存没失效，用了旧 bounds）。
 所以必须有明确的失败回退路径。分两级：
@@ -1991,7 +1996,7 @@ flowchart TD
 |---|---|---|---|---|
 | `run` | 执行 YAML 用例 | ✅ | ✅ | 0 通过 / 1 断言失败 / 2 环境 |
 | `do` | 自然语言任务（agent 自主决策） | ✅ | ✅ | 同上 |
-| `ask` | 只读问答（读屏、查数据） | 读 | ✅ | 0 / 2 |
+| `ask` | 只读问答（读屏、查数据） | 读 | ✅ | 0 / 2 / 3（问答空回答） |
 | `data` | 数据集查询、导出 | ❌ | ❌ | 0 / 2 |
 | `lint` | YAML 静态校验（不执行） | ❌ | ❌ | 0 无错 / 1 有 error |
 | `doctor` | 环境自检、缓存报告 | 读 | ❌ | 0 健康 / 2 有问题 |
@@ -2008,7 +2013,6 @@ ask run cases/相册.yaml --fresh            # 丢弃上下文（默认 --keep�
 ask run cases/相册.yaml --keep-data        # 丢上下文但保留数据集
 ask run cases/相册.yaml --continue         # 续上次会话
 ask run cases/相册.yaml --session path.jsonl
-ask run cases/相册.yaml --max-turns 40     # 单步重试/轮次上限
 ask run cases/相册.yaml --rollback off     # 关闭步骤级回滚（§5.0.6B）
 ```
 
@@ -2268,6 +2272,7 @@ android-agent/
 | 0 | 全部通过 | — |
 | 1 | 用例断言失败 | 看 `runs/*.json` 的 `assertions` |
 | 2 | 环境/配置错误 | 查设备、模型、MCP；**不要改用例** |
+| 3 | ask 问答空回答（本机扩展，`bin/ask.js` 现状登记） | 催答轮已重试仍无文本，检查模型/网关或改写问法 |
 
 区分 1 和 2 是关键：**环境问题改用例是错的方向**（对应踩坑清单"执行类问题不靠改断言解决"）。
 
@@ -3091,8 +3096,7 @@ com.lgdg.fourt/io.dcloud.PandoraEntryActivity
 **建议**：补一张"依赖降级矩阵"。
 
 #### P2-4 缺"日志与可观测性"设计
-除 run.json 外，运行时的诊断日志（如 `ASK_DEBUG=1` 输出实际执行的 adb 命令）
-没设计。排查"为什么点偏了"时这是必需的。
+除 run.json 外，运行时的诊断日志没设计。排查"为什么点偏了"时这是必需的。
 
 ---
 

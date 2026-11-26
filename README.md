@@ -4,7 +4,7 @@
 用自然语言或 YAML 用例驱动 App / 网页 / 桌面程序，逐步落 run.json 报告（含截图、定位策略、断言、网络时间线）。
 
 - 定位：**一套用例 DSL + agent 循环 + 报告流水线，跨 Android / iOS / Web / 桌面端**。平台差异只隔离在设备层适配器（契约 §1.1），当前已落地 Android（adb）适配器
-- 环境：Node 24（ESM）
+- 环境：Node 22+（ESM）
 - 依赖：`@earendil-works/pi-coding-agent`、`@modelcontextprotocol/sdk`（其余为 Node 内置）
 - 文档：[docs/DESIGN.md](./docs/DESIGN.md) 设计稿 · [docs/CONTRACT-CORE.md](./docs/CONTRACT-CORE.md) 开发契约 · [docs/VERIFICATION-REPORT.md](./docs/VERIFICATION-REPORT.md) 真机验证报告
 - 曾用名：`android-scene-kit`（2026-10-28 起更名 OmniScene，2026-11-24 起再更名 OmniPilot）
@@ -114,7 +114,7 @@ ASK_WORKSPACE=/tmp/my-run node bin/ask.js run s1-hotlist.yaml --yes   # 全部�
 bin/ask.js              CLI 入口（参数解析/锁/设备事实采集/工作区解析已抽到 src/cli/）
 src/device/             设备门面 + adb/树缓存/定位策略链/坐标兼容/输入/回退
 src/session/            三层提示词装配、模型解析、会话持久化、用例装载
-src/tools/              23 个 agent 工具（感知/操作/环境/数据/MCP）
+src/tools/              26 个 agent 工具（感知/操作/环境/数据/MCP）
 src/store/  src/recorder/  数据集读写 + run.json 运行期执行记录器
 src/cli/                CLI 支撑（argv / lock / device-facts / workspace）
 prompts/  skills/       提示词与技能（技能生效路径 .pi/skills/）

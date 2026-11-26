@@ -129,7 +129,7 @@ describe('tools registry', () => {
   const tools = buildTools(ctx);
   const names = new Set(tools.map((t) => t.name));
 
-  test('§10 清单 22 个工具逐一存在', () => {
+  test('§10 清单 26 个工具逐一存在', () => {
     for (const name of EXPECTED_TOOLS) {
       assert.ok(names.has(name), `缺少工具: ${name}`);
     }

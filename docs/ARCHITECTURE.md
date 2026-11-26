@@ -20,7 +20,7 @@ flowchart TD
     CASE["case.js<br/>YAML 解析 · 引擎直执行映射"]
   end
 
-  subgraph L2["工具层（23 个 agent 工具）"]
+  subgraph L2["工具层（26 个 agent 工具）"]
     TOOLS["src/tools/index.js<br/>buildTools(ctx) + 记账包装"]
     TOOLFILES["perception · action · env · data · mcp<br/>+ locate-cache · ai"]
   end
@@ -101,7 +101,7 @@ sequenceDiagram
   rect rgb(240,245,255)
   note over Sess,GW: ① 主模型链路：agent 自主决策（ai / aiAssert / aiQuery）
   Sess->>PI: createAgentSession(customTools, noTools:'builtin')
-  PI->>GW: POST /chat/completions（含 23 工具定义）
+  PI->>GW: POST /chat/completions（含 26 工具定义）
   GW-->>PI: assistant 消息 + tool_calls
   end
 
@@ -148,7 +148,7 @@ flowchart LR
   GW["模型网关<br/>u2a.lycodeing.cn/v1"]
 
   A -->|"注册 family/baseUrl/key"| E
-  B -->|"装配循环 + 23 工具"| D
+  B -->|"装配循环 + 26 工具"| D
   D --> E
   C -->|"直接 fetch /chat/completions"| GW
   E -->|"HTTP"| GW
@@ -197,6 +197,20 @@ flowchart TD
   EXE -->|"shell / exec-out"| DV["Android 设备"]
 ```
 
+`createDevice` 门面方法清单（`src/device/index.js` 实际键，工具层只认这些）：
+
+| 分类 | 方法 |
+|---|---|
+| 感知 | `screencap` `dumpTree` `locate` `readText` `screenDiffHash` |
+| 操作 | `tap` `longPress` `inputText` `swipe` `scroll` `scrollUntil` `tapEachRow` `key` `launch` `terminate` |
+| 环境 | `foreground` `screenSize` `processAlive` `waitIdle` `waitForElement` `waitForAnyElement` `assertNoCrash` `netSetProfile` `netStatus` |
+| 缓存与取证 | `markDirty` `invalidateCache` `cacheStats` `cachePeek` `dumpToFile` `close` |
+| 附加（preflight/事实采集） | `dumpsysPackage` `packageVersion` `pmGrant` `getProp` `getProps` `readSms` |
+
+> `scrollUntil`/`waitForElement`/`waitForAnyElement`/`tapEachRow` 供等待与逐行批量工具消费；
+> `getProp`/`getProps` 供 L2 设备事实采集；`dumpsysPackage`/`pmGrant`/`packageVersion` 供 `--pregrant`
+> 与计划缓存跨版本失效；`cachePeek` 供动作后截图遮罩读缓存树找密码节点（Task 17 凭据脱敏）。
+
 ## 5. 产物落点（运行时产物与源码分离）
 
 ```mermaid
@@ -239,7 +253,7 @@ flowchart TD
 |---|---|
 | 依赖方向 | `bin → session → tools → {device, net, store, mcp}` 严格单向 |
 | 工具边界 | 工具**只调 `ctx.device` 门面**，禁止直接跑 adb（保证可 mock、可替换） |
-| 23 个工具 | 感知 5 · 操作 8 · 环境 5 · 数据 5（+MCP 动态） |
+| 26 个工具 | 感知 5 · 操作 9 · 环境 6 · 数据扩展 6（+MCP 动态） |
 | 设备锁 | **全局**（`<ASK_HOME>/.ask/locks/`），跨实例共享——否则锁失效 |
 | 产物分离 | 用例/记录/数据/报告落工作区，不污染源码树 |
 | 截图双份 | 报告用**原图**（取证）；进模型上下文用 **JPEG 压缩**（省 78% tokens） |
