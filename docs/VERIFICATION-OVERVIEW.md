@@ -119,8 +119,8 @@
 
 ```bash
 # 环境
-export ASK_ADB=C:/Users/XiaoFeiLong/AppData/Local/Android/Sdk/platform-tools/adb.exe
-export ASK_MODEL_URL=https://u2a.lycodeing.cn/v1
+export ASK_ADB=/path/to/adb
+export ASK_MODEL_URL=https://your-gateway/v1
 export ASK_MODEL_KEY=<your-key>
 export ASK_MODEL_NAME=deepseek-v4.1-flash   # 推荐
 export ASK_MODEL_FAMILY=deepseek

@@ -56,6 +56,12 @@ node bin/ask.js run cases/s3-engine-params.yaml --yes --device 192.168.1.50:5555
 - **云真机/农场**：任何暴露 adb TCP 的设备池（云真机、CI 设备农场）都可作为 serial 源接入，用例与报告层零改动。
 - 延迟提示：TCP 通道比 USB 多一次网络往返，screencap/dump 的大载荷传输受带宽影响；弱网环境建议给 `--timeout` 留余量。
 
+## 能力前置条件（重要）
+
+- **弱网档位（net_profile）**：依赖设备侧 `/system/bin/net` 脚本（redroid 镜像自带）。普通模拟器/真机无此脚本时 `net_profile` 返回 `ok=false`（属预期，用例按容错设计），报告网络时间线为空。
+- **uia2 快通道**：依赖设备预装 Appium uiautomator2 server APK（`io.appium.uiautomator2.server` + `.test`）。未预装时自动降级 legacy dump 通道（慢但可用）。安装方式：`adb install appium-uiautomator2-server.apk`（APK 从 Appium 发布页获取）。
+- **多机并发（--parallel）**：实现已落地但**未在真实多机环境实测**（开发环境仅单设备）。设备农场接入前请先小规模验证。
+
 ## 运行时产物与源码分离
 
 **用例、运行记录、报告、数据集等运行状态产物不落在项目里**，统一写入工作区：

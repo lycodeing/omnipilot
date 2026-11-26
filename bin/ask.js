@@ -217,7 +217,7 @@ async function cmdRun({ positional, flags }) {
   const serials = await resolveSerials(flags);
   if (!serials.length) fail('未找到在线设备（adb devices），请用 --device <serial> 或 --devices 指定');
   if (parallel > serials.length) {
-    fail(`--parallel ${parallel} requires ${parallel} devices, but only ${serials.length} available.`);
+    fail(`--parallel ${parallel} 需要 ${parallel} 台设备，当前仅 ${serials.length} 台在线`);
   }
 
   // 装载 Case：文件 → parseCaseText；纯文本（无 .yaml/.yml 后缀）→ 单步 do
