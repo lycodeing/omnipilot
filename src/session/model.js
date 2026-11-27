@@ -4,16 +4,14 @@
 
 import crypto from 'node:crypto';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { inferFamilyFromModelName } from '../device/coord/registry.js';
 
 export class ModelConfigError extends Error {}
 
-// 模型名 → family 推断（registry FAMILY_ALIASES 的键前缀匹配）
+// 模型名 → family 推断：委托 registry 的单一真源（FAMILY_ALIASES 键前缀匹配），
+// 本模块不再维护硬编码 family 清单。
 export function inferFamilyFromName(name = '') {
-  const n = String(name).toLowerCase();
-  for (const fam of ['glm', 'qwen', 'deepseek', 'doubao', 'kimi', 'gemini', 'gpt', 'openai']) {
-    if (n.startsWith(fam)) return fam === 'openai' ? 'gpt' : fam;
-  }
-  return null;
+  return inferFamilyFromModelName(name);
 }
 
 export function resolveModelConfig(cliOverrides = {}, env = process.env) {

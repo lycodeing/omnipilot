@@ -37,6 +37,20 @@ export function resolveStrategy(family) {
   return null;
 }
 
+// 模型名 → family 推断：FAMILY_ALIASES 键前缀匹配（与 resolveStrategy 同款逻辑），
+// family 清单的单一真源——新增 family 只改 FAMILY_ALIASES，session/model.js 委托本函数。
+export function inferFamilyFromModelName(modelName = '') {
+  const normalizedName = String(modelName).toLowerCase().trim();
+  if (!normalizedName) return null;
+  for (const familyKey of Object.keys(FAMILY_ALIASES)) {
+    if (normalizedName.startsWith(familyKey)) {
+      // openai 归一化为 gpt：两者共用绝对像素策略，对外统一报 gpt
+      return familyKey === 'openai' ? 'gpt' : familyKey;
+    }
+  }
+  return null;
+}
+
 // 探测代表集：每个策略取 FAMILY_ALIASES 中首个登记的 family 作为代表，
 // 从 STRATEGIES 派生——新增策略时 probe 无需再同步登记。
 export const REPRESENTATIVES = Object.entries(STRATEGIES)

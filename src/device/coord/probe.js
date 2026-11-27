@@ -19,20 +19,29 @@ export function probeCachePath(dir = process.cwd()) {
   return join(dir, '.ask', 'family-probe.json');
 }
 
-export function loadProbeFamily(file = probeCachePath()) {
+// modelIdentifier 可选（`${modelName}::${baseUrlHash}`）：传入且缓存中记录的也非空时，
+// 两者不一致视为无效缓存返回 null——换模型/换端点后不复用旧 family。
+// 未传或缓存无此字段时保持原行为（向后兼容）。
+export function loadProbeFamily(file = probeCachePath(), modelIdentifier) {
   try {
-    const j = JSON.parse(readFileSync(file, 'utf8'));
-    return typeof j.family === 'string' ? j.family : null;
+    const cachedRecord = JSON.parse(readFileSync(file, 'utf8'));
+    if (typeof cachedRecord.family !== 'string') return null;
+    const cachedModelIdentifier = cachedRecord.modelIdentifier;
+    if (modelIdentifier && cachedModelIdentifier && modelIdentifier !== cachedModelIdentifier) return null;
+    return cachedRecord.family;
   } catch {
     return null;
   }
 }
 
-export function saveProbeFamily(family, file = probeCachePath()) {
+// modelIdentifier 可选：写入后供 loadProbeFamily 校验缓存是否属于当前模型+端点。
+export function saveProbeFamily(family, file = probeCachePath(), modelIdentifier) {
   mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ family, probedAt: new Date().toISOString() }, null, 2));
-  renameSync(tmp, file);
+  const cacheRecord = { family, probedAt: new Date().toISOString() };
+  if (modelIdentifier) cacheRecord.modelIdentifier = modelIdentifier;
+  const temporaryFile = `${file}.tmp`;
+  writeFileSync(temporaryFile, JSON.stringify(cacheRecord, null, 2));
+  renameSync(temporaryFile, file);
 }
 
 // 用一次 VLM 调用探测：known = { target, bounds }（如左上角返回箭头的已知 bounds）
