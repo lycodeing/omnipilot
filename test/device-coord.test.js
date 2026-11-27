@@ -83,7 +83,7 @@ test('registry：family → 策略映射（含前缀匹配与自定义注册）'
 test('describeForPrompt：提示词与源码措辞对应（§5.5.2）', () => {
   assert.match(resolveStrategy('glm').describeForPrompt(), /0-1000/);
   assert.match(resolveStrategy('glm').describeForPrompt(), /Do NOT use pixel coordinates/);
-  assert.match(resolveStrategy('gemini').describeForPrompt(), /\[y, x\]/);
+  assert.match(resolveStrategy('gemini').describeForPrompt(), /y.*x.*order|y comes first|\[y1, x1/);
   assert.match(resolveStrategy('kimi').describeForPrompt(), /0-1/);
   assert.match(resolveStrategy('gpt').describeForPrompt(), /actual pixel coordinates/);
 });
