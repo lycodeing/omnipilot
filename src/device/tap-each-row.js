@@ -1,280 +1,388 @@
 // 逐行作答状态机（§5.4.6）：问卷/表单一行一行作答。
 //
-// 从 device/index.js 抽出（原为 235 行的方法体，是该文件最大的单体）。
-// 抽出的理由：它是**自包含的状态机**，只依赖 adb / dumpTree / getSize /
-// screencap / scroll 五个能力，与门面的其余职责（树缓存、定位、动作分发）无关。
-// 依赖以参数注入，避免与 index.js 形成循环依赖（index.js import 本模块，
-// 本模块不得反向 import index.js）。
+// 职责拆分：每个子函数只做一件事，主循环只负责编排。
+// 依赖以参数注入，避免与 index.js 形成循环依赖。
 import { decodePng, parseHexColor, isBlueish, isColorish, pixelAt } from './png.js';
 import { flattenNodes, isZeroAreaBounds, hasWebViewContainer } from './uitree.js';
 import * as action from './action.js';
 import { matchNodeSelector as matchNode } from './locate.js';
 import { resolveTiming } from './profiles/index.js';
 
+// ─── 常量 ──────────────────────────────────────────────────────────────────
+const DEFAULT_READY_TIMEOUT_MS = 30_000;
+const MAX_READY_TIMEOUT_MS = 120_000;
+const HANG_THRESHOLD = 2;          // 连续 tap 无响应次数 → 判渲染器挂死
+const TAP_FAIL_THRESHOLD = 2;      // 连续 tap 抛错次数 → 报错退出
+const NO_PROGRESS_THRESHOLD = 2;   // 连续转向无进展轮数 → 判到底
+const PIXEL_SAMPLE_RADIUS_PCT = 0.02; // 无 bounds 时采样半径占屏宽比例
+const PIXEL_HIT_RATIO = 0.6;      // 像素验证命中比例阈值
+const BAND_FALLBACK_RATIO = 400 / 2340; // 末行选项带回退高度占屏高比例
+
+// ─── 1. 配置解析 ───────────────────────────────────────────────────────────
+/**
+ * 校验参数、加载 profile、解析时序与颜色配置。
+ * 返回 { config, error }，error 非空时调用方应直接返回错误结果。
+ */
+async function resolveAnswerConfig({ rows, tap, maxRounds, verifyColor, profile }) {
+  if (!rows || !tap) return { config: null, error: 'tapEachRow 需要 rows 与 tap 参数' };
+
+  let prof = null;
+  if (profile) {
+    try {
+      const { loadProfile } = await import('./profiles/index.js');
+      prof = await loadProfile(profile);
+    } catch (e) {
+      return { config: null, error: `profile 加载失败: ${e?.message ?? e}` };
+    }
+  }
+
+  const timing = resolveTiming({ maxRounds, verifyColor }, prof);
+  const expectedColor = timing.verifyColor === 'auto' || timing.verifyColor == null
+    ? null
+    : (Array.isArray(timing.verifyColor) ? timing.verifyColor : parseHexColor(timing.verifyColor));
+
+  if (timing.verifyColor !== 'auto' && timing.verifyColor != null && !expectedColor) {
+    return { config: null, error: `verifyColor 无法解析: ${timing.verifyColor}（应为 '#RRGGBB' 或 [r,g,b] 或 'auto'）` };
+  }
+
+  const readyWaitMs = Math.max(0, Math.min(MAX_READY_TIMEOUT_MS, Number(prof?.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS) || 0));
+
+  return {
+    config: {
+      maxRounds: timing.maxRounds,
+      settleMs: timing.settleMs,
+      expectedColor,
+      verifyEnabled: true,
+      readyDeadline: Date.now() + readyWaitMs,
+      tapSelectors: String(tap).split('|').map((s) => s.trim()).filter(Boolean),
+      rowSelectors: String(rows).split('|').map((s) => s.trim()).filter(Boolean),
+    },
+    error: null,
+  };
+}
+
+// ─── 2. 节点过滤器工厂 ─────────────────────────────────────────────────────
+/**
+ * 创建面积有效性检查与在屏可见性检查函数。
+ * WebView 壳内零面积 bounds 是渲染器特性 → 放行；纯原生树零面积 = 隐藏 → 排除。
+ */
+function createNodeFilters(flatNodes, screenSize) {
+  const webViewPresent = hasWebViewContainer(flatNodes);
+
+  const isAreaValid = (node) => {
+    if (!Array.isArray(node.bounds) || node.bounds.length !== 4) return false;
+    const zeroArea = node.bounds[2] <= node.bounds[0] || node.bounds[3] <= node.bounds[1];
+    return zeroArea ? webViewPresent : true;
+  };
+
+  const isVisibleOnScreen = (node) => {
+    if (!isAreaValid(node)) return false;
+    if (isZeroAreaBounds(node)) return true; // 零面积已放行，不做 center 在屏检查
+    if (!screenSize) return true;
+    return node.center[0] >= 0 && node.center[0] <= screenSize.w
+      && node.center[1] >= 0 && node.center[1] <= screenSize.h;
+  };
+
+  return { isAreaValid, isVisibleOnScreen };
+}
+
+// ─── 3. 行节点聚类 ─────────────────────────────────────────────────────────
+/**
+ * 从扁平节点中筛选行节点、排序、聚类、分配唯一身份 key。
+ * 零面积行按文档序排在有 bounds 行之后，保持题目顺序不乱。
+ */
+function clusterRowNodes(flatNodes, rowSelectors, isAreaValid) {
+  const rowNodes = flatNodes.filter((node) =>
+    rowSelectors.some((sel) => matchNode(node, sel)) && isAreaValid(node) && (node.text || node.contentDesc),
+  );
+
+  // 排序：有 bounds 按 y 坐标；零面积按文档序排后
+  const sortedRows = rowNodes.sort((a, b) => {
+    const aZero = isZeroAreaBounds(a) ? 1 : 0;
+    const bZero = isZeroAreaBounds(b) ? 1 : 0;
+    if (aZero !== bZero) return aZero - bZero;
+    if (aZero && bZero) return (a.index ?? 0) - (b.index ?? 0);
+    return a.center[1] - b.center[1];
+  });
+
+  // 聚类：y 坐标相近的行归为一组（同一题的多行文本）
+  const clusters = [];
+  for (const node of sortedRows) {
+    const lastCluster = clusters[clusters.length - 1];
+    const proximityThreshold = Math.max(40, (node.bounds[3] - node.bounds[1]) / 2);
+    if (lastCluster && Math.abs(node.center[1] - lastCluster.centerY) < proximityThreshold) {
+      lastCluster.nodes.push(node);
+      lastCluster.centerY = lastCluster.nodes.reduce((sum, n) => sum + n.center[1], 0) / lastCluster.nodes.length;
+    } else {
+      clusters.push({ centerY: node.center[1], nodes: [node], text: String(node.text || node.contentDesc || '') });
+    }
+  }
+
+  // 身份 key：文本 + 同文本出现序号（防重复行文本误判为同一行）
+  const textOccurrence = new Map();
+  for (const cluster of clusters) {
+    const count = (textOccurrence.get(cluster.text) ?? 0) + 1;
+    textOccurrence.set(cluster.text, count);
+    cluster.key = count === 1 ? cluster.text : `${cluster.text}#${count}`;
+  }
+
+  return clusters;
+}
+
+// ─── 4. 选项查找 ───────────────────────────────────────────────────────────
+/**
+ * 为指定行集群查找其选项节点。
+ * 选项带下界 = 下一行的 centerY；零面积选项跳过几何带划分直接放行。
+ */
+function findOptionsForCluster(cluster, clusters, flatNodes, tapSelectors, isAreaValid, screenSize) {
+  const clusterIndex = clusters.indexOf(cluster);
+  const nextCluster = clusters[clusterIndex + 1];
+  const bandFallback = Math.round((screenSize?.h ?? 2340) * BAND_FALLBACK_RATIO);
+  const bandEnd = nextCluster
+    ? Math.max(nextCluster.centerY - 8, cluster.centerY + 40)
+    : cluster.centerY + bandFallback;
+
+  return flatNodes
+    .filter((node) => {
+      if (!tapSelectors.some((sel) => matchNode(node, sel)) || !isAreaValid(node)) return false;
+      if (isZeroAreaBounds(node)) return true; // 零面积选项由文本匹配保证归属
+      return node.center[1] > cluster.centerY && node.center[1] <= bandEnd;
+    })
+    .sort((a, b) => {
+      const aZero = isZeroAreaBounds(a) ? 1 : 0;
+      const bZero = isZeroAreaBounds(b) ? 1 : 0;
+      if (aZero !== bZero) return aZero - bZero;
+      if (aZero && bZero) return (a.index ?? 0) - (b.index ?? 0);
+      return a.center[0] - b.center[0]; // 左→右 = 第一个选项优先
+    });
+}
+
+// ─── 5. 目标选择与转向决策 ─────────────────────────────────────────────────
+/**
+ * 从待答行中选第一个在屏可答行；无可答行时决定转向方向。
+ * 返回 { target, scrollDirection, shouldSkip }。
+ */
+function pickNextAnswerTarget(pendingClusters, clusters, flatNodes, tapSelectors, isAreaValid, isVisibleOnScreen, screenSize) {
+  // 优先找在屏可答行
+  for (const cluster of pendingClusters) {
+    const options = findOptionsForCluster(cluster, clusters, flatNodes, tapSelectors, isAreaValid, screenSize);
+    const visibleOption = options.find((node) => isVisibleOnScreen(node));
+    if (visibleOption) return { target: { cluster, option: visibleOption }, scrollDirection: null, shouldSkip: false };
+  }
+
+  // 无可答行：决定转向
+  const firstPending = pendingClusters[0];
+  if (!firstPending) return { target: null, scrollDirection: 'down', shouldSkip: false };
+
+  const options = findOptionsForCluster(firstPending, clusters, flatNodes, tapSelectors, isAreaValid, screenSize);
+  if (!options.length && firstPending.centerY >= 0 && (!screenSize || firstPending.centerY <= screenSize.h)) {
+    return { target: null, scrollDirection: null, shouldSkip: true }; // 在屏但无匹配选项 → 跳过
+  }
+
+  const lowestOption = options.reduce((lowest, node) => (!lowest || node.center[1] > lowest.center[1] ? node : lowest), null);
+  const direction = (firstPending.centerY < 0 && (!lowestOption || lowestOption.center[1] < 0)) ? 'up' : 'down';
+  return { target: null, scrollDirection: direction, shouldSkip: false };
+}
+
+// ─── 6. tap 效果验证 ───────────────────────────────────────────────────────
+/**
+ * 验证上一次 tap 是否生效（双信号：树 hash 变化 OR 像素变为选中色）。
+ * 返回 { verified, screenshotBuffer, screencapFailed }。
+ */
+async function verifyTapEffect(pendingTap, currentTreeHash, { dumpTree, screencap, getSize, expectedColor, verifyEnabled }) {
+  if (!pendingTap) return { verified: true, screenshotBuffer: null, screencapFailed: false };
+
+  // 信号 1：树 hash 变化（滚动/换页都算响应）
+  let treeHash = currentTreeHash;
+  if (treeHash === undefined) {
+    try { treeHash = (await dumpTree({ fresh: true })).hash; } catch { treeHash = null; }
+  }
+  let verified = treeHash != null && treeHash !== pendingTap.preHash;
+  let screenshotBuffer = null;
+
+  // 信号 2：像素验证（仅当树未变且启用验证时）
+  if (!verified && verifyEnabled) {
+    try {
+      const { buffer } = await screencap();
+      screenshotBuffer = buffer;
+      const png = decodePng(buffer);
+      const centerX = pendingTap.center[0];
+      const centerY = pendingTap.center[1];
+      const screenSize = await getSize().catch(() => null);
+      const fallbackRadius = Math.max(4, Math.round((screenSize?.w ?? 1080) * PIXEL_SAMPLE_RADIUS_PCT));
+      const radiusX = pendingTap.bounds ? Math.max(4, Math.round((pendingTap.bounds[2] - pendingTap.bounds[0]) * 0.2)) : fallbackRadius;
+      const radiusY = pendingTap.bounds ? Math.max(4, Math.round((pendingTap.bounds[3] - pendingTap.bounds[1]) * 0.2)) : fallbackRadius;
+
+      let hitCount = 0;
+      let sampleCount = 0;
+      for (const offsetX of [-1, 0, 1]) {
+        for (const offsetY of [-1, 0, 1]) {
+          const pixel = pixelAt(png, centerX + offsetX * radiusX, centerY + offsetY * radiusY);
+          if (!pixel) continue;
+          sampleCount++;
+          if (expectedColor ? isColorish(pixel, expectedColor) : isBlueish(pixel)) hitCount++;
+        }
+      }
+      verified = sampleCount > 0 && hitCount >= Math.min(5, Math.max(3, Math.ceil(sampleCount * PIXEL_HIT_RATIO)));
+    } catch {
+      verified = true; // screencap 故障时放行，但计数暴露
+      return { verified, screenshotBuffer: null, screencapFailed: true };
+    }
+  }
+
+  return { verified, screenshotBuffer, screencapFailed: false };
+}
+
+// ─── 7. 主循环编排 ─────────────────────────────────────────────────────────
 export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) {
   return async function tapEachRow({ rows, tap, stopWhen = null, maxRounds = null, verify = true, verifyColor = null, profile = null, onQuestion = null } = {}) {
     const result = { rounds: 0, taps: 0, verified: 0, unverified: 0, done: false, bottom: false, error: null, skipped: [] };
-    if (!rows || !tap) { result.error = 'tapEachRow 需要 rows 与 tap 参数'; return result; }
-    // 场景 profile（skills 式按需加载）：只在调用方显式指定时 import，未指定的场景
-    // 零成本。profile 仅提供**调优参数**（settleMs / maxRounds / verifyColor），
-    // 不含任何 App 专有选择器——题面/选项/终止仍全部由 rows/tap/stopWhen 表达。
-    let prof = null;
-    if (profile) {
-      try {
-        const { loadProfile } = await import('./profiles/index.js');
-        prof = await loadProfile(profile);
-      } catch (e) {
-        result.error = `profile 加载失败: ${e?.message ?? e}`;
-        return result;
-      }
-    }
-    // 时序优先级统一走 profiles.resolveTiming（selector/视觉两形态同款）：显式参数 > profile > 内置缺省
-    const { maxRounds: maxRoundsEff, verifyColor: effVerifyColor, settleMs } = resolveTiming({ maxRounds, verifyColor }, prof);
-    const expectedColor = effVerifyColor === 'auto' || effVerifyColor == null ? null : (Array.isArray(effVerifyColor) ? effVerifyColor : parseHexColor(effVerifyColor));
-    if (effVerifyColor !== 'auto' && effVerifyColor != null && !expectedColor) {
-      result.error = `verifyColor 无法解析: ${effVerifyColor}（应为 '#RRGGBB' 或 [r,g,b] 或 'auto'）`;
-      return result;
-    }
-    // 就绪等待预算：调用方往往在"点进问卷"的同一步里紧接着调本工具，
-    // 此时页面可能还在转场/首屏渲染，树里**一行都没有**。从未 tap 过且树中
-    // 0 行时，在 readyWaitMs 内反复等，不当成"到底/无行"。
-    const readyWaitMs = Math.max(0, Math.min(120_000, Number(prof?.readyTimeoutMs ?? 30_000) || 0));
-    const readyDeadline = Date.now() + readyWaitMs;
-    let readyWaitedMs = 0;
-    const answered = new Set(); // 已作答行文本（跳过重 tap）
-    const skipped = new Set(); // 选项集不匹配、无法作答的行（避免转向死循环）
-    const tapSels = String(tap).split('|').map((s) => s.trim()).filter(Boolean);
-    let prevKey = null;
-    let noProgress = 0; // 连续"0 tap 且转向目标不变"轮数；WebView 过滚回弹只抖一帧，2 轮才判到底
-    let hangRounds = 0; // 连续"tap 后双信号皆无"次数；2 次即判渲染器挂死退出
-    let tapFailCount = 0; // 连续 tap 抛错次数（≥2 报错退出）
-    // 待验证的上一轮 tap（延迟验证）：由下一次观测（下一轮 dump 或收尾 drain）结案。
+
+    // 1. 配置解析
+    const { config, error: configError } = await resolveAnswerConfig({ rows, tap, maxRounds, verifyColor, profile });
+    if (configError) { result.error = configError; return result; }
+
+    // 状态变量
+    const answeredKeys = new Set();
+    const skippedKeys = new Set();
+    let previousScrollKey = null;
+    let noProgressRounds = 0;
+    let hangRounds = 0;
+    let tapFailCount = 0;
     let pendingTap = null;
-    // 结案一次待验证 tap。hashNow 可复用调用方刚取到的树 hash（省一次 dump）。
-    // 双信号：树 hash 变化（滚动/换页都算响应）或原坐标像素变为选中色（只选中未滚动）。
-    const finishPending = async (hashNow) => {
-      if (!pendingTap) return true;
-      const p = pendingTap;
-      let h = hashNow;
-      if (h === undefined) {
-        try { h = (await dumpTree({ fresh: true })).hash; } catch { h = null; }
-      }
-      let ok = h != null && h !== p.preHash;
-      let buf = null; // 验证截图（交给 onQuestion 作逐题取证，免二次截屏）
-      if (!ok && verify) {
-        try {
-          const { buffer } = await screencap();
-          buf = buffer;
-          const png = decodePng(buffer);
-          const b = p.bounds;
-          const cx = p.center[0]; const cy = p.center[1];
-          // 无 bounds 兜底采样半径：屏宽 2%（1080 宽 ≈ 22px，比例化适配其它分辨率）
-          const sz = await getSize().catch(() => null);
-          const fallbackR = Math.max(4, Math.round((sz?.w ?? 1080) * 0.02));
-          const rx = b ? Math.max(4, Math.round((b[2] - b[0]) * 0.2)) : fallbackR;
-          const ry = b ? Math.max(4, Math.round((b[3] - b[1]) * 0.2)) : fallbackR;
-          let hits = 0; let total = 0;
-          for (const fx of [-1, 0, 1]) for (const fy of [-1, 0, 1]) {
-            const px = pixelAt(png, cx + fx * rx, cy + fy * ry);
-            if (!px) continue;
-            total++;
-            if (expectedColor ? isColorish(px, expectedColor) : isBlueish(px)) hits++;
-          }
-          ok = total > 0 && hits >= Math.min(5, Math.max(3, Math.ceil(total * 0.6)));
-        } catch { ok = true; result.screencapFailed = (result.screencapFailed ?? 0) + 1; } // 放行但计数暴露（screencap 故障可绕过挂死防线的观测口）
-      }
+    let readyBumps = 0;
+
+    // 验证回调封装
+    const finishPendingTap = async (treeHash) => {
+      const { verified, screenshotBuffer, screencapFailed } = await verifyTapEffect(pendingTap, treeHash, {
+        dumpTree, screencap, getSize, expectedColor: config.expectedColor, verifyEnabled: verify,
+      });
+      if (!pendingTap) return;
+      const tap = pendingTap;
       pendingTap = null;
-      if (ok) {
+
+      if (screencapFailed) result.screencapFailed = (result.screencapFailed ?? 0) + 1;
+
+      if (verified) {
         result.verified++;
         hangRounds = 0;
-        if (p.rowText) answered.add(p.rowKey || p.rowText);
+        if (tap.rowText) answeredKeys.add(tap.rowKey || tap.rowText);
       } else {
         result.unverified++;
         hangRounds++;
       }
-      // 逐题进度回调（报告连续回放用）：每题一行子步骤 + 验证截图（无截图时由调用方补拍）
+
       if (onQuestion) {
-        try {
-          await onQuestion({ row: p.rowText, option: p.optionText, ok, buffer: buf });
-        } catch { /* 进度回调失败不阻断作答 */ }
+        try { await onQuestion({ row: tap.rowText, option: tap.optionText, ok: verified, buffer: screenshotBuffer }); } catch { /* 回调失败不阻断 */ }
       }
-      return ok;
     };
-    // 注意：就绪等待轮次**不消耗 maxRounds 配额**（readyBumps 抵消）。否则 questionnaire
-    // profile 的 45s 就绪预算会吃掉 45 轮，YAML 的 maxRounds: 60 只剩 15 轮给 27 题——
-    // 表现为"答到一半 exhausted"，且与就绪快慢耦合，难以排查。
-    let readyBumps = 0;
-    for (let round = 0; round < maxRoundsEff + readyBumps; round++) {
+
+    // 2. 主循环
+    for (let round = 0; round < config.maxRounds + readyBumps; round++) {
       result.rounds = round + 1;
-      let flat = [];
-      let hash0 = null;
+
+      // 取树
+      let flatNodes = [];
+      let treeHash = null;
       try {
-        const t = await dumpTree({ fresh: true });
-        flat = flattenNodes(t.nodes);
-        hash0 = t.hash;
+        const tree = await dumpTree({ fresh: true });
+        flatNodes = flattenNodes(tree.nodes);
+        treeHash = tree.hash;
       } catch (e) {
         result.error = `dump 失败: ${e?.message ?? e}`;
-        result.skipped = [...skipped];
+        result.skipped = [...skippedKeys];
         return result;
       }
-      // 本轮这次 dump 同时充当**上一轮 tap 的回执**（延迟验证）：tap 后没必要立刻再 dump
-      // 一次——下一轮开头本来就要取同一棵树。单题成本因此从 2 次 dump 降到 1 次
-      // （uia2 下单次 1-6s，27 题省约一半作答时间）。
-      await finishPending(hash0);
-      if (hangRounds >= 2) {
-        result.error = `renderer_unresponsive: 连续两次 tap 后页面无响应（树未变且选项未变为选中色 ${effVerifyColor ?? 'auto'}），渲染器疑似挂死`;
-        result.skipped = [...skipped];
+
+      // 延迟验证上一轮 tap
+      await finishPendingTap(treeHash);
+      if (hangRounds >= HANG_THRESHOLD) {
+        result.error = `renderer_unresponsive: 连续${HANG_THRESHOLD}次 tap 后页面无响应，渲染器疑似挂死`;
+        result.skipped = [...skippedKeys];
         return result;
       }
-      const size = await getSize().catch(() => null);
-      // WebView 壳内零面积 bounds 是渲染器特性（几何未知），不是隐藏节点 → 放行。
-      // 纯原生树里零面积 = 隐藏 → 严格排除。统一判据见 uitree.js shouldAllowZeroAreaNode。
-      const webViewPresent = hasWebViewContainer(flat);
-      const areaOk = (node) => {
-        if (!Array.isArray(node.bounds) || node.bounds.length !== 4) return false;
-        const zeroArea = node.bounds[2] <= node.bounds[0] || node.bounds[3] <= node.bounds[1];
-        if (zeroArea) return webViewPresent; // WebView 壳内放行，纯原生排除
-        return true;
-      };
-      // 在屏检查：零面积节点 center=[0,0] 不可信，跳过几何在屏判定（由视觉确认把关）
-      const vis = (node) => {
-        if (!areaOk(node)) return false;
-        if (isZeroAreaBounds(node)) return true; // 零面积已放行，不做 center 在屏检查
-        return !size || (node.center[0] >= 0 && node.center[0] <= size.w && node.center[1] >= 0 && node.center[1] <= size.h);
-      };
-      // 行节点取 bounds 有效（含 WebView 零面积放行）且带文本者。
-      // 无文本行无法记账，进了集群会每轮重 tap 直到 maxRounds（漏答且无 error），故在入口排除。
-      // rows 支持 | 交替（与 tap 同款方言）：多类行混排的表单一次表达
-      const rowSels = String(rows).split('|').map((x) => x.trim()).filter(Boolean);
-      const rowNodes = flat.filter((n) => rowSels.some((x) => matchNode(n, x)) && areaOk(n) && (n.text || n.contentDesc));
-      // 聚类排序：有真实 bounds 的行按 y 坐标排序；零面积行 center=[0,0] 不可用于几何排序，
-      // 改按文档序（index）排在有 bounds 行之后，保持题目顺序不乱。
-      const clusters = [];
-      const sortedRows = rowNodes.sort((a, b) => {
-        const aZero = isZeroAreaBounds(a) ? 1 : 0;
-        const bZero = isZeroAreaBounds(b) ? 1 : 0;
-        if (aZero !== bZero) return aZero - bZero; // 零面积排后
-        if (aZero && bZero) return (a.index ?? 0) - (b.index ?? 0); // 都零面积按文档序
-        return a.center[1] - b.center[1]; // 都有 bounds 按 y 排序
-      });
-      for (const n of sortedRows) {
-        const last = clusters[clusters.length - 1];
-        if (last && Math.abs(n.center[1] - last.cy) < Math.max(40, (n.bounds[3] - n.bounds[1]) / 2)) {
-          last.nodes.push(n);
-          last.cy = last.nodes.reduce((a, x) => a + x.center[1], 0) / last.nodes.length;
-        } else {
-          clusters.push({ cy: n.center[1], nodes: [n], text: String(n.text || n.contentDesc || '') });
-        }
-      }
-      // 行身份（key）：文本 + **同文本出现序号**。
-      // 记账若只用文本，多题问卷里重复的行文本（多道"满意度"、多组"是/否"）会被
-      // 误判为同一行——答完第一道，所有同文本行都被跳过，整组静默丢失
-      // （result.skipped/done 无任何异常标记）。故按"第 N 个该文本的行"区分。
-      const textSeen = new Map();
-      for (const cl of clusters) {
-        const n = (textSeen.get(cl.text) ?? 0) + 1;
-        textSeen.set(cl.text, n);
-        cl.key = n === 1 ? cl.text : `${cl.text}#${n}`;
-      }
-      // 选项带下界 = 下一行的 cy（下一行的选项必在其行 cy 之下，天然不含邻行选项）；
-      // 末行/无下一行时回退屏高比例（标定 1080×2340 上为 400px，按比例适配其它分辨率）
-      const bandFallback = Math.round((size?.h ?? 2340) * (400 / 2340));
-      const bandEndOf = (i) => {
-        const cl = clusters[i];
-        const next = clusters[i + 1];
-        return next ? Math.max(next.cy - 8, cl.cy + 40) : cl.cy + bandFallback;
-      };
-      const optsFor = (cl) => {
-        const i = clusters.indexOf(cl);
-        const bandEnd = i >= 0 ? bandEndOf(i) : cl.cy + bandFallback;
-        return flat
-          .filter((n) => {
-            if (!tapSels.some((s) => matchNode(n, s)) || !areaOk(n)) return false;
-            // 零面积选项 center=[0,0] 不可用于几何带划分 → 直接放行（由文本匹配保证归属）
-            if (isZeroAreaBounds(n)) return true;
-            return n.center[1] > cl.cy && n.center[1] <= bandEnd;
-          })
-          .sort((a, b) => {
-            // 零面积选项按文档序排；有 bounds 的按 x 坐标排（左→右 = 第一个选项优先）
-            const aZero = isZeroAreaBounds(a) ? 1 : 0;
-            const bZero = isZeroAreaBounds(b) ? 1 : 0;
-            if (aZero !== bZero) return aZero - bZero;
-            if (aZero && bZero) return (a.index ?? 0) - (b.index ?? 0);
-            return a.center[0] - b.center[0];
-          });
-      };
-      // 就绪门（见上方 readyWaitMs 说明）：还没 tap 过任何行、且树上 0 个行节点 = 页面大概
-      // 还没到位（转场/首屏渲染中）。此时**不能**按"无行可答"收尾，否则会 ok 退出、
-      // 后续断言全灭。等一小段再重新观测，直到预算耗尽。
-      if (clusters.length === 0 && result.taps === 0 && Date.now() < readyDeadline) {
-        const nap = Math.min(1000, Math.max(200, Math.round((readyDeadline - Date.now()) / 10)));
-        await new Promise((r) => setTimeout(r, nap));
-        readyWaitedMs += nap;
-        readyBumps++; // 归还本轮的 maxRounds 配额
-        result.rounds--; // 就绪等待不计入"轮次"（调用方看到的轮次应只统计真实作答轮）
+
+      // 构建过滤器与聚类
+      const screenSize = await getSize().catch(() => null);
+      const { isAreaValid, isVisibleOnScreen } = createNodeFilters(flatNodes, screenSize);
+      const clusters = clusterRowNodes(flatNodes, config.rowSelectors, isAreaValid);
+
+      // 就绪门：页面还没加载完时等待，不消耗 maxRounds
+      if (clusters.length === 0 && result.taps === 0 && Date.now() < config.readyDeadline) {
+        const napMs = Math.min(1000, Math.max(200, Math.round((config.readyDeadline - Date.now()) / 10)));
+        await new Promise((resolve) => setTimeout(resolve, napMs));
+        readyBumps++;
+        result.rounds--;
         continue;
       }
-      const pending = clusters.filter((c) => !(c.text && (answered.has(c.key) || skipped.has(c.key))));
+
+      // 终止判定
+      const pendingClusters = clusters.filter((c) => !(c.text && (answeredKeys.has(c.key) || skippedKeys.has(c.key))));
       if (stopWhen) {
-        // matchNode 与 rows/tap 同方言（支持 text*=）；find 已含在屏过滤（vis），返回的是节点本身
-        const stop = flat.find((n) => matchNode(n, stopWhen) && vis(n));
-        // 终止标记要求在屏（隐藏预渲染层的提交按钮不算），且全文档无未答行
-        if (stop && pending.length === 0) { result.done = true; result.skipped = [...skipped]; return result; }
-      }
-      // 本轮只 tap 第一个在屏可答行（选中即触发滚动，同轮第二 tap 坐标必失效）
-      let target = null;
-      for (const cl of pending) {
-        const pick = optsFor(cl).find((n) => vis(n));
-        if (pick) { target = { cl, pick }; break; }
-      }
-      if (!target) {
-        // 无在屏可答行：按第一个未答行几何转向（direction 内容语义：down=前进看下方，up=回退）
-        const firstUn = pending[0];
-        let dir = 'down';
-        if (firstUn) {
-          const opts = optsFor(firstUn);
-          if (!opts.length && firstUn.cy >= 0 && (!size || firstUn.cy <= size.h)) {
-            skipped.add(firstUn.key ?? firstUn.text); // 在屏但选项集不匹配：记跳过，避免死循环
-            continue;
-          }
-          const lastOpt = opts.reduce((a, b) => (!a || b.center[1] > a.center[1] ? b : a), null); // 最低选项（非最右）
-          if (firstUn.cy < 0 && (!lastOpt || lastOpt.center[1] < 0)) dir = 'up'; // 行与选项都在屏上 → 回退
+        const stopNode = flatNodes.find((n) => matchNode(n, stopWhen) && isVisibleOnScreen(n));
+        if (stopNode && pendingClusters.length === 0) {
+          result.done = true;
+          result.skipped = [...skippedKeys];
+          return result;
         }
-        const key = `${firstUn?.text ?? ''}@${dir}`;
-        if (key === prevKey && ++noProgress >= 2) { result.bottom = true; break; }
-        prevKey = key;
-        try { await scroll(dir, { max: 1, stopWhenNoChange: true }); } catch { /* 转向滚动失败（如冷启动尺寸未就绪）仅损失一轮，不炸穿工具层 */ }
+      }
+
+      // 选目标
+      const { target, scrollDirection, shouldSkip } = pickNextAnswerTarget(
+        pendingClusters, clusters, flatNodes, config.tapSelectors, isAreaValid, isVisibleOnScreen, screenSize,
+      );
+
+      if (shouldSkip) {
+        const firstPending = pendingClusters[0];
+        if (firstPending) skippedKeys.add(firstPending.key ?? firstPending.text);
         continue;
       }
-      noProgress = 0; prevKey = null;
+
+      if (!target) {
+        // 转向滚动
+        const scrollKey = `${pendingClusters[0]?.text ?? ''}@${scrollDirection}`;
+        if (scrollKey === previousScrollKey && ++noProgressRounds >= NO_PROGRESS_THRESHOLD) {
+          result.bottom = true;
+          break;
+        }
+        previousScrollKey = scrollKey;
+        try { await scroll(scrollDirection, { max: 1, stopWhenNoChange: true }); } catch { /* 转向失败仅损失一轮 */ }
+        continue;
+      }
+
+      // 执行 tap
+      noProgressRounds = 0;
+      previousScrollKey = null;
       try {
-        await action.tap(adb, target.pick.center);
+        await action.tap(adb, target.option.center);
       } catch (e) {
-        // 连续 tap 异常（设备离线等）≥2 直接报错，防 busy 页 40s/轮 × maxRounds 空转
         tapFailCount++;
-        if (tapFailCount >= 2) { result.error = `连续 tap 失败: ${e?.message ?? e}`; result.skipped = [...skipped]; return result; }
+        if (tapFailCount >= TAP_FAIL_THRESHOLD) {
+          result.error = `连续 tap 失败: ${e?.message ?? e}`;
+          result.skipped = [...skippedKeys];
+          return result;
+        }
         continue;
       }
       tapFailCount = 0;
       result.taps++;
-      // 选中渲染 + scroll-into-view 动画的 settle。延迟验证下这是**唯一**的等待：
-      // 下一轮 dump 落在 settle 之后，天然覆盖渲染；因此这里不必再为"立刻验证"多等一轮。
-      await new Promise((r) => setTimeout(r, settleMs));
-      // 挂起验证：本轮 tap 的回执由下一次观测（下一轮 dump / 收尾 drain）结案。
+
+      // settle 等待 + 挂起验证
+      await new Promise((resolve) => setTimeout(resolve, config.settleMs));
       pendingTap = {
-        preHash: hash0,
-        center: target.pick.center,
-        bounds: Array.isArray(target.pick.bounds) ? target.pick.bounds : null,
-        rowText: target.cl.text ?? '',
-        rowKey: target.cl.key ?? target.cl.text ?? '',   // 行身份（文本+同文本序号），记账用
-        optionText: String(target.pick.text || target.pick.contentDesc || ''),
+        preHash: treeHash,
+        center: target.option.center,
+        bounds: Array.isArray(target.option.bounds) ? target.option.bounds : null,
+        rowText: target.cluster.text ?? '',
+        rowKey: target.cluster.key ?? target.cluster.text ?? '',
+        optionText: String(target.option.text || target.option.contentDesc || ''),
       };
     }
-    // 收尾 drain：最后一题的 tap 没有"下一轮 dump"可用，这里补一次观测结案。
-    // 只有在仍有挂起 tap 时才付这次代价（正常 done/bottom 退出路径会带上它）。
-    if (pendingTap && !result.error) await finishPending();
-    // maxRounds 自然耗尽且未终止：显式标记（done/bottom/error 均为假的第四态，调用方可区分）
+
+    // 3. 收尾
+    if (pendingTap && !result.error) await finishPendingTap();
     if (!result.done && !result.bottom && !result.error) result.exhausted = true;
-    result.skipped = [...skipped];
-    return result;  };
+    result.skipped = [...skippedKeys];
+    return result;
+  };
 }
