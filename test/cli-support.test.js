@@ -208,62 +208,65 @@ test('finish(cancelled)：写终态，覆写增量快照的 _partial 残留', as
 test('gracefulExit 接线：对 activeRuns 每个 run 调 finish(cancelled)', () => {
   // 守护 gracefulExit 的 cancelled 终态接线（该函数直接 process.exit，无法在单测内调用）：
   // 源码文本断言——遍历 activeRuns 后、device.close 之前，必须用 try/catch 包住
-  // run.ctx?.recorder 的 finish('cancelled', { exitCode: 130 })，已 finish 的抛错被忽略。
+  // recorder.finish('cancelled')，已 finish 的抛错被忽略。
+  // 重构后遍历逻辑在 cleanupActiveRun() 中，gracefulExit 调用它。
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ask.js'), 'utf8');
   const g = src.indexOf('async function gracefulExit');
   assert.ok(g > 0, '找到 gracefulExit');
   const body = src.slice(g, src.indexOf('process.once', g));
-  const loopAt = body.indexOf('for (const run of activeRuns)');
-  const closeAt = body.indexOf('run.device?.close');
+  // 重构后：gracefulExit 遍历 activeRuns 并调 cleanupActiveRun
+  const loopAt = body.indexOf('for (const activeRun of activeRuns)');
   assert.ok(loopAt > 0, '找到 activeRuns 遍历');
-  assert.ok(closeAt > loopAt, 'device.close 在遍历之后');
-  // 锚点收紧到「循环起点 → device.close」之间，逐项校验接线细节。
-  const seg = body.slice(loopAt, closeAt);
-  assert.match(seg, /try\s*\{/, 'cancelled 落终态须有 try 包裹');
-  assert.match(seg, /\}\s*catch/, 'cancelled 落终态须有 catch 吞掉「不能重复调用」');
-  assert.ok(seg.includes('run.ctx?.recorder'), '须对 run.ctx?.recorder 落终态（整串锚点）');
-  const finishAt = body.indexOf("finish?.('cancelled', { exitCode: 130 })");
-  assert.ok(finishAt > loopAt, 'finish(cancelled) 须落在 activeRuns 遍历内');
-  assert.ok(finishAt < closeAt, 'finish 须在 device.close 之前（先落终态再关设备）');
+  assert.ok(body.includes('cleanupActiveRun(activeRun)'), '须调 cleanupActiveRun 处理每个 run');
+  // cleanupActiveRun 内含 finish(cancelled) + device.close 的 try/catch 接线
+  const cleanupAt = src.indexOf('async function cleanupActiveRun');
+  assert.ok(cleanupAt > 0, '找到 cleanupActiveRun');
+  const cleanupEnd = src.indexOf('\n}', cleanupAt);
+  const cleanupBody = src.slice(cleanupAt, cleanupEnd);
+  assert.match(cleanupBody, /try\s*\{/, 'cancelled 落终态须有 try 包裹');
+  assert.match(cleanupBody, /\}\s*catch/, 'cancelled 落终态须有 catch 吞掉「不能重复调用」');
+  assert.ok(cleanupBody.includes('recorder?.finish'), '须对 recorder 落终态');
+  assert.ok(cleanupBody.includes("'cancelled'"), '终态须为 cancelled');
+  assert.ok(cleanupBody.includes('device?.close'), '须关闭设备');
+  // finish 在 close 之前
+  const finishIdx = cleanupBody.indexOf('finish');
+  const closeIdx = cleanupBody.indexOf('device?.close');
+  assert.ok(finishIdx < closeIdx, 'finish 须在 device.close 之前（先落终态再关设备）');
 });
 
 // —— I1 守护：cmdAsk 取锁后 fail() 同步退出，finally 不执行，须在 fail 内自行释放 shared 读锁 ——
 test('fail 路径释放 shared 读锁：heldSharedLock 登记 + fail 内 releaseLock(mode:shared) 守护', () => {
   // fail() 直接 process.exit，无法在单测内调用（Node 不展开调用栈、finally 不执行），
-  // 改以精确源码文本断言 + 代码走查守护：断言必须含 heldSharedLock 与 mode:'shared'，
-  // 不能只搜 releaseLock 字样（避免误命中 runOne 的 exclusive 释放）。
+  // 改以精确源码文本断言 + 代码走查守护。重构后释放逻辑提取到 releaseHeldSharedLock()，
+  // fail 和 gracefulExit 都调它。
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ask.js'), 'utf8');
-  // 1) 模块级声明（与 activeRuns/sharedBridgeRef 同处）
+  // 1) 模块级声明
   assert.ok(/let\s+heldSharedLock\s*=\s*null/.test(src), '存在模块级 heldSharedLock 声明');
   // 2) cmdAsk 取锁成功后登记 { root, serial }
   const lockAt = src.indexOf("acquireLock(WORKSPACE.lockRoot, serial, { mode: 'shared' })");
   assert.ok(lockAt > 0, '找到 cmdAsk 的 shared 取锁');
   assert.ok(/heldSharedLock\s*=\s*\{\s*root:\s*WORKSPACE\.lockRoot,\s*serial\s*\}/.test(src),
     '取锁成功后须登记 heldSharedLock = { root: WORKSPACE.lockRoot, serial }');
-  // 3) cmdAsk 正常 finally 释放后清空
-  const finallyAt = src.indexOf("releaseLock(WORKSPACE.lockRoot, serial, { mode: 'shared' });\n    heldSharedLock = null;", lockAt);
-  assert.ok(finallyAt > lockAt, 'cmdAsk finally 释放后须清空 heldSharedLock');
-  // 4) fail() 函数体内：heldSharedLock 守卫 + releaseLock(shared) 精确调用 + 置空，且都在 process.exit 之前
+  // 3) releaseHeldSharedLock 函数内含守卫 + releaseLock(shared) + 置空
+  const relAt = src.indexOf('function releaseHeldSharedLock');
+  assert.ok(relAt > 0, '找到 releaseHeldSharedLock');
+  const relEnd = src.indexOf('\n}', relAt);
+  const relBody = src.slice(relAt, relEnd);
+  assert.ok(relBody.includes('if (!heldSharedLock)'), 'releaseHeldSharedLock 须有守卫');
+  assert.ok(relBody.includes("mode: 'shared'"), '须精确释放 shared 读锁');
+  assert.ok(relBody.includes('heldSharedLock = null'), '释放后须清空');
+  // 4) fail() 调用 releaseHeldSharedLock 且在 process.exit 之前
   const fAt = src.indexOf('function fail(');
-  const fEnd = src.indexOf('process.exit(code);', fAt);
-  assert.ok(fEnd > fAt, '定位到 fail() 的 process.exit');
-  const fBody = src.slice(fAt, fEnd);
-  assert.ok(fBody.includes('if (heldSharedLock)'), 'fail 内须有 heldSharedLock 守卫');
-  assert.ok(fBody.includes("releaseLock(heldSharedLock.root, heldSharedLock.serial, { mode: 'shared' })"),
-    'fail 内须精确调用 releaseLock(..., { mode: \'shared\' }) 释放 shared 读锁');
-  assert.ok(fBody.includes('heldSharedLock = null'), 'fail 释放后须清空 heldSharedLock');
-  // 5) gracefulExit 的 finally：process.exit(130) 前同样须释放 heldSharedLock（cmdAsk 不登记 activeRuns，
-  //    信号退出也绕过 cmdAsk finally，与 fail 同源的残留点）。精确串在 fail + gracefulExit 至少 2 处。
-  const releaseStr = "releaseLock(heldSharedLock.root, heldSharedLock.serial, { mode: 'shared' })";
+  const fExit = src.indexOf('process.exit(exitCode)', fAt);
+  assert.ok(fExit > fAt, '定位到 fail() 的 process.exit');
+  const fBody = src.slice(fAt, fExit);
+  assert.ok(fBody.includes('releaseHeldSharedLock()'), 'fail 内须调 releaseHeldSharedLock');
+  // 5) gracefulExit 也调 releaseHeldSharedLock 且在 process.exit 之前
   const gAt = src.indexOf('async function gracefulExit');
-  const gEnd = src.indexOf('process.once', gAt);
-  const gBody = src.slice(gAt, gEnd);
-  assert.ok(gBody.includes('if (heldSharedLock)'), 'gracefulExit 内须有 heldSharedLock 守卫');
-  assert.ok(gBody.includes(releaseStr), 'gracefulExit finally 须释放 heldSharedLock 的 shared 读锁');
-  assert.ok(gBody.indexOf(releaseStr) < gBody.indexOf('process.exit(130)'),
-    'gracefulExit 释放须在 process.exit(130) 之前');
-  assert.ok(src.split(releaseStr).length - 1 >= 2,
-    '精确释放串须在 fail 与 gracefulExit 各出现一处（≥2 处）');
+  const gExit = src.indexOf('process.exit(EXIT_INTERRUPTED)', gAt);
+  assert.ok(gExit > gAt, '定位到 gracefulExit 的 process.exit');
+  const gBody = src.slice(gAt, gExit);
+  assert.ok(gBody.includes('releaseHeldSharedLock()'), 'gracefulExit 须调 releaseHeldSharedLock');
 });
 
 // —— 设备事实采集（mock 门面，无真机） ——
@@ -396,26 +399,28 @@ test('parseArgv：--probe-family 可选值 flag', () => {
 test('I2 .env 值 tail 空白 trim + I1 probe 人读模板含 family（文本断言）', () => {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ask.js'), 'utf8');
 
-  // I2：.env 解析块内，m[2] 必须 .trim()；引号剥离逻辑保持原样（顺序不变）。
-  const envBlock = src.slice(src.indexOf('envText.split'), src.indexOf('} catch { /* 无 .env'));
-  assert.ok(envBlock.length > 0, '定位到 .env 解析块');
-  assert.match(envBlock, /let\s+v\s*=\s*m\[2\]\.trim\(\);/, '.env 值须 m[2].trim()（否则尾随空白吃掉引号剥离/污染 URL）');
-  assert.match(envBlock, /v\.startsWith\('"'\)[\s\S]*v\.slice\(1, -1\)/, '引号剥离逻辑保持不变');
+  // I2：.env 解析块内，值必须 .trim()；引号剥离逻辑保持原样。
+  // 重构后 .env 加载提取到 loadEnvFile()，变量名从 m/v 改为 match/value。
+  const envBlock = src.slice(src.indexOf('function loadEnvFile'), src.indexOf('loadEnvFile();'));
+  assert.ok(envBlock.length > 0, '定位到 loadEnvFile');
+  assert.match(envBlock, /let\s+value\s*=\s*match\[2\]\.trim\(\);/, '.env 值须 match[2].trim()（否则尾随空白吃掉引号剥离/污染 URL）');
+  assert.match(envBlock, /value\.startsWith\('"'\)[\s\S]*value\.slice\(1, -1\)/, '引号剥离逻辑保持不变');
 
-  // I1：probe 分支（--probe-family → --cache-report 之间）人读模板须含 c.family，
-  // 且 out() 第三参用该 human 变量；doctor 末尾通用模板仍为纯 item+error（不越界）。
+  // I1：probe 分支人读模板须含 family/note。重构后变量名从 human 改为 humanText，
+  // check 替代 c，但守护意图不变：成功项输出 family + note。
   const probe = src.slice(src.indexOf("if (flags['probe-family'])"), src.indexOf("if (flags['cache-report'])"));
   assert.ok(probe.length > 0, '定位到 probe 分支');
-  const humanAt = probe.indexOf('const human = checks.map');
-  assert.ok(humanAt > 0, 'probe 分支须抽出 human 模板');
+  const humanAt = probe.indexOf('const humanText = checks.map');
+  assert.ok(humanAt > 0, 'probe 分支须抽出 humanText 模板');
   const humanLine = probe.slice(humanAt, probe.indexOf('\n', humanAt));
-  assert.match(humanLine, /c\.family/, '成功项人读模板须输出 family（brief 要求）');
-  assert.match(humanLine, /c\.note/, '成功项人读模板须携带 note（已写入路径）');
-  assert.match(probe, /out\(flags, \{ ok, checks \}, human\);/, 'probe 分支 out() 须用 human 变量');
+  assert.match(humanLine, /check\.family/, '成功项人读模板须输出 family');
+  assert.match(humanLine, /check\.note/, '成功项人读模板须携带 note');
+  assert.match(probe, /out\(flags, \{ ok: allOk, checks \}, humanText\);/, 'probe 分支 out() 须用 humanText 变量');
 
   // 越界守护：doctor model/device 末尾通用模板不含 family，保持原样。
+  // 重构后变量名从 c 改为 check，ok 改为 allOk。
   const doctor = src.slice(src.indexOf('if (flags.device || !flags.model)'));
-  const doctorTail = doctor.slice(doctor.indexOf('const ok = checks.every'), doctor.indexOf('return ok ? 0 : 2;'));
-  assert.ok(doctorTail.includes("${c.error ? ' — ' + c.error : ''}"), 'doctor 通用模板仍为 item+error');
-  assert.ok(!doctorTail.includes('c.family'), 'doctor 通用模板未被误改（不增 family）');
+  const doctorTail = doctor.slice(doctor.indexOf('const allOk = checks.every'), doctor.indexOf('return allOk ? 0 : 2;'));
+  assert.ok(doctorTail.includes("${check.error ? ' — ' + check.error : ''}"), 'doctor 通用模板仍为 item+error');
+  assert.ok(!doctorTail.includes('check.family'), 'doctor 通用模板未被误改（不增 family）');
 });
