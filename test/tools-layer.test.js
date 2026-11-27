@@ -220,6 +220,20 @@ describe('action tools', () => {
     assert.equal(tapped, 0, '定位失败不应点击');
   });
 
+  test('tap 定位失败：details.locateCode 透传结构化原因，code 锚仍为 LOCATE_MISS', async () => {
+    const device = makeFakeDevice({
+      locate: async () => ({ ok: false, bounds: null, center: null, strategy: 'none', treeCacheHit: false, vlmCacheHit: false, dumpMs: 1, identity: null, error: '获取 UI 树失败: uia2 busy', code: 'TREE_UNAVAILABLE' }),
+    });
+    const ctx = makeCtx({ device });
+    const tap = buildTools(ctx).find((t) => t.name === 'tap');
+    const r = await tap.execute('id1', { target: '确认' }, undefined, undefined, {});
+    const body = getContent(r);
+    assert.equal(body.code, 'LOCATE_MISS', '模型可见的 code 锚不变');
+    assert.equal(r.details.code, 'LOCATE_MISS', 'run-loop 的 isLocateMiss 锚不变');
+    assert.equal(r.details.locateCode, 'TREE_UNAVAILABLE', '结构化原因必须透传到 details');
+    assert.match(r.details.error, /uia2 busy/, '降级 prompt 应拿得到具体错误');
+  });
+
   test('input 前置定位并回读', async () => {
     const ctx = makeCtx();
     const input = buildTools(ctx).find((t) => t.name === 'input');

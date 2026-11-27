@@ -23,7 +23,7 @@ import * as sms from './sms.js';
 // exec 仅测试注入用；契约入口 createDevice 不暴露该参数
 // waitReady 控制是否等待设备系统服务就绪（冷启动场景）；空 exec/测试注入时可传 false 跳过
 // probeFile：模型家族坐标探测缓存路径（默认 cwd/.ask/family-probe.json；工作区模式下由 CLI 传全局路径）
-export async function createDeviceWithExecutor({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts = {}, exec, waitReady = null, probeFile = null, uia2: uia2Inject = null } = {}) {
+export async function createDeviceWithExecutor({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts = {}, exec, waitReady = null, probeFile = null, missDumpDir = null, uia2: uia2Inject = null } = {}) {
   const adb = new Adb({ serial, adbPath, timeouts, exec });
   await adb.ensureConnected().catch((e) => { console.warn(`[warn] 设备首连失败（${e.message}），命令期仍有重连机会`); });
 
@@ -124,7 +124,7 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     cache.markDirty();   // 动作后强制下次 dump 取新树（缓存失效）
   }
 
-  const locate = createLocator({ getTree: dumpTree, getSize, screencap: () => screen.screencap(adb, { timeoutMs: adb.timeouts.screencap }), vlmCache, ...(probeFile ? { probeFile } : {}) });
+  const locate = createLocator({ getTree: dumpTree, getSize, screencap: () => screen.screencap(adb, { timeoutMs: adb.timeouts.screencap }), vlmCache, missDumpDir, ...(probeFile ? { probeFile } : {}) });
 
   // 逐行作答状态机（从本文件抽出，见 tap-each-row.js）
   const tapEachRowImpl = createTapEachRow({
@@ -671,9 +671,10 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
   return device;
 }
 
-export async function createDevice({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts, probeFile = null } = {}) {
+export async function createDevice({ serial, adbPath = process.env.ASK_ADB || 'adb', timeouts, probeFile = null, missDumpDir = null } = {}) {
   // probeFile 必须转发：CLI 传入的是全局探测缓存路径（<ASK_HOME>/.ask/family-probe.json），
   // 而 locate 的默认是 cwd/.ask/…——不转发则工作区模式下探测结果永远读不到，
   // VLM 定位在未指定 family 时必然失败。
-  return createDeviceWithExecutor({ serial, adbPath, timeouts, probeFile });
+  // missDumpDir：LOCATE_MISS 时把当次 UI 树落盘供排查（见 locate.js dumpMissTree）。
+  return createDeviceWithExecutor({ serial, adbPath, timeouts, probeFile, missDumpDir });
 }

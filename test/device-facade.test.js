@@ -667,3 +667,20 @@ test('inputText：非 ASCII（中文）yadb 失败不降级（input text 对中�
   assert.equal(exec.calls.some((c) => c.includes('input text ')), false, '中文不得走 input text');
   await device.close();
 });
+
+// 守护：missDumpDir 经 createDeviceWithExecutor 转发到 createLocator —— LOCATE_MISS 时
+// 必须在注入的目录落盘树快照（诊断链路缺一环就静默失效）。
+test('转发链：missDumpDir 注入后 LOCATE_MISS 落盘树快照', async () => {
+  const { mkdtempSync, readdirSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'ask-facade-miss-'));
+  const exec = makeExec({});
+  const device = await createDeviceWithExecutor({ serial: 'test', exec, waitReady: false, missDumpDir: dir });
+  const r = await device.locate('text=这个目标不存在');
+  assert.equal(r.ok, false);
+  const files = readdirSync(dir).filter((f) => f.startsWith('locate-miss-') && f.endsWith('.json'));
+  assert.equal(files.length, 1, '应落盘一个快照');
+  const snap = JSON.parse(readFileSync(join(dir, files[0]), 'utf8'));
+  assert.equal(snap.target, 'text=这个目标不存在');
+  assert.ok(Array.isArray(snap.nodes) && snap.nodes.length > 0, '快照应含当次树节点');
+  await device.close();
+});

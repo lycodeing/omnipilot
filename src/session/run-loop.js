@@ -26,6 +26,7 @@ import { ENGINE_TYPES, COORD_TYPES, buildToolCall } from './case-steps.js';
 import { waitSelectorFromText, resolveLoopPlan } from './case-loop.js';
 import { interpolate } from './case.js';
 import { LOCATE_DEGRADE_POLICY, MARATHON_MARKER_WAIT_MS } from '../device/locate-policy.js';
+import { screenSignature } from '../device/png.js';
 import { lastAssistantText, makeAttachStepShot, makeFoldForGateway } from './run-loop-helpers.js';
 
 // 非幂等/敏感工具：其调用被整段回放会在错误时机重复副作用或拿不到当次数据，
@@ -255,7 +256,12 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
             const missText = `${d.code ?? ''} ${d.error ?? ''}`;
             const isLocateMiss = d.ok === false && /LOCATE_MISS|未找到目标/i.test(missText);
             const isTapFamily = call.tool === 'tap' || call.tool === 'long_press';
-            if (isLocateMiss && isTapFamily) {
+            // 结构化原因（locate.code 经 locateMiss 的 details.locateCode 透传）。
+            // 树不可用/槽冲突时 waitIdle 内部同样是 fresh dump，必超时空耗——跳过它直接视觉接地。
+            // 普通 MISS 仍走原 90s 等待（等 idle 后目标回到 a11y 树是有效补救）。
+            const locateCode = d.locateCode ?? null;
+            const treeUnavailable = locateCode === 'TREE_UNAVAILABLE' || locateCode === 'SIZE_UNAVAILABLE';
+            if (isLocateMiss && isTapFamily && !treeUnavailable) {
               // busy 态（提交动画/转场）下 WebView a11y 会把目标元素拒之门外，且 dump 单次
               // 40-55s——与其立刻 VLM/视觉轮盲试（6×380s 全 MISS），先等 idle 窗口过去
               // （有界 90s），树稳定后目标自然出现在 a11y 树里
@@ -264,18 +270,40 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
             if (isLocateMiss && isTapFamily && ctx.vlm) {
               // 先批量接地：一次看图为当前步+后续连续 tap 步预取坐标（写 vlmCache，
               // 键 tree.hash::target，屏幕一变自动失效）。随后单目标 locate 直接命中缓存。
-              try { await batchGround(i); } catch { /* 批量失败不阻断单目标降级 */ }
+              // 树不可用时跳过：batchGround 首句 device.dumpTree() 无超时参数，槽冲突下会
+              // 阻塞到 dump 抛错才进 catch（实测 30-60s）；且其缓存键依赖 tree.hash，无意义。
+              if (!treeUnavailable) {
+                try { await batchGround(i); } catch { /* 批量失败不阻断单目标降级 */ }
+              }
               // 一级降级：VLM 视觉接地（确定性：截图→坐标→family 策略转像素→tap）
               try {
                 const vres = await device.locate(interpStep.text ?? step.text, { vlm: ctx.vlm });
                 if (vres?.ok && vres.bounds) {
+                  // 点击前截屏：点击后比对像素，给「VLM 接地是否真的生效」留证据。
+                  // 只记 engineLog.verified，不改终态判定——画面变化≠点对了（涟漪/动画会
+                  // 假阳性，静默提交会假阴性），在槽冲突时 fresh dump 也不可用，不能当硬门槛。
+                  let beforeShot = null;
+                  try { beforeShot = await device.screencap(); } catch { /* 取图失败跳过校验 */ }
                   const tr = call.tool === 'long_press'
                     ? await device.longPress(vres.bounds, Number(step.durationMs) || 800)
                     : await device.tap(vres.bounds);
-                  ctx.engineLog.push({ step: i, type: step.type + '+vlm-fallback', tool: call.tool, ok: tr?.ok !== false, error: tr?.error ?? null });
+                  let verified = null;
+                  if (beforeShot) {
+                    try {
+                      const afterShot = await device.screencap();
+                      const a = beforeShot.buffer ?? beforeShot;
+                      const b = afterShot.buffer ?? afterShot;
+                      // screenSignature 排除状态栏（上下各跳 6%）+ 等距采样，避免时钟/通知/动画
+                      // 导致裸 Buffer.equals 恒 true。decodePng 对非 PNG 抛错 → verified=null。
+                      verified = Buffer.isBuffer(a) && Buffer.isBuffer(b)
+                        ? screenSignature(a) !== screenSignature(b)
+                        : null;
+                    } catch { verified = null; /* 截图不可用或解码失败不臆断 */ }
+                  }
+                  ctx.engineLog.push({ step: i, type: step.type + '+vlm-fallback', tool: call.tool, ok: tr?.ok !== false, error: tr?.error ?? null, verified });
                   // VLM 降级成功 = 本步最终完成，只撤销本步的失败标记；降级仍失败则保留（终态判 fail）
                   if (tr?.ok !== false) engineFailed = engineFailedBefore;
-                  if (!flags.quiet) console.warn('[engine] ' + step.type + ' 引擎 MISS → VLM 接地 ' + (tr?.ok !== false ? '成功' : '失败'));
+                  if (!flags.quiet) console.warn('[engine] ' + step.type + ' 引擎 MISS → VLM 接地 ' + (tr?.ok !== false ? '成功' : '失败') + (verified === false ? '（点击前后画面无变化）' : ''));
                   continue;
                 }
               } catch { /* VLM 失败 → 落 agent 轮降级 */ }

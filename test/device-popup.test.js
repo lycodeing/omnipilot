@@ -251,3 +251,16 @@ test('detectDialog：权限控制器根仍正确判为系统弹窗', async () =>
   assert.equal(r.detected, true, '权限弹窗根应被识别');
   assert.equal(r.reason, 'foreground-is-system-dialog');
 });
+
+// 守护：detectDialog/treeScan 的 dumpTree 必须带小预算——uia2 槽冲突时无预算 dump
+// 会阻塞 30-60s，弹窗检测是尽力而为的前置检查，不该拖慢主流程。
+test('detectDialog：dumpTree 带 timeoutMs（槽冲突下不空耗）', async () => {
+  let receivedOpts = null;
+  const device = {
+    foreground: async () => ({ package: 'com.demo', activity: 'Main' }),
+    dumpTree: async (opts) => { receivedOpts = opts; return { nodes: [], fromCache: false }; },
+  };
+  await detectDialog(device);
+  assert.ok(receivedOpts, 'dumpTree 应被调用');
+  assert.equal(receivedOpts.timeoutMs, 3000, '必须带 3s 小预算');
+});

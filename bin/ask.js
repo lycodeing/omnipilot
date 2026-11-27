@@ -316,7 +316,10 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
   let ctx = null;        // 提到 try 外：finally 的网络还原用本 run 自己的 ctx（不用共享指针）
   let runHandle = null;  // 在 activeRuns 中占位的本 run 记录
   try {
-    device = await createDevice({ serial, probeFile: WORKSPACE.probeFile });
+    // 按 case 隔离诊断快照目录：避免 workspace 级共享导致长马拉松后上限静默失效，
+    // 也避免 --parallel 多 run 并发计数竞态。caseName sanitize 防路径注入。
+    const caseSlug = String(caseObj.name ?? 'unknown').replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '_').slice(0, 60);
+    device = await createDevice({ serial, probeFile: WORKSPACE.probeFile, missDumpDir: path.join(WORKSPACE.runDir, 'locate-miss', caseSlug) });
   } catch (e) {
     console.error(`设备连接失败（${serial}）：${e.message}`);
     return 2;

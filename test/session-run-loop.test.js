@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runCaseLoop } from '../src/session/run-loop.js';
+import { encodePng } from '../src/image/png.js';
 import { createRunContext } from '../src/session/create.js';
 import { RunRecorder } from '../src/recorder/index.js';
 import { buildTools, buildEngineTools } from '../src/tools/index.js';
@@ -133,4 +134,70 @@ test('runCaseLoop：plan-cache 回放截图挂到最后一步（M6 回归）', a
   const doc = await recorder.finish('pass');
   const last = doc.steps[doc.steps.length - 1];
   assert.ok(last.screenshot, '回放最后一步应有截图（不再孤儿）');
+});
+
+// 守护：树不可用（uia2 槽冲突/busy）时跳过 waitIdle——它内部同样是 fresh dump，
+// 在槽冲突下必超时空耗；普通 MISS 仍走 90s 等待（等 idle 后目标回到 a11y 树）。
+test('runCaseLoop：locateCode=TREE_UNAVAILABLE 跳过 waitIdle，普通 MISS 仍等待', async (t) => {
+  const missResult = (code) => ({ ok: false, bounds: null, center: null, strategy: 'none', treeCacheHit: false, vlmCacheHit: false, dumpMs: 1, identity: null, error: '未找到目标', code });
+  for (const [code, expectWait] of [['TREE_UNAVAILABLE', 0], [null, 1]]) {
+    let waitIdleCalls = 0;
+    const device = fakeDevice({
+      locate: async () => missResult(code),
+      waitIdle: async () => { waitIdleCalls++; return { stable: true, dumps: 1 }; },
+    });
+    const caseObj = { name: 'gate', steps: [{ type: 'aiTap', text: '确认' }] };
+    const { ctx, recorder, session, gov, toolMap } = setup(t, { device, caseObj, answers: ['未找到'] });
+    await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags: { yes: true, quiet: true }, caseObj, runDeadline: 0, modelCfg: {}, planCache: { get: () => null, put() {}, delete() {} } });
+    assert.equal(waitIdleCalls, expectWait, `code=${code ?? 'null'} 时 waitIdle 调用数应为 ${expectWait}`);
+  }
+});
+
+// 守护：VLM 降级点击后记录 verified（点击前后截屏差异），但不改终态判定——
+// 画面变化≠点对了，槽冲突时 fresh dump 也不可用，只能作为证据不能当硬门槛。
+// 构造最小合法 RGB PNG（screenSignature 需要真可解码的截图）
+function makeTestPng(w, h, rgb) {
+  const pixels = Buffer.alloc(w * h * 3);
+  for (let i = 0; i < w * h; i++) { pixels[i*3]=rgb[0]; pixels[i*3+1]=rgb[1]; pixels[i*3+2]=rgb[2]; }
+  return encodePng(w, h, pixels, 2);
+}
+
+test('runCaseLoop：VLM 降级记录 verified 且不因「无画面变化」改判 fail', async (t) => {
+  const png = makeTestPng(100, 200, [128, 128, 128]);
+  const device = fakeDevice({
+    locate: (() => { let n=0; return async()=>(++n===1?{ok:false,bounds:null,center:null,strategy:'none',treeCacheHit:false,vlmCacheHit:false,dumpMs:1,identity:null,error:'LOCATE_MISS'}:{ok:true,bounds:[100,100,200,200],center:[150,150],strategy:'vlm',identity:null}); })(),
+    screencap: async () => ({ buffer: png, size:{w:100,h:200} }),
+  });
+  const caseObj = { name:'v-verified', steps:[{type:'aiTap',text:'确认'}] };
+  const { ctx, recorder, session, gov, toolMap } = setup(t, { device, caseObj, answers:['未找到'] });
+  ctx.vlm = async()=>({raw:'150 150',family:'deepseek'}); ctx.modelCfg={family:'deepseek'};
+  const { status } = await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags:{yes:true,quiet:true}, caseObj, runDeadline:0, modelCfg:{family:'deepseek'}, planCache:{get:()=>null,put(){},delete(){}} });
+  assert.equal(status, 'pass', 'verified 不应改判终态');
+  const log = (ctx.engineLog||[]).find(e=>String(e.type).includes('vlm-fallback'));
+  assert.ok(log, 'engineLog 应有 VLM 降级记录');
+  assert.ok(typeof log.verified === 'boolean' || log.verified === null, 'verified 应为 boolean 或 null');
+});
+
+
+// 守护：树不可用时跳过 batchGround——它首句就是 device.dumpTree()（无超时参数），槽冲突下
+// 会阻塞到 dump 抛错（实测 30-60s）才进 catch，是 waitIdle 之外的另一处空耗来源；
+// 且它写 vlmCache 的键依赖 tree.hash，树不可用时本就无意义。
+// 判据：两个 aiTap 步，tap 固有的弹窗检测（handlePopupBeforeAction → detectDialog，
+// dump 失败时 treeScan 还会回退重扫）实测恰好 3 次 dumpTree；batchGround 若被调用会再多 1 次。
+// 用 dumpTree 调用次数守护，且必须做反向验证（还原修复应变红），否则是假绿。
+test('runCaseLoop：locateCode=TREE_UNAVAILABLE 时跳过 batchGround（不多付 dumpTree）', async (t) => {
+  let dumpCalls = 0;
+  const device = fakeDevice({
+    locate: (() => { let n = 0; return async () => (++n === 1
+      ? { ok: false, bounds: null, center: null, strategy: 'none', treeCacheHit: false, vlmCacheHit: false, dumpMs: 1, identity: null, error: '获取 UI 树失败', code: 'TREE_UNAVAILABLE' }
+      : { ok: true, bounds: [100, 100, 200, 200], center: [150, 150], strategy: 'vlm', identity: null }); })(),
+    dumpTree: async () => { dumpCalls++; throw new Error('uia2 busy'); },
+    screencap: async () => ({ buffer: Buffer.from([1]), size: { w: 720, h: 1280 } }),
+  });
+  const caseObj = { name: 'gate-bg', steps: [{ type: 'aiTap', text: '确认' }, { type: 'aiTap', text: '返回' }] };
+  const { ctx, recorder, session, gov, toolMap } = setup(t, { device, caseObj, answers: ['未找到'] });
+  ctx.vlm = async () => ({ raw: '150 150', family: 'deepseek' });
+  ctx.chat = async () => '';
+  await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags: { yes: true, quiet: true }, caseObj, runDeadline: 0, modelCfg: { family: 'deepseek' }, planCache: { get: () => null, put() {}, delete() {} } });
+  assert.equal(dumpCalls, 3, `应为弹窗检测固有的 3 次 dump，多出说明 batchGround 被触发（实际 ${dumpCalls}）`);
 });

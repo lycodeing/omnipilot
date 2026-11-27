@@ -37,13 +37,15 @@ export function denied(toolName) {
   };
 }
 
-// 定位失败统一响应（LOCATE_MISS）：tap 附加补救建议 hint（保持既有形状）
-function locateMiss(target, error, { hint = false, fallback = '未找到目标' } = {}) {
+// 定位失败统一响应（LOCATE_MISS）：tap 附加补救建议 hint（保持既有形状）。
+// details.code 恒为 LOCATE_MISS（run-loop 的 isLocateMiss 锚，改动它会漏掉三级降级）；
+// 结构化原因放 details.locateCode / details.error，供降级策略 gate 用。
+function locateMiss(target, error, { hint = false, fallback = '未找到目标', loc = null } = {}) {
   const body = { ok: false, code: 'LOCATE_MISS', target, error: error || fallback };
   if (hint) body.hint = '先用 uitree 查看页面结构，或换更精确的可见文本';
   return {
     content: [{ type: 'text', text: JSON.stringify(body) }],
-    details: { ok: false, code: 'LOCATE_MISS' },
+    details: { ok: false, code: 'LOCATE_MISS', locateCode: loc?.code ?? null, error: error || fallback },
   };
 }
 
@@ -89,7 +91,7 @@ export function buildActionTools(ctx) {
       if (!gate.allowed) return denied('tap');
       await handlePopupBeforeAction(ctx, device);
       const loc = await locateWithCache(params.target);
-      if (!loc.ok || !loc.bounds) return locateMiss(params.target, loc.error, { hint: true });
+      if (!loc.ok || !loc.bounds) return locateMiss(params.target, loc.error, { hint: true, loc });
       const r = await device.tap(loc.bounds);
       return actedResult(params.target, loc, r);
     },
@@ -133,7 +135,7 @@ export function buildActionTools(ctx) {
       if (!gate.allowed) return denied('long_press');
       await handlePopupBeforeAction(ctx, device);
       const loc = await locateWithCache(params.target);
-      if (!loc.ok || !loc.bounds) return locateMiss(params.target, loc.error);
+      if (!loc.ok || !loc.bounds) return locateMiss(params.target, loc.error, { loc });
       const r = await device.longPress(loc.bounds, params.durationMs ?? 800);
       return actedResult(params.target, loc, r);
     },
@@ -153,7 +155,7 @@ export function buildActionTools(ctx) {
       if (!gate.allowed) return denied('input');
       await handlePopupBeforeAction(ctx, device);
       const loc = await locateWithCache(params.target);
-      if (!loc.ok || !loc.bounds) return locateMiss(params.target, loc.error, { fallback: '未找到输入框' });
+      if (!loc.ok || !loc.bounds) return locateMiss(params.target, loc.error, { fallback: '未找到输入框', loc });
       const r = await device.inputText(loc.bounds, params.value, { clear: params.clear !== false });
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: r.ok, target: params.target, readBack: r.readBack, match: r.ok, error: r.error }) }],

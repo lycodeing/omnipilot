@@ -135,7 +135,7 @@ export async function detectDialog(device) {
   let fg = null;
   let tree = null;
   try {
-    tree = await device.dumpTree();
+    tree = await device.dumpTree({ timeoutMs: 3000 });
     // 必须看**所有**根节点：uiautomator dump 每窗口一个根，权限弹窗叠在应用窗口之上时
     // 会解析出两个根（应用 + permissioncontroller）。只取 nodes[0] 拿到的是底层窗口
     // （应用自己），于是"前台是系统弹窗"的判定永远不成立——恰恰是弹窗处理存在的场景。
@@ -164,7 +164,7 @@ export async function detectDialog(device) {
 // tree 可复用调用方已 dump 的树。
 async function treeScan(device, fg, tree = null) {
   try {
-    const t = tree ?? (await device.dumpTree());
+    const t = tree ?? (await device.dumpTree({ timeoutMs: 3000 }));
     const { detectTexts } = await devicePopupTexts(device);
     if (hasClickableAllowText(t?.nodes, detectTexts)) {
       return { detected: true, reason: 'allow-button-visible', pkg: fg?.package ?? null };

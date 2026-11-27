@@ -3,6 +3,53 @@
 import { flattenNodes, nodeIdentity } from './uitree.js';
 import { resolveStrategy } from './coord/registry.js';
 import { loadProbeFamily, probeCachePath } from './coord/probe.js';
+import { promises as fsp } from 'node:fs';
+import { join } from 'node:path';
+
+// 单个 case 的诊断快照上限：避免连续 MISS 无限堆积。目录按 case 隔离（bin/ask.js runOne），
+// 并发 run 各自独立计数；同 case 内串行定位，readdir 计数竞态风险极低。
+const MISS_DUMP_MAX_FILES = 20;
+
+// LOCATE_MISS 诊断：把当次 flat 树落盘，供区分「树不可用 / 树里没有目标 / 目标零面积被过滤」。
+// 失败路径专用，成功路径零开销；无 missDumpDir（如单测未注入）时不落盘。
+// 异步 + 临时文件 rename 原子写：busy 态下不阻塞事件循环，进程被 kill 也不会留半截 JSON。
+// 密码框文本掩码：诊断快照不得把凭据明文写进 run 目录（与截图遮罩同一约束）。
+async function dumpMissTree(dir, { target, attempted, flat = [], reason, tree = null, size = null, treeError = null }) {
+  if (!dir) return;
+  try {
+    await fsp.mkdir(dir, { recursive: true });
+    const existing = (await fsp.readdir(dir)).filter((f) => f.startsWith('locate-miss-') && f.endsWith('.json'));
+    if (existing.length >= MISS_DUMP_MAX_FILES) return; // 达上限静默跳过，不影响定位
+    const t = tree ?? {};
+    const snap = {
+      target,
+      attempted,
+      reason,
+      at: new Date().toISOString(),
+      pid: process.pid,
+      treeFromCache: Boolean(t.fromCache),
+      treeCachedAt: t.cachedAt ?? null,
+      dumpMs: t.dumpMs ?? null,
+      treeUnavailable: Boolean(treeError),
+      treeError: treeError ?? null,
+      screenSize: size ? { w: size.w, h: size.h } : null,
+      nodes: (flat ?? []).map((n) => {
+        const pwd = Boolean(n.password);
+        return {
+          index: n.index,
+          text: pwd ? '[REDACTED]' : (n.text ?? ''),
+          contentDesc: pwd ? '[REDACTED]' : (n.contentDesc ?? ''),
+          resourceId: n.resourceId ?? '', cls: n.cls ?? '', clickable: n.clickable ?? null,
+          password: pwd, bounds: n.bounds ?? null,
+        };
+      }),
+    };
+    const final = join(dir, `locate-miss-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}.json`);
+    const tmp = `${final}.tmp`;
+    await fsp.writeFile(tmp, JSON.stringify(snap, null, 2));
+    await fsp.rename(tmp, final);
+  } catch { /* 诊断落盘失败不影响定位结果 */ }
+}
 
 export function inScreen(bounds, size) {
   if (!Array.isArray(bounds) || bounds.length !== 4) return false;
@@ -50,6 +97,19 @@ function findByKind(flat, parsed) {
   if (parsed.kind === 'resource_id') return findByResourceId(flat, parsed.id);
   if (parsed.kind === 'class_index') return findByClass(flat, parsed.cls);
   return findByExactText(flat, parsed.text).concat(findByContains(flat, parsed.text));
+}
+
+// 诊断用：取「未经 inScreen 过滤」的原始命中，与 locate 主链同源（findByKind）。
+// 仅用于判断失败原因，不参与定位结果。within 形态按主链的 scope/inner 两段还原。
+function rawHitsForReason(flat, parsed) {
+  if (parsed.kind === 'within') {
+    const scope = findByKind(flat, parseTarget(parsed.scope))[0] ?? null;
+    if (!scope || !Array.isArray(scope.bounds)) return [];
+    return findByKind(flat, parseTarget(parsed.inner)).filter((n) => Array.isArray(n.bounds)
+      && n !== scope
+      && n.bounds[1] < scope.bounds[3] && n.bounds[3] > scope.bounds[1]);
+  }
+  return findByKind(flat, parsed);
 }
 
 // 节点级 selector 匹配（tools/perception.js 的 matchSelector 同源逻辑，设备层自用）：
@@ -333,27 +393,42 @@ export function matchSelector(flat, selector) {
   return value(n);
 }
 
-// deps：getTree（门面 dumpTree）、getSize、screencap、vlmCache、probeFile（.ask/family-probe.json）
-export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(), probeFile = probeCachePath() }) {
+// deps：getTree（门面 dumpTree）、getSize、screencap、vlmCache、probeFile（.ask/family-probe.json）、
+// missDumpDir（LOCATE_MISS 时把当次 flat 树落盘供排查；不注入则不落盘）
+export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(), probeFile = probeCachePath(), missDumpDir = null }) {
   return async function locate(target, { vlm = null, hintBounds = null, hintIdentity = null } = {}) {
-    const base = { ok: false, bounds: null, center: null, strategy: 'none', treeCacheHit: false, vlmCacheHit: false, dumpMs: 0, identity: null, error: null };
-    if (!target || !String(target).trim()) return { ...base, error: 'target 为空' };
+    const base = { ok: false, bounds: null, center: null, strategy: 'none', treeCacheHit: false, vlmCacheHit: false, dumpMs: 0, identity: null, error: null, code: null };
+    if (!target || !String(target).trim()) return { ...base, code: 'EMPTY_TARGET', error: 'target 为空' };
 
     let tree;
+    let treeError = null;
     try {
       tree = await getTree();
     } catch (e) {
-      return { ...base, error: `获取 UI 树失败: ${e?.message ?? e}` };
+      treeError = `获取 UI 树失败: ${e?.message ?? e}`;
+      if (!vlm) {
+        // 无 VLM 时如实表达「树不可用」，不伪装成「页面里没有目标」——上层据此跳过
+        // 同样依赖 fresh dump 的 waitIdle（在 uia2 槽冲突下必超时空耗）。
+        await dumpMissTree(missDumpDir, { target, attempted: [], flat: [], reason: '树不可用(dump 失败)', treeError });
+        return { ...base, code: 'TREE_UNAVAILABLE', error: treeError };
+      }
+      // 有 VLM：树不可用不应直接判死——flat 置空继续走到 VLM 分支（截图→坐标）。
+      // hash 用错误文本派生唯一值，避免 VLM 缓存键恒定导致跨不同画面复用同一份坐标。
+      tree = { nodes: [], hash: `tree-unavailable:${treeError}`, dumpMs: 0, fromCache: false };
     }
     const flat = flattenNodes(tree.nodes);
     // getSize 必须在 try 内：冷启动期 wm size 不可用（服务未就绪/超时）时应结构化返回，
     // 不能让异常逃出 locate（否则整个 run 会被判 error，见 VERIFICATION-REPORT §10）。
-    // 返回形状严守契约 §1.1（不新增字段），"设备未就绪"由 error 文本表达。
+    // code 是给上层降级策略读的结构化原因（不进模型可见的 content），其余字段守 §1.1 形状。
+    // 拿不到树 ≠ 拿不到 size（size-probe 有会话级缓存），VLM 换算依赖它，不能一起跳过。
     let size;
     try {
       size = await getSize();
     } catch (e) {
-      return { ...base, error: `设备未就绪，获取屏幕尺寸失败: ${e?.message ?? e}` };
+      const sizeErr = `设备未就绪，获取屏幕尺寸失败: ${e?.message ?? e}`;
+      const error = treeError ? `${treeError}；且${sizeErr}` : sizeErr;
+      await dumpMissTree(missDumpDir, { target, attempted: [], flat: [], reason: '树与尺寸均不可用', treeError: error });
+      return { ...base, code: 'SIZE_UNAVAILABLE', error };
     }
     const result = { ...base, treeCacheHit: Boolean(tree.fromCache), dumpMs: tree.dumpMs ?? 0 };
 
@@ -442,16 +517,26 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
 
     // ② VLM 兜底：只在 vlm 注入函数存在时启用；结果按 树hash+target 缓存（§5.0.3.2）
     if (vlm) {
+      // 缓存失效完全依赖 tree.hash 随画面变化。树不可用时 hash 是「错误文本」派生的稳定值，
+      // 不随画面变——若照常缓存，槽冲突期间同 target 会跨画面命中陈旧坐标点错位置。
+      // 故树不可用路径跳过 vlmCache 读写：每次重新看图（多付 VLM 往返，换点击正确）。
+      const cacheable = !treeError;
       const key = `${tree.hash}::${target}`;
-      const cached = vlmCache.get(key);
+      const cached = cacheable ? vlmCache.get(key) : undefined;
       if (cached) {
         return { ...result, ok: true, bounds: cached.bounds, center: cached.center, strategy: 'vlm', vlmCacheHit: true, identity: cached.identity };
       }
+      // VLM 分支早退统一带结构化 code：树不可用时不能让上层再走同样依赖 fresh dump 的 waitIdle。
+      const vlmFail = async (msg) => {
+        const code = treeError ? 'TREE_UNAVAILABLE' : 'VLM_FAILED';
+        await dumpMissTree(missDumpDir, { target, attempted, flat, reason: `视觉定位失败: ${msg}`, tree, size, treeError });
+        return { ...result, code, error: msg };
+      };
       let png;
       try {
         png = await screencap();
       } catch (e) {
-        return { ...result, error: `截图失败: ${e?.message ?? e}` };
+        return vlmFail(`截图失败: ${e?.message ?? e}`);
       }
       let raw = null;
       let family = null;
@@ -460,32 +545,47 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
         raw = out?.raw ?? out;
         family = out?.family ?? null;
       } catch (e) {
-        return { ...result, error: `VLM 定位失败: ${e?.message ?? e}` };
+        return vlmFail(`VLM 定位失败: ${e?.message ?? e}`);
       }
       family = family ?? loadProbeFamily(probeFile);
       const cs = family ? resolveStrategy(family) : null;
       if (!cs) {
-        return { ...result, error: '无法确定坐标策略：请设置 ASK_MODEL_FAMILY 或运行 ask doctor --probe-family' };
+        return vlmFail('无法确定坐标策略：请设置 ASK_MODEL_FAMILY 或运行 ask doctor --probe-family');
       }
       const conv = cs.toPixels(raw, size);
       if (!conv.bounds && !conv.center) {
-        return { ...result, error: `VLM 返回无法解析: ${JSON.stringify(raw)?.slice(0, 120)}` };
+        return vlmFail(`VLM 返回无法解析: ${JSON.stringify(raw)?.slice(0, 120)}`);
       }
       if (!conv.inScreen) {
         // 越界告警：多为 family 坐标约定用错（§5.5.1），降级失败
-        return { ...result, error: `VLM 坐标越界(${JSON.stringify(conv.bounds ?? conv.center)})，请检查 model family 坐标约定` };
+        return vlmFail(`VLM 坐标越界(${JSON.stringify(conv.bounds ?? conv.center)})，请检查 model family 坐标约定`);
       }
       const identity = { text: '', contentDesc: String(target), resourceId: '', cls: '', clickable: null };
-      vlmCache.set(key, { bounds: conv.bounds, center: conv.center, identity });
+      if (cacheable) vlmCache.set(key, { bounds: conv.bounds, center: conv.center, identity });
       return { ...result, ok: true, bounds: conv.bounds, center: conv.center, strategy: 'vlm', identity };
     }
 
     // 失败信息必须可操作：模型据此改写描述。原实现只给"未找到目标"——
     // 既没说搜的是什么，也没说试过哪些策略，candidates 还是 DFS 顺序的前 8 个
     // （与目标无关的节点），模型无法据此调整。
+    // 诊断：区分「树里压根没有目标」与「目标存在但零面积/不在屏被 inScreen 丢弃」——
+    // 后者在 uni-app WebView 壳里常见（可见元素报 [0,0][0,0]），落盘当次 flat 供排查。
+    // rawHits 必须与定位主链同源：用 findByKind(flat, parsed) 取未经 inScreen 过滤的原始
+    // 命中，不能拿带前缀的原始 target 串去搜（within/re:/id=/class= 等形态 parsed.text
+    // 为 undefined，会恒空并把真实的几何过滤误标成「无匹配节点」）。
+    const rawHits = rawHitsForReason(flat, parsed);
+    const reason = treeError
+      ? '树不可用(dump 失败)'
+      : parsed.kind === 'within'
+        ? (rawHits.length ? 'within 作用域内命中但目标不可解析' : 'within 作用域未命中')
+        : (rawHits.length && !rawHits.some((n) => inScreen(n.bounds, size)) ? 'inScreen 过滤' : '无匹配节点');
+    await dumpMissTree(missDumpDir, { target, attempted, flat, reason, tree, size, treeError });
     return {
       ...result,
-      error: `未找到目标 "${target}"：已尝试策略 ${attempted.join('→')}，未命中`,
+      ...(treeError ? { code: 'TREE_UNAVAILABLE' } : {}),
+      error: treeError
+        ? `${treeError}；且视觉定位未命中 "${target}"`
+        : `未找到目标 "${target}"：已尝试策略 ${attempted.join('→')}，未命中`,
       candidates: candidatesOf(flat, target),
     };
   };
