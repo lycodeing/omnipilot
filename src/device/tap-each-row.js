@@ -6,7 +6,7 @@
 // 依赖以参数注入，避免与 index.js 形成循环依赖（index.js import 本模块，
 // 本模块不得反向 import index.js）。
 import { decodePng, parseHexColor, isBlueish, isColorish, pixelAt } from './png.js';
-import { flattenNodes } from './uitree.js';
+import { flattenNodes, isZeroAreaBounds, hasWebViewContainer } from './uitree.js';
 import * as action from './action.js';
 import { matchNodeSelector as matchNode } from './locate.js';
 import { resolveTiming } from './profiles/index.js';
@@ -127,17 +127,37 @@ export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) 
         return result;
       }
       const size = await getSize().catch(() => null);
-      // size=null 时 vis 已短路跳过在屏检查——不需要"兜底屏高"假值
-      // 零面积（隐藏预渲染层 bounds=[0,0,0,0]）先排除，再看中心点是否在屏
-      const areaOk = (n) => Array.isArray(n.bounds) && n.bounds.length === 4 && n.bounds[2] - n.bounds[0] > 0 && n.bounds[3] - n.bounds[1] > 0;
-      const vis = (n) => areaOk(n) && (!size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= size.h));
-      // 行节点取 bounds 真实且带文本者（含滚出屏幕的行，保持文档序）：无文本行无法记账，
-      // 进了集群会每轮重 tap 直到 maxRounds（漏答且无 error），故在入口排除。
+      // WebView 壳内零面积 bounds 是渲染器特性（几何未知），不是隐藏节点 → 放行。
+      // 纯原生树里零面积 = 隐藏 → 严格排除。统一判据见 uitree.js shouldAllowZeroAreaNode。
+      const webViewPresent = hasWebViewContainer(flat);
+      const areaOk = (node) => {
+        if (!Array.isArray(node.bounds) || node.bounds.length !== 4) return false;
+        const zeroArea = node.bounds[2] <= node.bounds[0] || node.bounds[3] <= node.bounds[1];
+        if (zeroArea) return webViewPresent; // WebView 壳内放行，纯原生排除
+        return true;
+      };
+      // 在屏检查：零面积节点 center=[0,0] 不可信，跳过几何在屏判定（由视觉确认把关）
+      const vis = (node) => {
+        if (!areaOk(node)) return false;
+        if (isZeroAreaBounds(node)) return true; // 零面积已放行，不做 center 在屏检查
+        return !size || (node.center[0] >= 0 && node.center[0] <= size.w && node.center[1] >= 0 && node.center[1] <= size.h);
+      };
+      // 行节点取 bounds 有效（含 WebView 零面积放行）且带文本者。
+      // 无文本行无法记账，进了集群会每轮重 tap 直到 maxRounds（漏答且无 error），故在入口排除。
       // rows 支持 | 交替（与 tap 同款方言）：多类行混排的表单一次表达
       const rowSels = String(rows).split('|').map((x) => x.trim()).filter(Boolean);
       const rowNodes = flat.filter((n) => rowSels.some((x) => matchNode(n, x)) && areaOk(n) && (n.text || n.contentDesc));
+      // 聚类排序：有真实 bounds 的行按 y 坐标排序；零面积行 center=[0,0] 不可用于几何排序，
+      // 改按文档序（index）排在有 bounds 行之后，保持题目顺序不乱。
       const clusters = [];
-      for (const n of rowNodes.sort((a, b) => a.center[1] - b.center[1])) {
+      const sortedRows = rowNodes.sort((a, b) => {
+        const aZero = isZeroAreaBounds(a) ? 1 : 0;
+        const bZero = isZeroAreaBounds(b) ? 1 : 0;
+        if (aZero !== bZero) return aZero - bZero; // 零面积排后
+        if (aZero && bZero) return (a.index ?? 0) - (b.index ?? 0); // 都零面积按文档序
+        return a.center[1] - b.center[1]; // 都有 bounds 按 y 排序
+      });
+      for (const n of sortedRows) {
         const last = clusters[clusters.length - 1];
         if (last && Math.abs(n.center[1] - last.cy) < Math.max(40, (n.bounds[3] - n.bounds[1]) / 2)) {
           last.nodes.push(n);
@@ -168,8 +188,20 @@ export function createTapEachRow({ adb, dumpTree, getSize, screencap, scroll }) 
         const i = clusters.indexOf(cl);
         const bandEnd = i >= 0 ? bandEndOf(i) : cl.cy + bandFallback;
         return flat
-          .filter((n) => tapSels.some((s) => matchNode(n, s)) && n.center[1] > cl.cy && n.center[1] <= bandEnd && areaOk(n))
-          .sort((a, b) => a.center[0] - b.center[0]);
+          .filter((n) => {
+            if (!tapSels.some((s) => matchNode(n, s)) || !areaOk(n)) return false;
+            // 零面积选项 center=[0,0] 不可用于几何带划分 → 直接放行（由文本匹配保证归属）
+            if (isZeroAreaBounds(n)) return true;
+            return n.center[1] > cl.cy && n.center[1] <= bandEnd;
+          })
+          .sort((a, b) => {
+            // 零面积选项按文档序排；有 bounds 的按 x 坐标排（左→右 = 第一个选项优先）
+            const aZero = isZeroAreaBounds(a) ? 1 : 0;
+            const bZero = isZeroAreaBounds(b) ? 1 : 0;
+            if (aZero !== bZero) return aZero - bZero;
+            if (aZero && bZero) return (a.index ?? 0) - (b.index ?? 0);
+            return a.center[0] - b.center[0];
+          });
       };
       // 就绪门（见上方 readyWaitMs 说明）：还没 tap 过任何行、且树上 0 个行节点 = 页面大概
       // 还没到位（转场/首屏渲染中）。此时**不能**按"无行可答"收尾，否则会 ok 退出、

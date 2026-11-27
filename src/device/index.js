@@ -2,7 +2,7 @@
 import { writeFile } from 'node:fs/promises';
 import { Adb } from './adb.js';
 import * as screen from './screen.js';
-import { truncateAtHierarchyEnd, parseXmlDump, flattenNodes, treeHash } from './uitree.js';
+import { truncateAtHierarchyEnd, parseXmlDump, flattenNodes, treeHash, isZeroAreaBounds, hasWebViewContainer } from './uitree.js';
 import { TreeCache } from './cache.js';
 import { createLocator, matchSelector, inScreen, matchNodeSelector as matchNode } from './locate.js';
 
@@ -359,12 +359,21 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       const result = { scrolls: 0, found: false, changed: false, error: null };
       if (!selector) { result.error = 'scrollUntil 需要 selector'; return result; }
       const size = await getSize().catch(() => null);
-      const inScr = (n) => !size || (n.center[0] >= 0 && n.center[0] <= size.w && n.center[1] >= 0 && n.center[1] <= size.h);
-      const areaOk = (n) => Array.isArray(n.bounds) && n.bounds.length === 4 && n.bounds[2] - n.bounds[0] > 0 && n.bounds[3] - n.bounds[1] > 0;
       for (let i = 0; i < max; i++) {
         let flat = [];
         try { flat = flattenNodes((await dumpTree({ fresh: true })).nodes); } catch (e) { result.error = `dump 失败: ${e?.message ?? e}`; return result; }
-        // 任一匹配节点在屏即算可见（隐藏预渲染层零面积节点排除）
+        // WebView 壳内零面积 bounds 是渲染器特性 → 放行；纯原生树零面积 = 隐藏 → 排除
+        const webViewPresent = hasWebViewContainer(flat);
+        const inScr = (node) => {
+          if (isZeroAreaBounds(node)) return webViewPresent;
+          return !size || (node.center[0] >= 0 && node.center[0] <= size.w && node.center[1] >= 0 && node.center[1] <= size.h);
+        };
+        const areaOk = (node) => {
+          if (!Array.isArray(node.bounds) || node.bounds.length !== 4) return false;
+          const zeroArea = node.bounds[2] <= node.bounds[0] || node.bounds[3] <= node.bounds[1];
+          return zeroArea ? webViewPresent : true;
+        };
+        // 任一匹配节点可见即算 found（WebView 零面积放行，纯原生隐藏排除）
         if (flat.some((n) => matchNode(n, selector) && areaOk(n) && inScr(n))) { result.found = true; return result; }
         const sr = await this.scroll(direction, { max: 1, stopWhenNoChange: true, distancePct });
         result.scrolls++;

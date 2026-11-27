@@ -2,6 +2,7 @@
 // 首次推送 vendor/yadb → /data/local/tmp/ + chmod；-keyboardClear 清空 → -keyboard 输入 → 回读校验
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
+import { isZeroAreaBounds } from './uitree.js';
 
 export const YADB_REMOTE = '/data/local/tmp/yadb';
 
@@ -64,17 +65,20 @@ export class Yadb {
   }
 }
 
-// 回读：找包含该点的最小节点，取其 text（回读校验强制，§5.4.5）
+// 回读：找包含该点的最小节点，取其 text（回读校验强制，§5.4.5）。
+// 零面积节点跳过：bounds=[0,0,0,0] 只有点恰为 (0,0) 才命中，且 area=0 会赢过一切真实节点，
+// 导致输入实际成功却判「回读失败」。WebView 零面积输入框由上游 locate 的 inWebView 标记处理。
 export function findNodeAtPoint(flat, [x, y]) {
   let best = null;
   let bestArea = Infinity;
-  for (const n of flat) {
-    const [l, t, r, b] = n.bounds;
-    if (x >= l && x <= r && y >= t && y <= b) {
-      const a = (r - l) * (b - t);
-      if (a < bestArea) {
-        best = n;
-        bestArea = a;
+  for (const node of flat) {
+    if (isZeroAreaBounds(node)) continue; // 零面积不参与点∈bounds 判定
+    const [left, top, right, bottom] = node.bounds;
+    if (x >= left && x <= right && y >= top && y <= bottom) {
+      const nodeArea = (right - left) * (bottom - top);
+      if (nodeArea < bestArea) {
+        best = node;
+        bestArea = nodeArea;
       }
     }
   }

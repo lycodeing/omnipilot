@@ -120,3 +120,42 @@ export function nodeIdentity(node) {
     clickable: Boolean(node?.clickable),
   };
 }
+
+// ─── WebView 零面积 bounds 统一判定 ───────────────────────────────────────
+// uni-app / WebView 壳 App 的可见元素经常报 bounds=[0,0][0,0]（零面积），
+// 这是渲染器特性而非「隐藏节点」。全仓所有几何过滤点必须复用以下三个函数，
+// 避免各处自行实现导致行为不一致（waitFor 能等到、locate 却点不到）。
+//
+// 核心原则：
+//   - 纯原生树里零面积 = 隐藏节点 → 严格过滤（不放行）
+//   - WebView 壳内零面积 = 几何未知 → 放行，但标记 inWebView，
+//     下游消费方须走 VLM / 视觉确认获取真实坐标，不可直接用 center=[0,0] 点击
+//   - 排序时零面积节点 area=0 必须排最后，防止「最小面积优先」误选
+
+/**
+ * 判断节点 bounds 是否为零面积（无效或宽高 ≤ 0）。
+ * 用于替代各处内联的 `bounds[2]-bounds[0]>0 && bounds[3]-bounds[1]>0` 判断。
+ */
+export function isZeroAreaBounds(node) {
+  const bounds = node?.bounds;
+  if (!Array.isArray(bounds) || bounds.length !== 4) return true;
+  return bounds[2] <= bounds[0] || bounds[3] <= bounds[1];
+}
+
+/**
+ * 判断扁平节点列表中是否存在 WebView 壳容器。
+ * 判据与 matchOnScreen 一致：cls 含 "WebView"（不区分大小写）。
+ * 只有存在 WebView 壳时，零面积才被视为「几何未知」而非「隐藏」。
+ */
+export function hasWebViewContainer(flatNodes) {
+  return (flatNodes ?? []).some((node) => /WebView/i.test(node.cls || ''));
+}
+
+/**
+ * 组合判定：该节点的零面积 bounds 是否应被放行。
+ * 仅当「零面积 + WebView 壳」同时成立时返回 true。
+ * 调用方据此决定跳过面积过滤，并在结果中标记 inWebView=true。
+ */
+export function shouldAllowZeroAreaNode(node, flatNodes) {
+  return isZeroAreaBounds(node) && hasWebViewContainer(flatNodes);
+}

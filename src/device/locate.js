@@ -1,6 +1,6 @@
 // 定位策略链（§5.1）：精确文本 → 正则/包含 → resource-id → class+index → VLM（注入函数）
 // clickable=false 兜底（§5.4.2）；hint 跨执行坐标缓存校验（§5.0.5 R2）；文本匹配不缓存（§5.0.2.1）
-import { flattenNodes, nodeIdentity } from './uitree.js';
+import { flattenNodes, nodeIdentity, isZeroAreaBounds, hasWebViewContainer } from './uitree.js';
 import { resolveStrategy } from './coord/registry.js';
 import { loadProbeFamily, probeCachePath } from './coord/probe.js';
 import { promises as fsp } from 'node:fs';
@@ -51,10 +51,22 @@ async function dumpMissTree(dir, { target, attempted, flat = [], reason, tree = 
   } catch { /* 诊断落盘失败不影响定位结果 */ }
 }
 
-export function inScreen(bounds, size) {
+/**
+ * 判断 bounds 是否在屏幕内且面积有效。
+ * @param {number[]} bounds - [left, top, right, bottom]
+ * @param {{w:number, h:number}} size - 屏幕尺寸
+ * @param {object[]} [flatNodes] - 可选：扁平节点列表，用于 WebView 零面积放行判定。
+ *   传入时，零面积 + WebView 壳 → 返回 true（几何未知，非隐藏）；
+ *   不传时保持原严格行为（向后兼容）。
+ */
+export function inScreen(bounds, size, flatNodes) {
   if (!Array.isArray(bounds) || bounds.length !== 4) return false;
-  const [l, t, r, b] = bounds;
-  return l >= 0 && t >= 0 && r <= size.w && b <= size.h && r > l && b > t;
+  const [left, top, right, bottom] = bounds;
+  const isZeroArea = right <= left || bottom <= top;
+  // WebView 壳内零面积 = 渲染器特性（几何未知），不是隐藏节点 → 放行
+  if (isZeroArea && flatNodes && hasWebViewContainer(flatNodes)) return true;
+  // 非零面积才做严格的四边在屏 + 面积检查
+  return left >= 0 && top >= 0 && right <= size.w && bottom <= size.h && !isZeroArea;
 }
 
 function area([l, t, r, b]) {
@@ -439,7 +451,7 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
       // 判定为无效），唯独 hint 路径漏了——hint 来自持久化的 locate_cache（上一
       // 步或上一轮写入），节点滚出屏幕后 identity 仍匹配 → 返回屏幕外坐标，
       // 点击落在别处。VLM 路径同样检查 conv.inScreen。
-      if (node && sameIdentity(node, hintIdentity) && inScreen(node.bounds, size)) {
+      if (node && sameIdentity(node, hintIdentity) && inScreen(node.bounds, size, flat)) {
         return { ...result, ok: true, bounds: node.bounds, center: node.center, strategy: 'cache', identity: nodeIdentity(node) };
       }
       // 校验失败 → 弃用 hint，走正常链
@@ -467,13 +479,19 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
     const tryStrategy = (nodes, name) => {
       attempted.push(name);
       if (matched || !nodes?.length) return;
-      matched = nodes.filter((n) => inScreen(n.bounds, size)).sort((a, b) => area(a.bounds) - area(b.bounds))[0] ?? null;
+      // WebView 零面积节点放行后排最后（area=0），防止「最小面积优先」误选几何未知的节点
+      matched = nodes.filter((n) => inScreen(n.bounds, size, flat)).sort((a, b) => {
+        const aZero = isZeroAreaBounds(a) ? 1 : 0;
+        const bZero = isZeroAreaBounds(b) ? 1 : 0;
+        if (aZero !== bZero) return aZero - bZero; // 零面积排最后
+        return area(a.bounds) - area(b.bounds);
+      })[0] ?? null;
       if (matched) strategy = name;
     };
 
     if (parsed.kind === 'exact_text') {
       const hits = findByExactText(flat, parsed.text);
-      if (parsed.index) matched = hits[parsed.index] && inScreen(hits[parsed.index].bounds, size) ? hits[parsed.index] : null;
+      if (parsed.index) matched = hits[parsed.index] && inScreen(hits[parsed.index].bounds, size, flat) ? hits[parsed.index] : null;
       else tryStrategy(hits, 'exact_text');
       if (!matched) tryStrategy(findByContains(flat, parsed.text), 'regex');
       if (!matched) tryStrategy(findByRegex(flat, parsed.text), 'regex');
@@ -504,6 +522,8 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
         : resolved
           ? '目标不可点，已解析到最近可点节点'
           : null;
+      // WebView 零面积节点放行后 bounds/center 不可信，标记 inWebView 供下游走 VLM 坐标兜底
+      const hitInWebView = isZeroAreaBounds(hit) && hasWebViewContainer(flat);
       return {
         ...result,
         ok: true,
@@ -511,6 +531,7 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
         center: hit.center,
         strategy,
         identity: nodeIdentity(hit),
+        ...(hitInWebView ? { inWebView: true } : {}),
         ...(warning ? { warning } : {}),
       };
     }
@@ -578,7 +599,7 @@ export function createLocator({ getTree, getSize, screencap, vlmCache = new Map(
       ? '树不可用(dump 失败)'
       : parsed.kind === 'within'
         ? (rawHits.length ? 'within 作用域内命中但目标不可解析' : 'within 作用域未命中')
-        : (rawHits.length && !rawHits.some((n) => inScreen(n.bounds, size)) ? 'inScreen 过滤' : '无匹配节点');
+        : (rawHits.length && !rawHits.some((n) => inScreen(n.bounds, size, flat)) ? 'inScreen 过滤' : '无匹配节点');
     await dumpMissTree(missDumpDir, { target, attempted, flat, reason, tree, size, treeError });
     return {
       ...result,

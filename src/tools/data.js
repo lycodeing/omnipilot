@@ -7,6 +7,7 @@ import path from 'node:path';
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { flattenNodes, findBySelector, findAllBySelector, matchSelector, textResult } from './perception.js';
+import { isZeroAreaBounds, hasWebViewContainer } from '../device/uitree.js';
 import { denied, confirmWrite } from './action.js';
 import { repairJson } from './ai.js';
 import { compressForContext } from '../image/png.js';
@@ -42,11 +43,19 @@ async function extractUi(device, params) {
   // 否则会把本应"整屏 1 行"的回退改成多行，改变存量用例行为。
   if (!params.container && !scopes.length && fields.length) {
     const area = (n) => Math.max(0, n.bounds[2] - n.bounds[0]) * Math.max(0, n.bounds[3] - n.bounds[1]);
-    const contains = (p, n) => Array.isArray(p.bounds) && Array.isArray(n.bounds)
-      && p.bounds[0] <= n.bounds[0] && p.bounds[1] <= n.bounds[1]
-      && p.bounds[2] >= n.bounds[2] && p.bounds[3] >= n.bounds[3];
-    const overlaps = (a, b) => !(a.bounds[2] <= b.bounds[0] || b.bounds[2] <= a.bounds[0]
-      || a.bounds[3] <= b.bounds[1] || b.bounds[3] <= a.bounds[1]);
+    // WebView 零面积节点不参与几何包含/重叠判断（bounds=[0,0,0,0] 会被任何 [0,0] 容器「包含」，
+    // 且 area=0 排序时反而被优选为最小祖先 → 误聚组）。零面积节点直接排除出自动发现。
+    const contains = (parent, child) => {
+      if (isZeroAreaBounds(parent) || isZeroAreaBounds(child)) return false;
+      return Array.isArray(parent.bounds) && Array.isArray(child.bounds)
+        && parent.bounds[0] <= child.bounds[0] && parent.bounds[1] <= child.bounds[1]
+        && parent.bounds[2] >= child.bounds[2] && parent.bounds[3] >= child.bounds[3];
+    };
+    const overlaps = (a, b) => {
+      if (isZeroAreaBounds(a) || isZeroAreaBounds(b)) return false;
+      return !(a.bounds[2] <= b.bounds[0] || b.bounds[2] <= a.bounds[0]
+        || a.bounds[3] <= b.bounds[1] || b.bounds[3] <= a.bounds[1]);
+    };
     // 最小包含祖先：面积最小的那个包含节点（排除自身）
     const ancestorOf = (n) => flat.filter((p) => p !== n && contains(p, n))
       .sort((a, b) => area(a) - area(b))[0];
@@ -90,11 +99,14 @@ async function extractUi(device, params) {
   const rows = [];
   const scopeList = scopes.length ? scopes : [null];
   for (const scope of scopeList) {
-    // scope 内的节点 = bounds 落在容器 bounds 内的扁平节点
-    const inner = scope && Array.isArray(scope.bounds)
+    // scope 内的节点 = bounds 落在容器 bounds 内的扁平节点。
+    // WebView 零面积 container 无法做几何包含 → 退化为全文档提取（避免只拿到 [0,0,0,0] 节点）。
+    // 零面积子节点在正常 container 内也放行（几何未知，由文本匹配保证归属）。
+    const inner = scope && Array.isArray(scope.bounds) && !isZeroAreaBounds(scope)
       ? flat.filter((n) => n !== scope && Array.isArray(n.bounds)
-          && n.bounds[0] >= scope.bounds[0] && n.bounds[1] >= scope.bounds[1]
-          && n.bounds[2] <= scope.bounds[2] && n.bounds[3] <= scope.bounds[3])
+          && (isZeroAreaBounds(n) || (
+            n.bounds[0] >= scope.bounds[0] && n.bounds[1] >= scope.bounds[1]
+            && n.bounds[2] <= scope.bounds[2] && n.bounds[3] <= scope.bounds[3])))
       : flat;
     const row = {};
     for (const f of fields) {

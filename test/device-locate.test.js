@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseXmlDump, truncateAtHierarchyEnd, treeHash } from '../src/device/uitree.js';
-import { createLocator, parseTarget, compileSafeRegex, findByRegex, matchSelector, matchNodeSelector } from '../src/device/locate.js';
+import { createLocator, parseTarget, compileSafeRegex, findByRegex, matchSelector, matchNodeSelector, inScreen } from '../src/device/locate.js';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/ui-dump.xml', import.meta.url));
 const nodes = parseXmlDump(truncateAtHierarchyEnd(readFileSync(FIXTURE, 'utf8')));
@@ -561,4 +561,55 @@ test('screenSignature：仅状态栏区域变化 → 签名相同；主体变化
   for(const x of [0,40,80]){const i=(92*w+x)*3;bodyChange[i]=0;bodyChange[i+1]=255;bodyChange[i+2]=0;}
   const pngBody = encPng(w,h,bodyChange,2);
   assert.notEqual(screenSignature(pngBase), screenSignature(pngBody), '主体采样点变化 → 签名应不同');
+});
+
+// ─── WebView 零面积 bounds 统一放行 ───────────────────────────────────────
+import { isZeroAreaBounds, hasWebViewContainer, shouldAllowZeroAreaNode } from '../src/device/uitree.js';
+
+test('isZeroAreaBounds：识别零面积与无效 bounds', () => {
+  assert.equal(isZeroAreaBounds({ bounds: [0, 0, 0, 0] }), true);
+  assert.equal(isZeroAreaBounds({ bounds: [10, 20, 10, 20] }), true); // 宽=0
+  assert.equal(isZeroAreaBounds({ bounds: [10, 20, 30, 20] }), true); // 高=0
+  assert.equal(isZeroAreaBounds({ bounds: [10, 20, 30, 40] }), false);
+  assert.equal(isZeroAreaBounds({ bounds: null }), true);
+  assert.equal(isZeroAreaBounds({}), true);
+});
+
+test('hasWebViewContainer：检测 WebView 壳', () => {
+  assert.equal(hasWebViewContainer([{ cls: 'android.webkit.WebView' }]), true);
+  assert.equal(hasWebViewContainer([{ cls: 'WebView' }]), true);
+  assert.equal(hasWebViewContainer([{ cls: 'android.widget.TextView' }]), false);
+  assert.equal(hasWebViewContainer([]), false);
+});
+
+test('inScreen：WebView 零面积放行，纯原生零面积仍拒绝', () => {
+  const size = { w: 1080, h: 2400 };
+  const webViewFlat = [{ cls: 'android.webkit.WebView', bounds: [0, 0, 1080, 2400] }];
+  const nativeFlat = [{ cls: 'android.widget.FrameLayout', bounds: [0, 0, 1080, 2400] }];
+  // WebView 壳内零面积 → 放行
+  assert.equal(inScreen([0, 0, 0, 0], size, webViewFlat), true);
+  // 纯原生零面积 → 拒绝
+  assert.equal(inScreen([0, 0, 0, 0], size, nativeFlat), false);
+  // 不传 flatNodes → 保持原严格行为（向后兼容）
+  assert.equal(inScreen([0, 0, 0, 0], size), false);
+  // 正常 bounds 不受影响
+  assert.equal(inScreen([10, 20, 100, 200], size, webViewFlat), true);
+  assert.equal(inScreen([10, 20, 100, 200], size), true);
+});
+
+test('locate：WebView 零面积节点可被定位且标记 inWebView', async () => {
+  const flat = [
+    { index: 0, text: '', contentDesc: '', resourceId: '', cls: 'android.webkit.WebView', clickable: false, bounds: [0, 0, 1080, 2400], children: [] },
+    { index: 1, text: '健康', contentDesc: '', resourceId: '', cls: 'android.widget.TextView', clickable: true, bounds: [0, 0, 0, 0], children: [] },
+  ];
+  const locate = createLocator({
+    getTree: async () => ({ nodes: flat, hash: 'h', dumpMs: 1, fromCache: false }),
+    getSize: async () => ({ w: 1080, h: 2400 }),
+    screencap: async () => Buffer.alloc(0),
+    vlmCache: new Map(),
+  });
+  const r = await locate('text=健康');
+  assert.equal(r.ok, true, 'WebView 零面积节点应被定位');
+  assert.equal(r.inWebView, true, '应标记 inWebView');
+  assert.deepEqual(r.bounds, [0, 0, 0, 0]);
 });
