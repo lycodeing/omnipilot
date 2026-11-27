@@ -8,7 +8,8 @@ export const STRATEGIES = {
   absolute: new AbsolutePixel(),
 };
 
-// §5.5.1 表格：glm/qwen/deepseek/doubao → xy·1000；kimi → 0-1 point；gemini → yx；gpt → 绝对像素
+// §5.5.1 表格 + VLM 适配层扩展（2026-11-27）
+// 新增 family 只改此表，session/model.js 委托 inferFamilyFromModelName。
 const FAMILY_ALIASES = {
   glm: STRATEGIES.xy1000,
   qwen: STRATEGIES.xy1000,
@@ -18,6 +19,11 @@ const FAMILY_ALIASES = {
   gemini: STRATEGIES.yx1000,
   gpt: STRATEGIES.absolute,
   openai: STRATEGIES.absolute,
+  minimax: STRATEGIES.xy1000,
+  // 长键放后面：前缀匹配时短键优先（qwen 先于 qwen-vl/qwen-legacy）
+  'qwen-vl': STRATEGIES.xy1000,      // qwen3-vl/qwen3.8 系列（bbox_2d 0-1000）
+  'qwen-legacy': STRATEGIES.absolute, // qwen2.5-vl（像素坐标）
+  'tencent-hy': STRATEGIES.xy1000,   // hy4/hy4-flash（box_2d 0-1000）
 };
 
 const custom = new Map();
