@@ -24,7 +24,9 @@ export function repairJson(text) {
 export function createChatClient({ url, key, model, fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
   if (!url || !model) throw new Error('createChatClient 需要 url 与 model');
   const endpoint = url.replace(/\/+$/, '') + '/chat/completions';
-  return async function chat(prompt, { system = SYSTEM_HINT, temperature = 0, maxRetries = 1, images = [] } = {}) {
+  // reasoning：思考控制参数对象（由 coord/reasoning.js 按 family+端点翻译好），直接展开进请求体；
+  // maxTokens：可选 max_tokens 上限；system：非空时覆盖默认 JSON 提示词。三者均不影响既有调用方。
+  return async function chat(prompt, { system = SYSTEM_HINT, temperature = 0, maxRetries = 1, images = [], reasoning = null, maxTokens } = {}) {
     // images: base64 字符串（默认 PNG，向后兼容）或 { data, mimeType } 对象（压缩后 JPEG 用）
     const toPart = (img) => {
       const isObj = img && typeof img === 'object';
@@ -38,14 +40,19 @@ export function createChatClient({ url, key, model, fetchImpl = fetch, timeoutMs
           ...images.map(toPart),
         ]
       : prompt;
-    const body = JSON.stringify({
+    const effectiveSystem = (typeof system === 'string' && system.trim().length > 0) ? system : SYSTEM_HINT;
+    const requestBody = {
       model,
       temperature,
       messages: [
-        { role: 'system', content: system },
+        { role: 'system', content: effectiveSystem },
         { role: 'user', content: userContent },
       ],
-    });
+    };
+    if (maxTokens !== undefined && maxTokens !== null) requestBody.max_tokens = maxTokens;
+    // 思考参数放最后展开：允许适配器方言字段（reasoning_effort/thinking/enable_thinking 等）直达网关
+    if (reasoning && typeof reasoning === 'object') Object.assign(requestBody, reasoning);
+    const body = JSON.stringify(requestBody);
     let lastErr;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {

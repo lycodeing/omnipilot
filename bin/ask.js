@@ -17,6 +17,7 @@ import { lastAssistantText } from '../src/session/run-loop-helpers.js';
 import { createPlanCache } from '../src/session/plan-cache.js';
 import { resolveWorkspace, ensureWorkspace } from '../src/cli/workspace.js';
 import { diffByRun } from '../src/store/diff.js';
+import { buildVlmLocate } from '../src/vlm/locate-factory.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(MODULE_DIR, '..');
@@ -36,10 +37,6 @@ const EXIT_INTERRUPTED = 130;
 const ADB_DEVICES_TIMEOUT_MS = 5000;
 /** doctor --model 探活请求超时（毫秒） */
 const MODEL_PING_TIMEOUT_MS = 15000;
-/** VLM 定位截图压缩最大宽度（像素）：全尺寸 PNG base64 ~570KB/次太贵 */
-const VLM_IMAGE_MAX_WIDTH = 720;
-/** VLM 定位截图压缩质量（JPEG quality） */
-const VLM_IMAGE_QUALITY = 70;
 /** ask 催答重试上限：模型以纯 toolCall/空消息收尾时最多再催几轮 */
 const ASK_NUDGE_MAX_ROUNDS = 2;
 /** ask 缺省时间预算（秒）：--timeout 未传时的兜底 */
@@ -150,34 +147,7 @@ function fail(message, exitCode = EXIT_ENV_ERROR) {
   process.exit(exitCode);
 }
 
-/**
- * --vlm-locate 的视觉定位函数工厂（runOne / cmdAsk / doctor probe-family 共用）。
- * 坐标约定用 model family 的 describeForPrompt 描述，返回交给 locate 的 toPixels 解析；
- * 截图先经 compressForContext 降采样（全尺寸 PNG base64 ~570KB/次太贵）。
- * @param {object} ctx 运行上下文（需已注入 ctx.chat）
- * @param {object} modelConfig 模型配置（取 family 决定坐标约定）
- * @returns {Promise<function({png: Buffer, target: string, instruction?: string}): Promise<{raw: string, family: string}>>}
- */
-async function buildVlmLocate(ctx, modelConfig) {
-  const { resolveStrategy } = await import('../src/device/coord/registry.js');
-  const { compressForContext } = await import('../src/image/png.js');
-  const coordStrategy = resolveStrategy(modelConfig.family);
-  return async ({ png, target, instruction }) => {
-    let image = { data: png.toString('base64'), mimeType: 'image/png' };
-    try {
-      const compressed = await compressForContext(png, { maxWidth: VLM_IMAGE_MAX_WIDTH, quality: VLM_IMAGE_QUALITY });
-      image = { data: compressed.buffer.toString('base64'), mimeType: compressed.mimeType };
-    } catch { /* 压缩失败用原图 */ }
-    const coordFormat = coordStrategy?.describeForPrompt?.() || 'Return coordinates normalized to 0-1000.';
-    // 必须给"找不到"的出口：否则目标不在屏上时模型会被迫编造坐标点中无关卡片、进入错误页面。
-    // locate 走"VLM 返回无法解析"失败路径，安全。
-    const rawAnswer = await ctx.chat(
-      `Locate the UI element described as: ${target}. ${instruction || ''} ${coordFormat} If the target is NOT visible on this screen, reply with exactly: NOT_FOUND. Otherwise reply with ONLY the numbers.`,
-      { images: [image] },
-    );
-    return { raw: rawAnswer, family: modelConfig.family };
-  };
-}
+// buildVlmLocate 已迁移至 src/vlm/locate-factory.js（顶部 import），三个调用点直接复用。
 const usage = `ask — 跨端场景测试 agent（当前落地：Android）
 
 用法: ask <command> [args] [flags]
