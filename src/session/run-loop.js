@@ -929,6 +929,19 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
       // 刷新后 delta 记账、digest 与 answer 读取才与投影一致。
       try { session.refreshContext?.(); } catch { /* 刷新失败不阻断（下轮 prompt 请求侧仍用投影） */ }
     }
+
+    // 步骤失败快速终止：引擎步失败或断言失败时，后续步骤大概率无意义，
+    // 立即标记 fail 并 break，避免浪费时间在不可能成功的后续操作上。
+    // YAML 顶层 stopOnFailure: false 可关闭此行为（兼容需要继续执行的场景）。
+    const stopOnFailure = caseObj.stopOnFailure !== false; // 默认 true
+    if (stopOnFailure && status === 'pass') {
+      const lastAssertionFailed = ctx.assertions.length > 0 && !ctx.assertions[ctx.assertions.length - 1].passed;
+      if (engineFailed || lastAssertionFailed) {
+        console.warn(`[fail-fast] 步骤 ${stepIndex} 失败（${engineFailed ? '引擎' : '断言'}），终止后续 ${steps.length - stepIndex - 1} 步`);
+        status = 'fail';
+        break;
+      }
+    }
   }
 
   // 断言失败判定（exit code 1）；断言优先于引擎失败标记

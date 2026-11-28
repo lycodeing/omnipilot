@@ -8,6 +8,7 @@ function makeMockDevice({ terminateOk = true, clearOk = true, launchOk = true } 
   const calls = [];
   return {
     calls,
+    serial: 'test-device',
     async terminate(packageName) {
       calls.push(['terminate', packageName]);
       return terminateOk ? { ok: true } : { ok: false, error: 'stop failed' };
@@ -23,22 +24,25 @@ function makeMockDevice({ terminateOk = true, clearOk = true, launchOk = true } 
   };
 }
 
-test('initializeApp：默认流程 force-stop → launch → wait（不清数据）', async () => {
+test('initializeApp：默认轻量模式 clear-task-launch（不 force-stop）', async () => {
   const device = makeMockDevice();
   const result = await initializeApp(device, { packageName: 'com.example.app', launchWaitMs: 10 });
   assert.equal(result.ok, true);
-  assert.deepEqual(device.calls.map((c) => c[0]), ['terminate', 'launch']);
-  assert.ok(result.steps.includes('force-stop'));
-  assert.ok(result.steps.includes('launch'));
+  // 轻量模式调 launch（monkey），不调 terminate
+  assert.deepEqual(device.calls.map((c) => c[0]), ['launch']);
+  assert.ok(result.steps.includes('relaunch'));
+  assert.ok(!result.steps.includes('force-stop'));
   assert.ok(!result.steps.includes('pm-clear'));
 });
 
-test('initializeApp：clearData=true 时插入 pm-clear', async () => {
+test('initializeApp：clearData=true 时 force-stop → pm-clear → launch', async () => {
   const device = makeMockDevice();
   const result = await initializeApp(device, { packageName: 'com.example.app', clearData: true, launchWaitMs: 10 });
   assert.equal(result.ok, true);
   assert.deepEqual(device.calls.map((c) => c[0]), ['terminate', 'clearAppData', 'launch']);
+  assert.ok(result.steps.includes('force-stop'));
   assert.ok(result.steps.includes('pm-clear'));
+  assert.ok(result.steps.includes('launch'));
 });
 
 test('initializeApp：dismissPopups 回调被调用', async () => {
@@ -54,25 +58,25 @@ test('initializeApp：dismissPopups 回调被调用', async () => {
   assert.ok(result.steps.includes('dismiss-popups'));
 });
 
-test('initializeApp：terminate 失败时早退', async () => {
+test('initializeApp：clearData=true + terminate 失败时早退', async () => {
   const device = makeMockDevice({ terminateOk: false });
-  const result = await initializeApp(device, { packageName: 'com.example.app', launchWaitMs: 10 });
+  const result = await initializeApp(device, { packageName: 'com.example.app', clearData: true, launchWaitMs: 10 });
   assert.equal(result.ok, false);
   assert.match(result.error, /force-stop/);
-  assert.equal(device.calls.length, 1); // 只调了 terminate
+  assert.equal(device.calls.length, 1);
 });
 
-test('initializeApp：clearAppData 失败时早退', async () => {
+test('initializeApp：clearData=true + clearAppData 失败时早退', async () => {
   const device = makeMockDevice({ clearOk: false });
   const result = await initializeApp(device, { packageName: 'com.example.app', clearData: true, launchWaitMs: 10 });
   assert.equal(result.ok, false);
   assert.match(result.error, /pm clear/);
-  assert.equal(device.calls.length, 2); // terminate + clearAppData
+  assert.equal(device.calls.length, 2);
 });
 
-test('initializeApp：launch 失败时早退', async () => {
+test('initializeApp：clearData=true + launch 失败时早退', async () => {
   const device = makeMockDevice({ launchOk: false });
-  const result = await initializeApp(device, { packageName: 'com.example.app', launchWaitMs: 10 });
+  const result = await initializeApp(device, { packageName: 'com.example.app', clearData: true, launchWaitMs: 10 });
   assert.equal(result.ok, false);
   assert.match(result.error, /launch/);
 });
@@ -86,4 +90,30 @@ test('initializeApp：dismissPopups 抛错不阻断', async () => {
   });
   assert.equal(result.ok, true);
   assert.ok(result.steps.includes('dismiss-popups-skipped'));
+});
+
+test('initializeApp：clearData=true 时 resetAccessibility 被调用', async () => {
+  const device = makeMockDevice();
+  let resetCalled = false;
+  const result = await initializeApp(device, {
+    packageName: 'com.example.app',
+    clearData: true,
+    launchWaitMs: 10,
+    resetAccessibility: async () => { resetCalled = true; return true; },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(resetCalled, true);
+  assert.ok(result.steps.includes('reset-a11y-ok'));
+});
+
+test('initializeApp：默认模式不调 resetAccessibility', async () => {
+  const device = makeMockDevice();
+  let resetCalled = false;
+  const result = await initializeApp(device, {
+    packageName: 'com.example.app',
+    launchWaitMs: 10,
+    resetAccessibility: async () => { resetCalled = true; return true; },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(resetCalled, false); // 轻量模式不需要重置
 });

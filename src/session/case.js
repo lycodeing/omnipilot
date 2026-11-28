@@ -128,6 +128,12 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
       caseObj.targetPackage = unquote(trimmed.replace(/^targetPackage\s*[:：]/, '')).trim();
       continue;
     }
+    // 顶层 stopOnFailure：步骤失败后是否终止后续执行（默认 true）。
+    // false 时即使某步失败也继续执行剩余步骤（兼容需要完整跑完的场景）。
+    if (!inSteps && /^stopOnFailure\s*[:：]/.test(trimmed)) {
+      caseObj.stopOnFailure = !/^(false|no|off|0)$/i.test(unquote(trimmed.replace(/^stopOnFailure\s*[:：]/, '')).trim());
+      continue;
+    }
     // 顶层 appInit：APP 初始化配置（clearData / launchWaitMs）。
     // 写在 targetPackage 之后、steps/flow 之前。缺省时不执行初始化（向后兼容）。
     if (!inSteps && /^appInit\s*[:：]\s*$/.test(trimmed)) {
