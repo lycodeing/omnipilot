@@ -16,6 +16,7 @@ const DEFAULT_LAUNCH_WAIT_MS = 8000;
  * @param {boolean} [options.clearData=false] - 是否清空应用数据（pm clear）
  * @param {number} [options.launchWaitMs] - 启动后等待首页渲染的时间
  * @param {Function} [options.dismissPopups] - 清弹窗函数（复用 cleanLaunchPopups）
+ * @param {Function} [options.resetAccessibility] - 重置无障碍服务（force-stop 后 uia2 被杀时需调用）
  * @returns {Promise<{ok: boolean, error?: string, steps: string[]}>}
  */
 export async function initializeApp(device, {
@@ -23,6 +24,7 @@ export async function initializeApp(device, {
   clearData = false,
   launchWaitMs = DEFAULT_LAUNCH_WAIT_MS,
   dismissPopups = null,
+  resetAccessibility = null,
 }) {
   const executedSteps = [];
 
@@ -53,7 +55,17 @@ export async function initializeApp(device, {
   await new Promise((resolve) => setTimeout(resolve, launchWaitMs));
   executedSteps.push(`wait-${launchWaitMs}ms`);
 
-  // 5. 清弹窗（权限/安装器/隐私协议等）
+  // 5. 重置无障碍服务（force-stop 杀掉 uia2 instrumentation 后必须重启，否则后续 dump 全盲）
+  if (resetAccessibility) {
+    try {
+      const ready = await resetAccessibility();
+      executedSteps.push(ready ? 'reset-a11y-ok' : 'reset-a11y-fallback');
+    } catch {
+      executedSteps.push('reset-a11y-skipped');
+    }
+  }
+
+  // 6. 清弹窗（权限/安装器/隐私协议等）——必须在无障碍服务就绪后执行
   if (dismissPopups) {
     try {
       await dismissPopups();
