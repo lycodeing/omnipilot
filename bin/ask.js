@@ -760,6 +760,9 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
       } else if (!flags.quiet) {
         console.log(`[app-init] ${initPackageName} 初始化完成 (${initResult.steps.join(' → ')})`);
       }
+      // force-stop 会连带杀掉 uia2 server（instrumentation 注入在目标 App 进程），
+      // 必须重置退避状态并重新探测，否则后续所有 dump/VLM 定位都因 a11y 树不可用而失败。
+      await device.resetUia2();
     }
 
     ctx.appVersion = await collectAppVersion(caseObj, device);

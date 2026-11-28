@@ -990,6 +990,13 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
       cache.invalidate();
       vlmCache.clear();
     },
+    /** 重置 uia2 退避状态并重新探测（APP 初始化 force-stop 后 uia2 进程被杀时需调用） */
+    async resetUia2() {
+      if (uia2 && typeof uia2.resetAndEnsure === 'function') {
+        return uia2.resetAndEnsure();
+      }
+      return false;
+    },
     cacheStats() {
       return cache.stats();
     },

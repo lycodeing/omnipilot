@@ -272,6 +272,13 @@ export function createUia2({ adb, serial, port = null, log = () => {}, readyPoll
     ensure,
     ensureSession,
     resetSession: () => { sessionId = null; },
+    /** 重置退避状态并重新探测服务（APP 初始化 force-stop 后 uia2 进程被杀，需清除 deadUntil 才能重启） */
+    async resetAndEnsure() {
+      deadUntil = 0;
+      bound = false;
+      sessionId = null;
+      return ensure();
+    },
     source,
     serverPid, // 设备侧进程探测（dumpXmlRaw 用它判定 UiAutomation 槽是否被占用）
     // 释放资源：设备端会话（DELETE /wd/hub/session/:id）+ host 侧 adb forward。
