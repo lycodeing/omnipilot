@@ -2,14 +2,15 @@
 // 平台无关接口，Android 通过 adb 命令实现；后续小程序/桌面端各自扩展。
 //
 // 两种模式：
-//   clearData=false（默认）：am start --activity-clear-task 清栈重启，不杀进程，
-//     保留 uia2 instrumentation，避免 VLM 定位全盲。
+//   clearData=false（默认）：device.launch 切到前台，不杀进程，保留 uia2。
 //   clearData=true：force-stop → pm clear → launch → resetUia2，全量重置。
 //
-// 嵌入 runOne 装配流程，在 applyPregrant 之后、runCaseLoop 之前执行。
+// 等待机制：pollUntil 条件轮询（前台包名匹配），非固定盲等。
 
-/** 启动后默认等待首页渲染的时间（毫秒） */
-const DEFAULT_LAUNCH_WAIT_MS = 8000;
+import { pollUntil } from './poll.js';
+
+/** 启动后默认最大等待时间（毫秒），用例可通过 appInit.launchWaitMs 覆盖 */
+const DEFAULT_LAUNCH_WAIT_MS = 5000;
 
 /**
  * 初始化目标应用。
@@ -63,9 +64,17 @@ export async function initializeApp(device, {
     executedSteps.push('relaunch');
   }
 
-  // 等待首页渲染
-  await new Promise((resolve) => setTimeout(resolve, launchWaitMs));
-  executedSteps.push(`wait-${launchWaitMs}ms`);
+  // 条件轮询等待首页就绪（前台包名匹配），非固定盲等
+  const ready = await pollUntil(
+    async () => {
+      try {
+        const foreground = await device.foreground();
+        return foreground?.package === packageName;
+      } catch { return false; }
+    },
+    { maxWaitMs: launchWaitMs, initialIntervalMs: 500 },
+  );
+  executedSteps.push(ready ? 'poll-ready' : `poll-timeout-${launchWaitMs}ms`);
 
   // 仅 clearData 模式需要重置无障碍服务（force-stop 杀了 uia2）
   if (clearData && resetAccessibility) {

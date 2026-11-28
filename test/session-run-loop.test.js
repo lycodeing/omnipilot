@@ -138,9 +138,9 @@ test('runCaseLoop：plan-cache 回放截图挂到最后一步（M6 回归）', a
 
 // 守护：树不可用（uia2 槽冲突/busy）时跳过 waitIdle——它内部同样是 fresh dump，
 // 在槽冲突下必超时空耗；普通 MISS 仍走 90s 等待（等 idle 后目标回到 a11y 树）。
-test('runCaseLoop：locateCode=TREE_UNAVAILABLE 跳过 waitIdle，普通 MISS 仍等待', async (t) => {
+test('runCaseLoop：LOCATE_MISS 降级不再 waitIdle（直接 VLM）', async (t) => {
   const missResult = (code) => ({ ok: false, bounds: null, center: null, strategy: 'none', treeCacheHit: false, vlmCacheHit: false, dumpMs: 1, identity: null, error: '未找到目标', code });
-  for (const [code, expectWait] of [['TREE_UNAVAILABLE', 0], [null, 1]]) {
+  for (const code of ['TREE_UNAVAILABLE', null]) {
     let waitIdleCalls = 0;
     const device = fakeDevice({
       locate: async () => missResult(code),
@@ -149,7 +149,7 @@ test('runCaseLoop：locateCode=TREE_UNAVAILABLE 跳过 waitIdle，普通 MISS �
     const caseObj = { name: 'gate', steps: [{ type: 'aiTap', text: '确认' }] };
     const { ctx, recorder, session, gov, toolMap } = setup(t, { device, caseObj, answers: ['未找到'] });
     await runCaseLoop({ ctx, session, recorder, toolMap, gov, flags: { yes: true, quiet: true }, caseObj, runDeadline: 0, modelCfg: {}, planCache: { get: () => null, put() {}, delete() {} } });
-    assert.equal(waitIdleCalls, expectWait, `code=${code ?? 'null'} 时 waitIdle 调用数应为 ${expectWait}`);
+    assert.equal(waitIdleCalls, 0, `code=${code ?? 'null'} 时 MISS 降级不应调 waitIdle`);
   }
 });
 

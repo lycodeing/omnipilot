@@ -21,11 +21,12 @@ export function repairJson(text) {
   }
 }
 
-export function createChatClient({ url, key, model, fetchImpl = fetch, timeoutMs = 60_000 } = {}) {
+export function createChatClient({ url, key, model, fetchImpl = fetch, timeoutMs = 60_000, transcriptWriter = null } = {}) {
   if (!url || !model) throw new Error('createChatClient 需要 url 与 model');
   const endpoint = url.replace(/\/+$/, '') + '/chat/completions';
   // reasoning：思考控制参数对象（由 coord/reasoning.js 按 family+端点翻译好），直接展开进请求体；
   // maxTokens：可选 max_tokens 上限；system：非空时覆盖默认 JSON 提示词。三者均不影响既有调用方。
+  // transcriptWriter：可选落盘钩子，每次 HTTP 尝试（含重试）记一条完整交互；写入失败不阻断请求。
   return async function chat(prompt, { system = SYSTEM_HINT, temperature = 0, maxRetries = 1, images = [], reasoning = null, maxTokens } = {}) {
     // images: base64 字符串（默认 PNG，向后兼容）或 { data, mimeType } 对象（压缩后 JPEG 用）
     const toPart = (img) => {
@@ -53,8 +54,33 @@ export function createChatClient({ url, key, model, fetchImpl = fetch, timeoutMs
     // 思考参数放最后展开：允许适配器方言字段（reasoning_effort/thinking/enable_thinking 等）直达网关
     if (reasoning && typeof reasoning === 'object') Object.assign(requestBody, reasoning);
     const body = JSON.stringify(requestBody);
+    // transcript 公共字段：图片只记 mime 与估算字节数（base64 长度 ×0.75），不落原图避免文件爆炸
+    const imageSummaries = images.map((img) => {
+      const isObjectImage = img && typeof img === 'object';
+      const base64Data = isObjectImage ? (img.data || '') : (img || '');
+      return {
+        mimeType: (isObjectImage && img.mimeType) || 'image/png',
+        sizeBytes: Math.round(base64Data.length * 0.75),
+      };
+    });
+    const writeTranscriptEntry = (extraFields, attemptStartMs) => {
+      if (!transcriptWriter) return;
+      try {
+        transcriptWriter({
+          timestamp: new Date().toISOString(),
+          model,
+          prompt: typeof prompt === 'string' ? prompt : JSON.stringify(prompt),
+          system: effectiveSystem,
+          images: imageSummaries,
+          reasoning: reasoning || null,
+          durationMs: Date.now() - attemptStartMs,
+          ...extraFields,
+        });
+      } catch { /* transcript 写入失败不阻断请求 */ }
+    };
     let lastErr;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const attemptStartMs = Date.now();
       try {
         const res = await fetchImpl(endpoint, {
           method: 'POST',
@@ -66,9 +92,13 @@ export function createChatClient({ url, key, model, fetchImpl = fetch, timeoutMs
         const data = await res.json();
         const text = data?.choices?.[0]?.message?.content ?? '';
         if (!text) throw new Error('模型返回空内容');
+        // 成功：记完整响应文本与 token 用量（网关未回 usage 时为 null）
+        writeTranscriptEntry({ attempt, response: text, usage: data?.usage || null, error: null }, attemptStartMs);
         return text;
       } catch (e) {
         lastErr = e;
+        // 失败：每次尝试都记一条，error 填错误信息；重试链在文件里可完整回放
+        writeTranscriptEntry({ attempt, response: null, usage: null, error: e.message }, attemptStartMs);
       }
     }
     throw lastErr;

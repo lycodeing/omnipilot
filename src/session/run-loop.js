@@ -56,7 +56,7 @@ const MIN_ELEMENT_WAIT_MS = 1500;
 // WebView 视觉确认最大轮数
 const MAX_VISUAL_CONFIRM_ROUNDS = 3;
 // WebView 壳 App 页面加载慢，视觉确认轮间隔放宽到 5s
-const VISUAL_CONFIRM_INTERVAL_MS = 5000;
+const VISUAL_CONFIRM_INTERVAL_MS = 500;
 // aiAssert 会话催答最大轮数（不含 chat 兜底）
 const MAX_ASSERT_NUDGE_ROUNDS = 3;
 // ai/aiQuery 空轮重试最大次数
@@ -256,11 +256,13 @@ function makeMessagesReader(session) {
 /**
  * sleep 步：纯等待指定秒数，记 ok 步并补终态取证截图。
  */
-async function executeSleepStep({ step, recorder, attachStepShot }) {
+async function executeSleepStep({ step, recorder, attachStepShot, runDeadline }) {
   const handle = recorder.startStep('sleep', `${step.seconds}s`);
-  await new Promise((resolve) => setTimeout(resolve, (step.seconds || 0) * 1000));
-  handle.end({ result: 'ok' });
-  attachStepShot(handle.index); // 报告取证：sleep 后的画面状态
+  const { interruptibleSleep } = await import('../device/poll.js');
+  const durationMs = (step.seconds || 0) * 1000;
+  const completed = await interruptibleSleep(durationMs, () => runDeadline && Date.now() > runDeadline);
+  handle.end({ result: completed ? 'ok' : 'interrupted' });
+  attachStepShot(handle.index);
 }
 
 /**
@@ -381,25 +383,18 @@ async function runAgentVisualFallback({ ctx, device, session, recorder, step, ca
  */
 async function handleLocateMissDegrade({ ctx, device, session, recorder, steps, step, interpStep, call, stepIndex, locateCode, engineStepsBefore, engineFailedBefore, flags, modelCfg, foldForGateway }) {
   const treeUnavailable = locateCode === 'TREE_UNAVAILABLE' || locateCode === 'SIZE_UNAVAILABLE';
-  if (!treeUnavailable) {
-    // busy 态（提交动画/转场）下 WebView a11y 会把目标元素拒之门外，且 dump 单次
-    // 40-55s——与其立刻 VLM/视觉轮盲试（6×380s 全 MISS），先等 idle 窗口过去
-    // （有界 90s），树稳定后目标自然出现在 a11y 树里
-    try { await device.waitIdle({ quiet: 1, timeoutMs: LOCATE_DEGRADE_POLICY.busyWaitIdleMs }); } catch { /* 等待失败不阻断降级 */ }
-  }
+  // MISS 后直接走 VLM 视觉接地，不再 waitIdle。
+  // VLM 看截图不需要 a11y 树稳定；等树是纯浪费（实测 15-90s 空耗）。
+  // 如果目标在屏幕上可见，VLM 就能定位；不可见则等再久也没用。
   if (ctx.vlm) {
-    // 先批量接地：一次看图为当前步+后续连续 tap 步预取坐标（写 vlmCache，
-    // 键 tree.hash::target，屏幕一变自动失效）。随后单目标 locate 直接命中缓存。
-    // 树不可用时跳过：batchGround 首句 device.dumpTree() 无超时参数，槽冲突下会
-    // 阻塞到 dump 抛错才进 catch（实测 30-60s）；且其缓存键依赖 tree.hash，无意义。
+    // 批量预取仅在树可用时执行（依赖 tree.hash 做缓存键）
     if (!treeUnavailable) {
       try { await batchGroundTargets({ ctx, device, steps, fromIndex: stepIndex, flags, modelCfg }); } catch { /* 批量失败不阻断单目标降级 */ }
     }
-    // 一级降级：VLM 视觉接地（确定性：截图→坐标→family 策略转像素→tap）
     const vlmOutcome = await attemptVlmFallback({ ctx, device, step, interpStep, call, stepIndex, engineFailedBefore, flags });
     if (vlmOutcome.handled) return vlmOutcome.engineFailed;
   }
-  // 二级降级：一轮 agent 视觉接地往返
+  // VLM 失败或无 VLM：一轮 agent 视觉接地往返
   return runAgentVisualFallback({ ctx, device, session, recorder, step, call, stepIndex, engineStepsBefore, engineFailedBefore, flags, foldForGateway });
 }
 
@@ -828,7 +823,7 @@ export async function runCaseLoop({ ctx, session, recorder, toolMap, planCache, 
     ctx._msgStart = getMessages()?.length ?? 0; // 本步开始时的消息数（上下文窗口分段用）
     try {
       if (step.type === 'sleep') {
-        await executeSleepStep({ step, recorder, attachStepShot });
+        await executeSleepStep({ step, recorder, attachStepShot, runDeadline });
         continue;
       }
       if (step.type === 'net') {

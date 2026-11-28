@@ -560,7 +560,15 @@ async function assembleModelClient(ctx, modelConfig) {
   const { createChatClient } = await import('../src/tools/ai.js');
   if (!modelConfig.url || !modelConfig.key) return { model: null, modelRuntime: null };
   const built = await createModel(modelConfig);
-  ctx.chat = createChatClient({ url: modelConfig.url, key: modelConfig.key, model: modelConfig.name });
+  // transcript 落盘：本 run 的每次小模型/VLM 请求响应写 <runDir>/transcript.jsonl，run 结束保留供排查
+  let transcriptWriter = null;
+  if (ctx.recorder?.dir) {
+    try {
+      const { createTranscriptWriter } = await import('../src/recorder/transcript.js');
+      transcriptWriter = createTranscriptWriter(ctx.recorder.dir);
+    } catch { /* transcript 初始化失败不阻断用例 */ }
+  }
+  ctx.chat = createChatClient({ url: modelConfig.url, key: modelConfig.key, model: modelConfig.name, transcriptWriter });
   ctx.modelCfg = modelConfig; // 视觉作答（tap_each_row 缺省形态）需要坐标族
   ctx.vlm = await buildVlmLocate(ctx, modelConfig);
   return { model: built.model, modelRuntime: built.modelRuntime };
@@ -801,7 +809,13 @@ async function assembleAskModel(ctx, flags) {
   const built = await createModel(modelConfig);
   if (ctx.opts.vlmLocate) {
     const { createChatClient } = await import('../src/tools/ai.js');
-    ctx.chat = createChatClient({ url: modelConfig.url, key: modelConfig.key, model: modelConfig.name });
+    // ask 无 RunRecorder：transcript 落工作区 run/ask-<时间戳>/，与用例 run 目录并列保留
+    let transcriptWriter = null;
+    try {
+      const { createTranscriptWriter } = await import('../src/recorder/transcript.js');
+      transcriptWriter = createTranscriptWriter(path.join(WORKSPACE.runDir, `ask-${Date.now()}`));
+    } catch { /* transcript 初始化失败不阻断问答 */ }
+    ctx.chat = createChatClient({ url: modelConfig.url, key: modelConfig.key, model: modelConfig.name, transcriptWriter });
     ctx.vlm = await buildVlmLocate(ctx, modelConfig);
   }
   return { model: built.model, modelRuntime: built.modelRuntime };
@@ -1075,7 +1089,13 @@ async function checkProbeFamily(flags) {
     }
     const knownElement = { target: '返回箭头', bounds };
     // 复用 runOne/cmdAsk 的视觉定位工厂：chat 客户端 + 截图压缩 + 策略提示词
-    const chatCtx = { chat: createChatClient({ url: modelConfig.url, key: modelConfig.key, model: modelConfig.name }) };
+    // transcript 落工作区 run/doctor-probe-<时间戳>/，探测请求响应留档供排查
+    let probeTranscriptWriter = null;
+    try {
+      const { createTranscriptWriter } = await import('../src/recorder/transcript.js');
+      probeTranscriptWriter = createTranscriptWriter(path.join(WORKSPACE.runDir, `doctor-probe-${Date.now()}`));
+    } catch { /* transcript 初始化失败不阻断探测 */ }
+    const chatCtx = { chat: createChatClient({ url: modelConfig.url, key: modelConfig.key, model: modelConfig.name, transcriptWriter: probeTranscriptWriter }) };
     const vlmLocate = await buildVlmLocate(chatCtx, modelConfig);
     const probeResult = await probeFamily({ vlm: vlmLocate, png: screenshot.buffer, size: screenSize, known: knownElement, file: WORKSPACE.probeFile });
     if (probeResult.family) return { item: 'probe-family', ok: true, family: probeResult.family, note: `已写入 ${WORKSPACE.probeFile}` };
@@ -1140,7 +1160,13 @@ async function checkModel(flags) {
   }
   try {
     const { createChatClient } = await import('../src/tools/ai.js');
-    const chat = createChatClient({ url: modelConfig.url, key: modelConfig.key, model: modelConfig.name, timeoutMs: MODEL_PING_TIMEOUT_MS });
+    // transcript 落工作区 run/doctor-model-<时间戳>/，探活请求响应留档（失败原因可回放）
+    let pingTranscriptWriter = null;
+    try {
+      const { createTranscriptWriter } = await import('../src/recorder/transcript.js');
+      pingTranscriptWriter = createTranscriptWriter(path.join(WORKSPACE.runDir, `doctor-model-${Date.now()}`));
+    } catch { /* transcript 初始化失败不阻断探活 */ }
+    const chat = createChatClient({ url: modelConfig.url, key: modelConfig.key, model: modelConfig.name, timeoutMs: MODEL_PING_TIMEOUT_MS, transcriptWriter: pingTranscriptWriter });
     await chat('ping', { maxRetries: 0 });
     return { item: 'model', ok: true, url: modelConfig.url, name: modelConfig.name, note: '探活通过' };
   } catch (error) {
