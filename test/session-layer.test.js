@@ -525,3 +525,33 @@ test('aiScroll 的 maxScrolls 参数被正确识别（派生化改造曾致其�
   assert.equal(call.params.direction, '向下滚动直到最后一个相册', 'direction 不得被污染');
   assert.equal(call.params.max, 5, 'maxScrolls 应映射到工具的 max 参数');
 });
+
+test('parseCaseText：appInit 顶层配置块解析', () => {
+  const yaml = `name: 测试
+targetPackage: com.example.app
+appInit:
+  clearData: true
+  launchWaitMs: 5000
+flow:
+  - ai: 打开首页
+`;
+  const c = parseCaseText(yaml, { source: 'test.yaml' });
+  assert.equal(c.targetPackage, 'com.example.app');
+  assert.deepEqual(c.appInit, { clearData: true, launchWaitMs: 5000 });
+});
+
+test('parseCaseText：无 appInit 时 caseObj.appInit 为 undefined（向后兼容）', () => {
+  const c = parseCaseText('name: test\nsteps:\n  - ai: hello\n', { source: 't.yaml' });
+  assert.equal(c.appInit, undefined);
+});
+
+test('parseCaseText：appInit clearData=false 正确解析', () => {
+  const yaml = `name: test
+appInit:
+  clearData: false
+steps:
+  - ai: hello
+`;
+  const c = parseCaseText(yaml, { source: 't.yaml' });
+  assert.equal(c.appInit.clearData, false);
+});

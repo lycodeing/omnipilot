@@ -166,8 +166,8 @@ const usage = `ask — 跨端场景测试 agent（当前落地：Android）
   --model-url/--model-key/--model-name/--model-family   覆盖 ASK_MODEL_* 环境变量
   --prompt <t> --prompt-file <f> --prompt-mode append|replace|none
   --vlm-locate         视觉定位兜底（run 默认启用；ask 需显式开启）
-  --yes --timeout <sec> --fresh-locate --json --quiet --pregrant
-                      （--timeout：整 run 时间预算秒数，主循环/马拉松/重试各处生效；缺省不限）
+  --yes --timeout <sec> --fresh-locate --json --quiet --pregrant --clean-data
+                      （--timeout：整 run 时间预算秒数；--clean-data：初始化时清空应用数据）
   --allow-coords      放行坐标步骤（tap: { x, y }）。默认禁止把坐标写进用例（2026-09-24 裁定）；
                       用例顶层 allowCoords: true 等效，CLI 优先级更高
   --keep-images <n>   会话历史保留最近 n 张截图（默认 3；断言密集用例可设 2 省 token）
@@ -735,6 +735,29 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     runHandle.bridge = ownedBridge; // 共享桥时为 null：由 cmdRun 收尾关闭，runOne 不得关
 
     await applyPregrant(caseObj, device, flags);
+
+    // APP 初始化：确保目标应用在首页干净状态（force-stop → 可选 pm clear → launch → 等待 → 清弹窗）
+    const initPackageName = caseObj.targetPackage || process.env.ASK_APP_PACKAGE || null;
+    if (initPackageName) {
+      const { initializeApp } = await import('../src/device/app-init.js');
+      const appInitConfig = caseObj.appInit || {};
+      const shouldClearData = flags['clean-data'] === true || appInitConfig.clearData === true;
+      const initResult = await initializeApp(device, {
+        packageName: initPackageName,
+        clearData: shouldClearData,
+        launchWaitMs: appInitConfig.launchWaitMs,
+        dismissPopups: async () => {
+          const { cleanLaunchPopups } = await import('../src/tools/action.js');
+          await cleanLaunchPopups(ctx, device);
+        },
+      });
+      if (!initResult.ok) {
+        console.warn(`[app-init] 初始化失败: ${initResult.error}（继续执行用例）`);
+      } else if (!flags.quiet) {
+        console.log(`[app-init] ${initPackageName} 初始化完成 (${initResult.steps.join(' → ')})`);
+      }
+    }
+
     ctx.appVersion = await collectAppVersion(caseObj, device);
 
     const { persist, sessionManager } = await assembleSessionPersistence(caseObj, flags);

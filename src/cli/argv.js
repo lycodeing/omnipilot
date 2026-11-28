@@ -7,6 +7,8 @@ export const BOOL_FLAGS = [
   'keep-data', 'strict', 'pregrant', 'help', 'version',
   // allow-coords：坐标步逃生口（DESIGN.md:449）。默认禁止把坐标写进用例。
   'allow-coords',
+  // clean-data：初始化时清空应用数据（pm clear），适用于需要全新状态的测试。
+  'clean-data',
 ];
 
 // 可选值 flag：后面紧跟非 -- 参数则取其值，否则为 true（供 doctor 的"检查默认设备/模型"用法）

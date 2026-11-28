@@ -929,6 +929,19 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     async terminate(packageName) {
       return terminateAppImpl(adb, invalidateTreeBaseline, beforeAction, packageName);
     },
+    /** 清空应用数据（pm clear）：全量重置含登录态/缓存/数据库。需包名白名单校验。 */
+    async clearAppData(packageName) {
+      try {
+        const trimmedPackage = String(packageName ?? '').trim();
+        assertSafePackage(trimmedPackage);
+        await adb.shell(`pm clear ${trimmedPackage}`);
+        invalidateTreeBaseline();
+        beforeAction();
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
+      }
+    },
 
     // —— 环境 ——
     async foreground() {

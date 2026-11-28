@@ -298,7 +298,7 @@ function validateLaunchAppId(appId) {
  * @param {object} ctx 运行上下文
  * @param {object} device 设备门面
  */
-async function cleanLaunchPopups(ctx, device) {
+export async function cleanLaunchPopups(ctx, device) {
   for (let round = 0; round < LAUNCH_CLEAN_POPUP_MAX_ROUNDS; round++) {
     await handlePopupBeforeAction(ctx, device);
     const foreground = await device.foreground().catch(() => null);

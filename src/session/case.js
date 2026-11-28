@@ -128,6 +128,27 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
       caseObj.targetPackage = unquote(trimmed.replace(/^targetPackage\s*[:：]/, '')).trim();
       continue;
     }
+    // 顶层 appInit：APP 初始化配置（clearData / launchWaitMs）。
+    // 写在 targetPackage 之后、steps/flow 之前。缺省时不执行初始化（向后兼容）。
+    if (!inSteps && /^appInit\s*[:：]\s*$/.test(trimmed)) {
+      caseObj.appInit = {};
+      // 读取后续缩进行作为 appInit 的子键
+      while (i + 1 < lines.length) {
+        const nextRaw = stripComment(lines[i + 1]);
+        const nextIndent = nextRaw.match(/^\s*/)[0].length;
+        if (nextIndent <= indent || !nextRaw.trim()) break;
+        i++;
+        const subTrimmed = nextRaw.trim();
+        const subKv = subTrimmed.match(/^([\w]+)\s*[:：]\s*(.*)$/);
+        if (subKv) {
+          const key = subKv[1];
+          const val = unquote(subKv[2]).trim();
+          if (key === 'clearData') caseObj.appInit.clearData = /^(true|yes|on|1)$/i.test(val);
+          else if (key === 'launchWaitMs') caseObj.appInit.launchWaitMs = Number(val) || undefined;
+        }
+      }
+      continue;
+    }
     // 步骤区起始：steps: 或 flow:（外部框架别名，兼容健康自测类用例）。
     // flow: 形态标记 isFlow——sleep 值 >100 在该形态下仍按毫秒兼容（外部框架资产），
     // steps: 形态则要求 ≤100 秒或显式 ms: 参数行（见 sleep 分支）。
