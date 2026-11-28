@@ -929,15 +929,17 @@ export async function createDeviceWithExecutor({ serial, adbPath = process.env.A
     async terminate(packageName) {
       return terminateAppImpl(adb, invalidateTreeBaseline, beforeAction, packageName);
     },
-    /** 清空应用数据（pm clear）：全量重置含登录态/缓存/数据库。需包名白名单校验。 */
+    /** 清空应用数据（pm clear）：全量重置含登录态/缓存/数据库。需包名白名单校验 + 输出失败信号检测。 */
     async clearAppData(packageName) {
       try {
         const trimmedPackage = String(packageName ?? '').trim();
         assertSafePackage(trimmedPackage);
-        await adb.shell(`pm clear ${trimmedPackage}`);
+        const output = await adb.shell(`pm clear ${trimmedPackage}`);
+        // pm clear 对不存在的包输出 "Failed" / "Error: ..." 且 exit 0，必须检查输出内容
+        const failed = /failed|error|exception|unknown/i.test(output);
         invalidateTreeBaseline();
         beforeAction();
-        return { ok: true };
+        return { ok: !failed, error: failed ? output.trim().slice(0, SHELL_ERROR_PREVIEW_LENGTH) : null };
       } catch (error) {
         return { ok: false, error: errorMessage(error) };
       }

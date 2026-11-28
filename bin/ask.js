@@ -469,6 +469,23 @@ async function resolveRunMcpBridge(sharedBridge, flags) {
 }
 
 /**
+ * 目标包名解析（单一真源）：YAML targetPackage > ASK_APP_PACKAGE > launch 步 appId > 正则兜底。
+ * pregrant / initializeApp / collectAppVersion 三处统一复用，避免逻辑漂移。
+ * @param {object} caseObj 用例对象
+ * @returns {string|null} 包名或 null
+ */
+function resolveTargetPackage(caseObj) {
+  if (caseObj.targetPackage) return String(caseObj.targetPackage);
+  if (process.env.ASK_APP_PACKAGE) return process.env.ASK_APP_PACKAGE;
+  const launchStep = (caseObj.steps || []).find((step) => step.type === 'launch' && (step.appId || step.text));
+  if (launchStep) return String(launchStep.appId || launchStep.text).split('/')[0];
+  const caseText = JSON.stringify(caseObj.steps || []);
+  const inferred = (caseText.match(/com\.[a-zA-Z][\w]*(?:\.[\w]+)+/) || [])[0] || null;
+  if (inferred) console.warn(`[warn] 未声明 targetPackage，从步骤文本提取到 "${inferred}"（可能误中；建议用例顶层声明 targetPackage 或设置 ASK_APP_PACKAGE）`);
+  return inferred;
+}
+
+/**
  * preflight 预授权（§2.7.2 一层）：**默认关闭**，`--pregrant` 显式开启。
  * `pm grant` 会杀掉**正在运行**的 App，部分 App（如掘金）批量授权后启动即崩溃
  * （logcat: Application Error ... / Process has died）。故默认不启用；确需消灭授权框时
@@ -482,16 +499,7 @@ async function resolveRunMcpBridge(sharedBridge, flags) {
 async function applyPregrant(caseObj, device, flags) {
   if (flags.pregrant !== true) return;
   try {
-    let packageName = caseObj.targetPackage || null;
-    if (!packageName) {
-      const launchStep = (caseObj.steps || []).find((step) => step.type === 'launch' && (step.appId || step.text));
-      if (launchStep) packageName = String(launchStep.appId || launchStep.text).split('/')[0];
-    }
-    if (!packageName) {
-      const caseText = JSON.stringify(caseObj.steps || []);
-      packageName = (caseText.match(/com\.[a-zA-Z][\w]*(?:\.[\w]+)+/) || [])[0] || null;
-      if (packageName) console.warn(`[warn] pregrant 未声明 targetPackage，从步骤文本提取到 "${packageName}"（可能误中；建议用例顶层声明 targetPackage）`);
-    }
+    const packageName = resolveTargetPackage(caseObj);
     if (packageName) {
       const { pregrantPackage } = await import('../src/cli/pregrant.js');
       // terminate 内含 assertSafePackage：非法包名抛错时不再吞掉后继续 grant，
@@ -517,11 +525,7 @@ async function applyPregrant(caseObj, device, flags) {
  * @returns {Promise<string|null>} 目标 App 版本号
  */
 async function collectAppVersion(caseObj, device) {
-  const targetPackage = (() => {
-    if (caseObj.targetPackage) return String(caseObj.targetPackage);
-    const launchStep = (caseObj.steps || []).find((step) => step.type === 'launch' && (step.appId || step.text));
-    return launchStep ? String(launchStep.appId || launchStep.text).split('/')[0] : null;
-  })();
+  const targetPackage = resolveTargetPackage(caseObj);
   return targetPackage
     ? await device.packageVersion(targetPackage).catch(() => null)
     : null;
@@ -737,7 +741,7 @@ async function runOne(caseObj, { flags, serial, bridge: sharedBridge = null }) {
     await applyPregrant(caseObj, device, flags);
 
     // APP 初始化：确保目标应用在首页干净状态（force-stop → 可选 pm clear → launch → 等待 → 清弹窗）
-    const initPackageName = caseObj.targetPackage || process.env.ASK_APP_PACKAGE || null;
+    const initPackageName = resolveTargetPackage(caseObj);
     if (initPackageName) {
       const { initializeApp } = await import('../src/device/app-init.js');
       const appInitConfig = caseObj.appInit || {};

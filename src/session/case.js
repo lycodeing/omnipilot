@@ -132,19 +132,33 @@ export function parseCaseText(text, { source = 'text', allowCoords = null } = {}
     // 写在 targetPackage 之后、steps/flow 之前。缺省时不执行初始化（向后兼容）。
     if (!inSteps && /^appInit\s*[:：]\s*$/.test(trimmed)) {
       caseObj.appInit = {};
-      // 读取后续缩进行作为 appInit 的子键
+      const APP_INIT_MAX_WAIT_MS = 120_000; // 上限对齐 profiles readyTimeoutMs 惯例
+      // 读取后续缩进行作为 appInit 的子键；空行/纯注释行跳过而非截断
       while (i + 1 < lines.length) {
         const nextRaw = stripComment(lines[i + 1]);
+        const nextTrimmed = nextRaw.trim();
+        // 空行或纯注释行（stripComment 后为空）：跳过，不截断块
+        if (!nextTrimmed) { i++; continue; }
         const nextIndent = nextRaw.match(/^\s*/)[0].length;
-        if (nextIndent <= indent || !nextRaw.trim()) break;
+        // 非空且缩进 ≤ 当前层 → 块结束
+        if (nextIndent <= indent) break;
         i++;
-        const subTrimmed = nextRaw.trim();
-        const subKv = subTrimmed.match(/^([\w]+)\s*[:：]\s*(.*)$/);
+        const subKv = nextTrimmed.match(/^([\w]+)\s*[:：]\s*(.*)$/);
         if (subKv) {
           const key = subKv[1];
           const val = unquote(subKv[2]).trim();
-          if (key === 'clearData') caseObj.appInit.clearData = /^(true|yes|on|1)$/i.test(val);
-          else if (key === 'launchWaitMs') caseObj.appInit.launchWaitMs = Number(val) || undefined;
+          if (key === 'clearData') {
+            caseObj.appInit.clearData = /^(true|yes|on|1)$/i.test(val);
+          } else if (key === 'launchWaitMs') {
+            const parsed = Number(val);
+            if (Number.isFinite(parsed) && parsed >= 0) {
+              caseObj.appInit.launchWaitMs = Math.min(parsed, APP_INIT_MAX_WAIT_MS);
+            } else {
+              caseObj.warnings.push(`${source}:${i + 1} appInit.launchWaitMs "${val}" 无效（应为 ≥0 的数字），忽略`);
+            }
+          } else {
+            caseObj.warnings.push(`${source}:${i + 1} appInit 未知子键 "${key}"，忽略`);
+          }
         }
       }
       continue;
